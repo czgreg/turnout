@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-expand-whitelist.py — 把 leap-gateway 的白名单展开成域名后缀列表。
+expand-whitelist.py — 把 turnout-gateway 的白名单展开成域名后缀列表。
 
 用途：飞连 SaaS 控制端的"极速模式"需要明确告诉飞连终端"哪些域名走 VPN"。
 我们节点 sing-box 的白名单是 geosite tag + domain_suffix，要让飞连和节点保持
@@ -119,7 +119,7 @@ def fetch_whitelist_api(api_addr: str) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--api", default=DEFAULT_API,
-                    help=f"leap-gateway API addr (default: {DEFAULT_API})")
+                    help=f"turnout-gateway API addr (default: {DEFAULT_API})")
     ap.add_argument("--geosites",
                     help="override: comma-separated geosite tags, e.g. google,openai")
     ap.add_argument("--domain-suffix",

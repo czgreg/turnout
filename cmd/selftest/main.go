@@ -15,9 +15,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/mihomo"
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/mihomo"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 func main() {

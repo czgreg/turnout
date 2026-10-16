@@ -1,4 +1,4 @@
-// Package configstore handles atomic write-back of /etc/leap/gateway.yaml from
+// Package configstore handles atomic write-back of /etc/turnout/gateway.yaml from
 // the in-memory *config.Config — used by the management API when an operator
 // edits whitelist or subscriptions through HTTP.
 //
@@ -15,7 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // Store is a serialized writer that owns the on-disk config file. Concurrent

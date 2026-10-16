@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/redeploy-full.sh — yaml-first full reinstall to a node.
 #
-# Pulls /etc/leap/gateway.yaml from <host> as the staging input (so we
+# Pulls /etc/turnout/gateway.yaml from <host> as the staging input (so we
 # never accidentally clobber the on-node config with a stale local one),
 # stages a fresh tarball, ships it, runs install.sh, verifies version +
 # services. Intended for full-stack reinstalls (new service files, new
@@ -51,8 +51,8 @@ fi
 
 # 1. Pull on-node gateway.yaml. Uses NOPASSWD `bash` allowance to read
 # a root-owned file (sudo cat is not on the NOPASSWD list).
-log "pulling /etc/leap/gateway.yaml from $HOST → $PULLED_YAML"
-$SSH "sudo -n bash -c 'cat /etc/leap/gateway.yaml'" > "$PULLED_YAML" \
+log "pulling /etc/turnout/gateway.yaml from $HOST → $PULLED_YAML"
+$SSH "sudo -n bash -c 'cat /etc/turnout/gateway.yaml'" > "$PULLED_YAML" \
   || fail "could not pull on-node gateway.yaml from $HOST (check NOPASSWD bash + sudo perms)"
 [ -s "$PULLED_YAML" ] || fail "pulled gateway.yaml is empty — bailing"
 ok "pulled $(wc -l < "$PULLED_YAML") lines from $HOST"
@@ -61,7 +61,7 @@ ok "pulled $(wc -l < "$PULLED_YAML") lines from $HOST"
 log "staging tarball with $PULLED_YAML"
 GATEWAY_YAML="$PULLED_YAML" GOARCH="$GOARCH" "$REPO_ROOT/scripts/stage.sh" >/tmp/stage-$HOST-$TS.log 2>&1 \
   || { tail -20 /tmp/stage-$HOST-$TS.log >&2; fail "stage.sh failed (full log: /tmp/stage-$HOST-$TS.log)"; }
-TARBALL="$REPO_ROOT/build/leap-stage.tgz"
+TARBALL="$REPO_ROOT/build/turnout-stage.tgz"
 [ -f "$TARBALL" ] || fail "expected $TARBALL but it's not there"
 ok "staged $(du -h "$TARBALL" | cut -f1)"
 
@@ -70,7 +70,7 @@ log "pushing tarball to $HOST"
 $SCP "$TARBALL" "$REMOTE_USER@$HOST:/tmp/" >/dev/null
 
 log "running install.sh on $HOST (output → /tmp/install-${HOST}-${TS}.log on local)"
-$SSH "sudo -n bash -c 'cd /tmp && rm -rf leap-stage && tar --no-same-owner -xzf leap-stage.tgz 2>/dev/null; cd leap-stage && bash install.sh > /tmp/install-${TS}.log 2>&1; echo INSTALL_EXIT=\$? >> /tmp/install-${TS}.log; tail -50 /tmp/install-${TS}.log'" \
+$SSH "sudo -n bash -c 'cd /tmp && rm -rf turnout-stage && tar --no-same-owner -xzf turnout-stage.tgz 2>/dev/null; cd turnout-stage && bash install.sh > /tmp/install-${TS}.log 2>&1; echo INSTALL_EXIT=\$? >> /tmp/install-${TS}.log; tail -50 /tmp/install-${TS}.log'" \
   | tee "/tmp/install-${HOST}-${TS}.log"
 
 EXIT=$(grep '^INSTALL_EXIT=' "/tmp/install-${HOST}-${TS}.log" | tail -1 | cut -d= -f2)
@@ -98,10 +98,10 @@ for i in 1 2 3; do
   [ -n "$RESP" ] && break
   sleep 3
 done
-[ -n "$RESP" ] || fail "API on $HOST unreachable after install — check 'journalctl -u leap-gateway' on the node"
+[ -n "$RESP" ] || fail "API on $HOST unreachable after install — check 'journalctl -u turnout-gateway' on the node"
 
-VER=$(printf '%s' "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['leap']['gateway_version'])" 2>/dev/null || echo UNKNOWN)
-SVC=$(printf '%s' "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['leap']['services'])" 2>/dev/null || echo UNKNOWN)
+VER=$(printf '%s' "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['turnout']['gateway_version'])" 2>/dev/null || echo UNKNOWN)
+SVC=$(printf '%s' "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['turnout']['services'])" 2>/dev/null || echo UNKNOWN)
 ok "$HOST is on gateway_version=$VER  services=$SVC"
 
-ok "redeploy-full done for $HOST. yaml backup on the node at /etc/leap/gateway.yaml.bak.<ts>"
+ok "redeploy-full done for $HOST. yaml backup on the node at /etc/turnout/gateway.yaml.bak.<ts>"

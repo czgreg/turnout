@@ -2,7 +2,7 @@
 // defaults at load time. Schema lives in this single file — keep it that way
 // so new fields are easy to find by reading top-to-bottom.
 //
-// History: leap-gateway started as a sing-box sidecar; the legacy schema
+// History: turnout-gateway started as a sing-box sidecar; the legacy schema
 // nested all engine fields under `singbox:`. After the mihomo cutover and
 // the sing-box renderer was removed, the top-level block was renamed to
 // `data_plane:` and three new sibling blocks were added — `node_qualify`,
@@ -42,7 +42,7 @@ type Config struct {
 
 	// Capacity holds the single-node user-capacity ceiling measured by an
 	// offline stress test (scripts/stress.sh). These are STATIC operator-
-	// supplied numbers — leap-gateway does not measure them at runtime
+	// supplied numbers — turnout-gateway does not measure them at runtime
 	// (you can't load-test live production). Surfaced in /api/status so
 	// operators can compare current load against the known ceiling.
 	Capacity CapacityConfig `yaml:"capacity"`
@@ -76,7 +76,7 @@ type NotificationsConfig struct {
 	// (before the webhook call), regardless of webhook delivery success.
 	// Lets operators reconstruct "what was the system trying to tell me"
 	// even when Lark itself was unreachable. Default
-	// /var/lib/leap/notifications.log (writable per systemd ReadWritePaths).
+	// /var/lib/turnout/notifications.log (writable per systemd ReadWritePaths).
 	LocalLogPath string `yaml:"local_log_path"`
 
 	// DedupWindow collapses repeated (node, event_type) notifications
@@ -103,7 +103,7 @@ type NotificationsConfig struct {
 	RetryAttempts int `yaml:"retry_attempts"`
 
 	// InstanceName identifies which gateway sent a notification, surfaced
-	// in the Lark message header (e.g. "leap-gateway@92"). With multiple
+	// in the Lark message header (e.g. "turnout-gateway@92"). With multiple
 	// nodes (89 / 92) posting to the same Lark channel, the operator can't
 	// otherwise tell which one a pool-flap or node-dead alert came from.
 	// Defaults to the OS hostname when left empty.
@@ -126,7 +126,7 @@ type LarkConfig struct {
 	// SecretFile is the on-disk path holding the Lark webhook signing
 	// secret. POST /api/notifications/lark writes it (chmod 0600);
 	// Notifier reads at startup + reload. Default
-	// /var/lib/leap/lark-secret. Kept separate from yaml so secrets
+	// /var/lib/turnout/lark-secret. Kept separate from yaml so secrets
 	// never end up in version control / log dumps.
 	SecretFile string `yaml:"secret_file"`
 }
@@ -184,7 +184,7 @@ type SubscriptionEntry struct {
 	UserAgent string `yaml:"user_agent,omitempty"`
 }
 
-// NodeConfig describes the FeiLian forwarding node that leap is sidecared on.
+// NodeConfig describes the FeiLian forwarding node that turnout is sidecared on.
 // All three fields are assigned by FeiLian SaaS when the node is added to the
 // control plane. They cannot be guessed — the deploy operator fills them in.
 type NodeConfig struct {
@@ -205,14 +205,14 @@ type NodeConfig struct {
 // another rename).
 type DataPlaneConfig struct {
 	// ConfigPath is where the renderer writes mihomo's config.yaml.
-	// Defaults to /var/lib/leap/mihomo/config.yaml.
+	// Defaults to /var/lib/turnout/mihomo/config.yaml.
 	ConfigPath string `yaml:"config_path"`
 
 	LogLevel string `yaml:"log_level"`
 
 	// RuleSetsDir holds .mrs files used by mihomo. Pre-fetched into the
 	// install tarball by scripts/stage.sh; expanded at startup.
-	// Defaults to /var/lib/leap/mihomo/rule-sets.
+	// Defaults to /var/lib/turnout/mihomo/rule-sets.
 	RuleSetsDir string `yaml:"rule_sets_dir"`
 
 	ClashAPI ClashAPIConfig `yaml:"clash_api"`
@@ -358,7 +358,7 @@ type DNSConfig struct {
 	// Supported since mihomo v1.19.26 (config/config.go:240); verified with
 	// `mihomo -t` on the node before rollout.
 	NodeResolverSuffixes []string `yaml:"node_resolver_suffixes,omitempty"`
-	// PreloadDomains is the list of overseas domains leap-gateway will
+	// PreloadDomains is the list of overseas domains turnout-gateway will
 	// keep warm in mihomo's DNS cache.
 	PreloadDomains []string `yaml:"preload_domains,omitempty"`
 	// PreloadInterval is how often each preloaded domain is re-queried.
@@ -436,7 +436,7 @@ func (s *StringList) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // URLTestConfig drives mihomo's load-balance internal probe + url-test.
-// Distinct from NodeQualifyConfig (which is leap-gateway's own scorer);
+// Distinct from NodeQualifyConfig (which is turnout-gateway's own scorer);
 // these thresholds shape mihomo's per-flow health-check + url-test cycle.
 type URLTestConfig struct {
 	// Interval: legacy field, kept for backward compatibility. Used as
@@ -827,7 +827,7 @@ func (c *Config) applyDefaults() {
 // network errors.
 func (n *NotificationsConfig) applyDefaults() {
 	if n.LocalLogPath == "" {
-		n.LocalLogPath = "/var/lib/leap/notifications.log"
+		n.LocalLogPath = "/var/lib/turnout/notifications.log"
 	}
 	if n.DedupWindow == 0 {
 		n.DedupWindow = 5 * time.Minute
@@ -850,7 +850,7 @@ func (n *NotificationsConfig) applyDefaults() {
 		}
 	}
 	if n.Lark.SecretFile == "" {
-		n.Lark.SecretFile = "/var/lib/leap/lark-secret"
+		n.Lark.SecretFile = "/var/lib/turnout/lark-secret"
 	}
 	// Lark.SignatureRequired default true: any non-zero NotificationsConfig
 	// loaded with Lark.WebhookURL set should require signing unless
@@ -872,13 +872,13 @@ func (n *NotificationsConfig) applyDefaults() {
 // invoke it.
 func (c *DataPlaneConfig) ApplyDefaults() {
 	if c.ConfigPath == "" {
-		// mihomo workdir is /var/lib/leap/mihomo; mihomo reads config.yaml
+		// mihomo workdir is /var/lib/turnout/mihomo; mihomo reads config.yaml
 		// from there automatically (no -f flag). Must match the path in
-		// deploy/node/leap-mihomo.service (WorkingDirectory).
-		c.ConfigPath = "/var/lib/leap/mihomo/config.yaml"
+		// deploy/node/turnout-mihomo.service (WorkingDirectory).
+		c.ConfigPath = "/var/lib/turnout/mihomo/config.yaml"
 	}
 	if c.RuleSetsDir == "" {
-		c.RuleSetsDir = "/var/lib/leap/mihomo/rule-sets"
+		c.RuleSetsDir = "/var/lib/turnout/mihomo/rule-sets"
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = "info"
@@ -889,7 +889,7 @@ func (c *DataPlaneConfig) ApplyDefaults() {
 
 	// TUN defaults — only used when TUN.Enabled is true.
 	if c.TUN.InterfaceName == "" {
-		c.TUN.InterfaceName = "utun-leap"
+		c.TUN.InterfaceName = "utun-turnout"
 	}
 	if c.TUN.Address == "" {
 		c.TUN.Address = "172.19.0.1/30"

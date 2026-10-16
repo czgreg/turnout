@@ -1,7 +1,7 @@
 #!/bin/bash
-# leap-gateway transparent proxy routing (TPROXY mode).
+# turnout-gateway transparent proxy routing (TPROXY mode).
 #
-# Called by leap-nft.service on ExecStart (up) and ExecStop (down).
+# Called by turnout-nft.service on ExecStart (up) and ExecStop (down).
 # Idempotent on both directions.
 #
 # What it sets up:
@@ -13,14 +13,14 @@
 #   - ip rule + ip route: route TPROXY-marked packets (fwmark 0x44) to
 #     local (lo), so the kernel delivers them to mihomo's tproxy socket.
 #
-# Configuration is read from /etc/leap/env (written by install.sh):
+# Configuration is read from /etc/turnout/env (written by install.sh):
 #   LEAP_CLIENT_SUBNET   FeiLian client pool CIDR, e.g. 10.8.13.0/24
 #   LEAP_TPROXY_PORT     mihomo tproxy-port, e.g. 7893
 #   LEAP_TUN0_IFACE      FeiLian VPN interface, e.g. tun0
 
 set -euo pipefail
 
-ENV_FILE="/etc/leap/env"
+ENV_FILE="/etc/turnout/env"
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
 
 CLIENT_SUBNET="${LEAP_CLIENT_SUBNET:-}"
@@ -36,9 +36,9 @@ TPROXY_TABLE="101"
 # sourceIPs to 198.18.0.0). Fail fast rather than installing an iptables
 # rule targeting port 0.
 [ "$TPROXY_PORT" -gt 0 ] 2>/dev/null \
-    || { echo "LEAP_TPROXY_PORT=$TPROXY_PORT — set data_plane.tproxy_port (e.g. 7893) in /etc/leap/gateway.yaml and re-run install.sh" >&2; exit 1; }
+    || { echo "LEAP_TPROXY_PORT=$TPROXY_PORT — set data_plane.tproxy_port (e.g. 7893) in /etc/turnout/gateway.yaml and re-run install.sh" >&2; exit 1; }
 [ "$API_PORT" -gt 0 ] 2>/dev/null \
-    || { echo "LEAP_API_PORT=$API_PORT — set api.listen to a valid port in /etc/leap/gateway.yaml and re-run install.sh" >&2; exit 1; }
+    || { echo "LEAP_API_PORT=$API_PORT — set api.listen to a valid port in /etc/turnout/gateway.yaml and re-run install.sh" >&2; exit 1; }
 
 tproxy_up() {
     # Ensure xt_TPROXY module is loaded.
@@ -77,7 +77,7 @@ tproxy_up() {
 
     # Block FeiLian client addresses from reaching the gateway API before
     # the generic TPROXY jump. Without this early drop, mihomo can accept a
-    # client connection to the node's own API port before the inet/leap input
+    # client connection to the node's own API port before the inet/turnout input
     # chain sees it, bypassing the source deny in nft.conf.
     while iptables -t mangle -D PREROUTING -i "$TUN0_IFACE" \
         -s 10.8.0.0/16 -m addrtype --dst-type LOCAL \
@@ -93,7 +93,7 @@ tproxy_up() {
     iptables -t mangle -A PREROUTING -i "$TUN0_IFACE" -s "$CLIENT_SUBNET" \
         -j LEAP_TPROXY
 
-    echo "leap tproxy up: $CLIENT_SUBNET@$TUN0_IFACE -> 127.0.0.1:$TPROXY_PORT (fwmark $TPROXY_MARK)"
+    echo "turnout tproxy up: $CLIENT_SUBNET@$TUN0_IFACE -> 127.0.0.1:$TPROXY_PORT (fwmark $TPROXY_MARK)"
 }
 
 tproxy_down() {
@@ -114,7 +114,7 @@ tproxy_down() {
     while ip rule del fwmark "$TPROXY_MARK" lookup "$TPROXY_TABLE" 2>/dev/null; do :; done
     ip route flush table "$TPROXY_TABLE" 2>/dev/null || true
 
-    echo "leap tproxy down: $CLIENT_SUBNET cleared"
+    echo "turnout tproxy down: $CLIENT_SUBNET cleared"
 }
 
 case "${1:-up}" in

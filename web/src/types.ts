@@ -96,7 +96,7 @@ export interface Active {
     proxy_active?: boolean;
     sentry_active?: boolean;
   };
-  leap?: {
+  turnout?: {
     gateway_version?: string;
     engine?: string;
     engine_version?: string;

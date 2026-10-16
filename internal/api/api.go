@@ -10,15 +10,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/configstore"
-	"github.com/leap-gateway/leap-gateway/internal/dataplane"
-	"github.com/leap-gateway/leap-gateway/internal/nodescorer"
-	"github.com/leap-gateway/leap-gateway/internal/nodeinfo"
-	"github.com/leap-gateway/leap-gateway/internal/notify"
-	"github.com/leap-gateway/leap-gateway/internal/rulesets"
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
-	"github.com/leap-gateway/leap-gateway/internal/whitelistexpand"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/configstore"
+	"github.com/turnout-gateway/turnout-gateway/internal/dataplane"
+	"github.com/turnout-gateway/turnout-gateway/internal/nodescorer"
+	"github.com/turnout-gateway/turnout-gateway/internal/nodeinfo"
+	"github.com/turnout-gateway/turnout-gateway/internal/notify"
+	"github.com/turnout-gateway/turnout-gateway/internal/rulesets"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/whitelistexpand"
 )
 
 type Deps struct {
@@ -324,7 +324,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, _ *http.Request) {
 // fails instantly too. The engine then keeps serving the OLD config with
 // no operator-visible signal. That is exactly what happened on 2026-09-24:
 // two refresh rounds died mid-flight, 3 of 6 subscriptions came back
-// "context canceled" (213 nodes -> 106), and leap-mihomo showed
+// "context canceled" (213 nodes -> 106), and turnout-mihomo showed
 // NRestarts=0 / 23 days uptime — the advertised fallback had never once
 // run.
 //

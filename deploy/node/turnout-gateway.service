@@ -1,0 +1,23 @@
+[Unit]
+Description=turnout-gateway control plane (subscription fetch + data-plane render + clash-api reload)
+# Control plane is independent of the data plane. mihomo is the only engine
+# shipped now (the sing-box data-plane path was retired in 2026-06);
+# turnout-gateway re-renders + reloads via clash-api. Avoid a hard Wants= on
+# the engine unit so systemd never auto-starts a data plane that the
+# operator has deliberately stopped.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/turnout-gateway --config /etc/turnout/gateway.yaml
+Restart=on-failure
+RestartSec=10
+
+# Restrict filesystem; control plane only needs config + state.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/turnout /etc/turnout
+
+[Install]
+WantedBy=multi-user.target

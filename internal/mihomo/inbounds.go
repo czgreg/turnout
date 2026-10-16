@@ -3,18 +3,18 @@
 // mihomo's TUN inbound is a top-level `tun:` block (not a list of inbounds
 // like sing-box). It also carries auto-route / auto-redir / dns-hijack
 // flags that sing-box puts under route / dns. We keep auto-route DISABLED
-// because leap-nft.service manages ip-rule + ip-route policy externally —
+// because turnout-nft.service manages ip-rule + ip-route policy externally —
 // we don't want mihomo competing with that.
 //
 // Interface name constraint: Linux IFNAMSIZ = 16, so the device name must
-// be ≤ 15 chars. Validated at render time; fall back to "utun-leap" (the
+// be ≤ 15 chars. Validated at render time; fall back to "utun-turnout" (the
 // canonical name shared with sing-box) if a custom name is too long.
 
 package mihomo
 
 const (
 	maxIfaceNameLen = 15
-	defaultDevice   = "utun-leap"
+	defaultDevice   = "utun-turnout"
 )
 
 func (r *Renderer) buildTUN() map[string]any {

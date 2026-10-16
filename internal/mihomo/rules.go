@@ -1,6 +1,6 @@
 // rules.go — rules + rule-providers.
 //
-// mihomo natively reads sing-box .srs files (format: srs). leap-gateway
+// mihomo natively reads sing-box .srs files (format: srs). turnout-gateway
 // already manages those .srs files on disk under cfg.RuleSetsDir, so we
 // reference them directly via type=file rule-providers — no second copy,
 // same files sing-box would load.
@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 const (

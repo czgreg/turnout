@@ -188,13 +188,13 @@ post Plan-A 语义注意：
 
 ```json
 {
-  "node": {"hostname": "leap-node-a", "kernel": "...", "os": "Ubuntu 22.04", "uptime_seconds": 86400},
+  "node": {"hostname": "turnout-node-a", "kernel": "...", "os": "Ubuntu 22.04", "uptime_seconds": 86400},
   "feilian": {"tun0_active": true, "vpn_active": true},
-  "leap": {
+  "turnout": {
     "gateway_version": "0d7432d",
     "engine": "mihomo",
     "engine_version": "v1.19.26",
-    "services": {"leap-gateway": "active", "leap-mihomo": "active", "leap-nft": "active"},
+    "services": {"turnout-gateway": "active", "turnout-mihomo": "active", "turnout-nft": "active"},
     "subscriptions_count": 4,
     "nodes_parsed": 136,
     "last_refresh": "2026-06-06T12:00:00Z"
@@ -328,7 +328,7 @@ override 不 sticky：NodeScorer 只管 us-pool 成员，不回写 selector 指�
 {"seconds": 900}
 ```
 
-0 = 关闭定时刷新。立即生效 + 持久化到 `/etc/leap/gateway.yaml`（重启后保留）。
+0 = 关闭定时刷新。立即生效 + 持久化到 `/etc/turnout/gateway.yaml`（重启后保留）。
 
 ---
 
@@ -487,7 +487,7 @@ curl -H "Authorization: Bearer ..." \
 
 ```bash
 curl -H "Authorization: Bearer ..." \
-  "http://leap-89:18080/api/pool/transitions?limit=20"
+  "http://turnout-89:18080/api/pool/transitions?limit=20"
 ```
 
 ```json
@@ -538,7 +538,7 @@ curl -H "Authorization: Bearer ..." \
 ```bash
 curl -X POST -H "Authorization: Bearer ..." -H "Content-Type: application/json" \
   -d '{"steps": 1, "quarantine_seconds": 3600}' \
-  http://leap-89:18080/api/pool/rollback
+  http://turnout-89:18080/api/pool/rollback
 ```
 
 请求体（全部可选）：
@@ -579,7 +579,7 @@ curl -X POST -H "Authorization: Bearer ..." -H "Content-Type: application/json" 
   "webhook_configured": true,
   "signature_required": true,
   "secret_configured": true,
-  "local_log_path": "/var/lib/leap/notifications.log",
+  "local_log_path": "/var/lib/turnout/notifications.log",
   "dedup_window_sec": 300,
   "aggregation_window_sec": 30,
   "per_node_rate_limit_per_hour": 4,
@@ -599,7 +599,7 @@ curl -X POST -H "Authorization: Bearer ..." -H "Content-Type: application/json" 
 
 ## POST /api/notifications/lark
 
-设置/更新 Lark webhook 配置。`webhook_url` 写入 `gateway.yaml` 的 `notifications.lark.webhook_url`；`secret` 写入独立文件（默认 `/var/lib/leap/lark-secret`，0600 权限），yaml 不存 secret。
+设置/更新 Lark webhook 配置。`webhook_url` 写入 `gateway.yaml` 的 `notifications.lark.webhook_url`；`secret` 写入独立文件（默认 `/var/lib/turnout/lark-secret`，0600 权限），yaml 不存 secret。
 
 ```bash
 curl -X POST -H "Authorization: Bearer ..." -H "Content-Type: application/json" \
@@ -608,7 +608,7 @@ curl -X POST -H "Authorization: Bearer ..." -H "Content-Type: application/json" 
     "secret": "your-signing-secret",
     "signature_required": true
   }' \
-  http://leap-89:18080/api/notifications/lark
+  http://turnout-89:18080/api/notifications/lark
 ```
 
 字段：
@@ -636,7 +636,7 @@ curl -X POST -H "Authorization: Bearer ..." -H "Content-Type: application/json" 
 
 ```bash
 curl -X DELETE -H "Authorization: Bearer ..." \
-  http://leap-89:18080/api/notifications/lark
+  http://turnout-89:18080/api/notifications/lark
 ```
 
 返回：post-deletion 的 `Status` body，可见 `webhook_configured: false`。
@@ -649,7 +649,7 @@ curl -X DELETE -H "Authorization: Bearer ..." \
 
 ```bash
 curl -X POST -H "Authorization: Bearer ..." \
-  http://leap-89:18080/api/notifications/test
+  http://turnout-89:18080/api/notifications/test
 ```
 
 成功：
@@ -672,7 +672,7 @@ curl -X POST -H "Authorization: Bearer ..." \
 
 ```bash
 curl -H "Authorization: Bearer ..." \
-  "http://leap-89:18080/api/notifications/recent?limit=20"
+  "http://turnout-89:18080/api/notifications/recent?limit=20"
 ```
 
 ```json
@@ -881,8 +881,8 @@ notifications:
   lark:
     webhook_url: ""             # 通过 API 设置
     signature_required: true    # 默认 true，强烈推荐
-    secret_file: /var/lib/leap/lark-secret
-  local_log_path: /var/lib/leap/notifications.log
+    secret_file: /var/lib/turnout/lark-secret
+  local_log_path: /var/lib/turnout/notifications.log
   dedup_window: 5m
   aggregation_window: 30s
   per_node_rate_limit_per_hour: 4
@@ -902,7 +902,7 @@ notifications:
 **架构变化**（影响 mihomo 配置形态，REST 表面不变以下端点）：
 
 - 默认池模式从"K-gating auto"切到"manual"——`pool_mode: manual` + 操作员维护 `pool_members:` 列表。详见 `node_qualify.pool_mode` 配置。
-- `mihomo` 的 perterm sub-rule 现在指向 `fb-<ip>` fallback group，每组含 HRW 选出的 [primary, secondary]。节点死了 mihomo 自动切到 secondary（30s 内），不再依赖 leap-gateway 30min 等待。
+- `mihomo` 的 perterm sub-rule 现在指向 `fb-<ip>` fallback group，每组含 HRW 选出的 [primary, secondary]。节点死了 mihomo 自动切到 secondary（30s 内），不再依赖 turnout-gateway 30min 等待。
 - 已删除 `perterm-<poolname>` 子规则——同一 terminal 的所有目的地走同一 egress（CF 反检测要求）。pool_members 选节点时需自行确认 OpenAI 兼容性。
 
 ### 2026-06-06（commit `21a88d5`）
@@ -917,7 +917,7 @@ notifications:
 
 - `data_plane.tproxy_port` 现在是**全局必填**（>0）。`--validate` 会拒绝 `tproxy_port: 0`，TUN-only 模式不再支持（之前只在 `load_balance.per_terminal=true` 时强制）。
 - 部署链增加 `--validate`：`mihomo -t` 在临时目录跑，永远不写生产 `config.yaml`。
-- install.sh 增加 `--print-env` 生成 `/etc/leap/env`，nft 模板和 `iproute.sh` 都从这里读，不再 grep YAML。
+- install.sh 增加 `--print-env` 生成 `/etc/turnout/env`，nft 模板和 `iproute.sh` 都从这里读，不再 grep YAML。
 
 ### 2026-06-06（commit `0d7432d`）
 
@@ -934,9 +934,9 @@ notifications:
 | 字段 | 变化 |
 |---|---|
 | `singbox_ok` | → `engine_ok` |
-| `leap.singbox_version` | → `leap.engine_version` + 新增 `leap.engine`（恒为 `"mihomo"`） |
+| `turnout.singbox_version` | → `turnout.engine_version` + 新增 `turnout.engine`（恒为 `"mihomo"`） |
 | `active_proxy.watchdog` | **已删除** |
-| `leap.services.leap-singbox` | **不再返回**（services 只剩 gateway/mihomo/nft） |
+| `turnout.services` 中的 sing-box 条目 | **不再返回**（services 只剩 gateway/mihomo/nft） |
 
 **约定**：
 - 字段命名 `snake_case`；时间戳 RFC3339；数值后缀标单位（`_ms` / `_sec` / `_bps`）

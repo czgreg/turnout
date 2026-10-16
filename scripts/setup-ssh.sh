@@ -49,12 +49,12 @@ ssh -o BatchMode=yes -o StrictHostKeyChecking=no "$NODE" 'echo SSH_KEY_OK' >/dev
 echo "[setup-ssh] installing NOPASSWD sudoers dropin"
 NODE_USER="${NODE%@*}"
 ssh -o BatchMode=yes "$NODE" "echo '$SUDO_PASS' | sudo -S sh -c '
-echo \"$NODE_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/install, /usr/bin/tar, /bin/bash, /usr/bin/journalctl, /usr/sbin/nft\" > /etc/sudoers.d/leap-deploy
-chmod 0440 /etc/sudoers.d/leap-deploy
-visudo -c -f /etc/sudoers.d/leap-deploy
+echo \"$NODE_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/install, /usr/bin/tar, /bin/bash, /usr/bin/journalctl, /usr/sbin/nft\" > /etc/sudoers.d/turnout-deploy
+chmod 0440 /etc/sudoers.d/turnout-deploy
+visudo -c -f /etc/sudoers.d/turnout-deploy
 '"
 
 echo "[setup-ssh] verifying NOPASSWD sudo"
-ssh -o BatchMode=yes "$NODE" 'sudo -n systemctl is-active leap-gateway >/dev/null && echo NOPASS_OK'
+ssh -o BatchMode=yes "$NODE" 'sudo -n systemctl is-active turnout-gateway >/dev/null && echo NOPASS_OK'
 
 echo "[setup-ssh] DONE — try 'make deploy-fast'"

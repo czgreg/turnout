@@ -1,5 +1,5 @@
 // Package mihomo renders a complete mihomo (clash.meta) Clash YAML config
-// from leap-gateway's parsed subscription outbounds + node config + whitelist.
+// from turnout-gateway's parsed subscription outbounds + node config + whitelist.
 // It mirrors internal/singbox/renderer.go's high-level behavior but produces
 // a different proxy engine's config.
 //
@@ -34,21 +34,21 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 	"gopkg.in/yaml.v3"
 )
 
 // Loopback-only HTTP proxy ports (kept stable across sing-box and mihomo
-// renderers so leap-gateway control-plane code that targets these ports
+// renderers so turnout-gateway control-plane code that targets these ports
 // doesn't change). Note: in mihomo we use a single mixed-port + a
 // per-pool selector approach instead of three separate HTTP inbounds, so
-// only the primary one is preserved as the "leap-internal" proxy port.
+// only the primary one is preserved as the "turnout-internal" proxy port.
 const (
-	// LeapInternalProxyPort: the loopback HTTP proxy that rulesets.Manager
+	// TurnoutInternalProxyPort: the loopback HTTP proxy that rulesets.Manager
 	// uses to fetch .srs blobs through the airport. Equivalent to sing-box
-	// renderer's LeapInternalProxyPort (11080).
-	LeapInternalProxyPort = 11080
+	// renderer's TurnoutInternalProxyPort (11080).
+	TurnoutInternalProxyPort = 11080
 )
 
 // Renderer turns parsed subscription outbounds + node config into a complete
@@ -85,7 +85,7 @@ type Renderer struct {
 	// to the full us-pool member set (so it works before the first probe
 	// round completes).
 	poolMembers map[string][]string
-	// probeListener toggles emission of the leap-probe HTTP listener +
+	// probeListener toggles emission of the turnout-probe HTTP listener +
 	// probe-out selector group used by nodescorer's per-node site probes.
 	probeListener bool
 	// perTerminal, when true, pins each client terminal's whitelisted
@@ -228,7 +228,7 @@ func (r *Renderer) RenderWithPools(outbounds []subscribe.Outbound, usPool, routi
 }
 
 // Path returns the on-disk path the rendered config should be written to.
-// For mihomo this is typically /etc/leap/mihomo/config.yaml.
+// For mihomo this is typically /etc/turnout/mihomo/config.yaml.
 func (r *Renderer) Path() string { return r.cfg.ConfigPath }
 
 // RenderOnly renders the config and returns the bytes WITHOUT writing to disk.
@@ -303,7 +303,7 @@ func (r *Renderer) build(outbounds []subscribe.Outbound) map[string]any {
 		"geodata-mode":        false,
 		"geo-auto-update":     false,
 		"external-controller": r.cfg.ClashAPI.ExternalController,
-		"mixed-port":          LeapInternalProxyPort,
+		"mixed-port":          TurnoutInternalProxyPort,
 	}
 	if r.cfg.ClashAPI.Secret != "" {
 		doc["secret"] = r.cfg.ClashAPI.Secret

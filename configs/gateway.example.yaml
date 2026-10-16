@@ -1,333 +1,231 @@
-# Interchange · 立交网关 — example config (FeiLian forwarding-node sidecar, mihomo-only).
+# turnout-gateway · 旁挂网关 —— 示例配置
 #
-# Copy to gateway.yaml and edit. Mounted on the FeiLian forwarding node at
-# /etc/leap/gateway.yaml (the on-disk identifiers stay `leap-*` — see the
-# "About the name" section in README). Schema: 2026-06 cleanup — top-level
-# `data_plane` (was `singbox`), top-level `node_qualify` and `pools` (were
-# buried under singbox.url_test).
+# 复制为 gateway.yaml 并编辑。部署到旁挂机的 /etc/turnout/gateway.yaml。
+# 本文件相对上游 leap-gateway 的 schema 差异，逐项标注了 [新] / [改] / [不变]。
+#
+# ⚠️ 硬规则（继承自上游 CLAUDE.md）：
+#   `subscriptions:` 块是运维私有资产，各节点刻意不同（地域/合同/成本）。
+#   任何配置同步、schema 迁移、yaml 拼接，都**不得**增删改重排其中的条目。
+#   迁移时必须把目标节点的 subscriptions: 块原样拼回。
 
 api:
-  # 18080 (not 8080) — feilian-sentry on the forwarding node already binds
-  # 127.0.0.1:8080. Pick something out of the way.
-  #
-  # 默认 127.0.0.1：API 只接受本机连接。需要远程访问时改成
-  # "0.0.0.0:18080"；节点防火墙默认允许非 10.8.0.0/16 来源访问，
-  # 并固定拒绝 Fei连终端网段。生产环境仍应配置 token。
+  # [不变] 18080。旁挂机上没有 feilian-sentry 抢 8080，但沿用 18080 省得改文档。
+  # 默认只监听本机；需要远程访问改 "0.0.0.0:18080"，并且**必须**配 token。
   listen: "127.0.0.1:18080"
-  # token: "change-me"  # uncomment to require Authorization: Bearer <token>
-  #
-  # allow_from：兼容旧配置的 nft 源 CIDR 放行项（不在 Go 层生效，进程仍按
-  # listen 绑定）。当前默认策略已经允许非 10.8.0.0/16 来源，故该列表通常
-  # 不需要填写；10.8.0.0/16 仍会被固定拒绝。
-  #
-  # token 是应用层防护；即使网络层默认放行，也建议配置 token。
-  # allow_from:
-  #   - "10.0.0.0/24"   # 跑 make deploy-* / redeploy-* 的运维网段
+  # token: "change-me"
 
 subscribe:
-  # 0 = 关闭周期刷新；只接受 POST /api/subscribe/refresh 手动触发。
-  # 默认 0 因为：
-  #   1. 阅后即焚类机场订阅二刷直接挂；
-  #   2. 节点列表本来就低频变化（手动换 URL 时再调一次接口足够）；
-  #   3. 节点健康度由 nodescorer 每 60s 探针在跑，不需要靠重拉订阅"刷新一下"。
-  # 想要原来的周期刷新行为：填一个非零 duration（如 30m）。
-  # NB: must be a duration string, not a bare 0 — this field is a
-  # time.Duration and `0` fails to unmarshal ("cannot unmarshal !!int 0").
+  # [不变] 0 = 关闭周期刷新，只接受 POST /api/subscribe/refresh 手动触发。
+  # 必须是 duration 字符串，裸 0 会 unmarshal 失败。
   refresh_interval: 0s
   refresh_on_startup: true
   http_timeout: 30s
-  # 全局默认 user_agent —— Clash UA 覆盖面广（ash 等机场对 sing-box UA 返回 HTTP 500）。
-  # 个别机场（如 yuyun）会按 UA 切换响应内容：sing-box UA → 完整原生 JSON；
-  # Clash UA → "proxies: []" 阉割版。这种就在 subscriptions[*].user_agent 单独覆盖。
   user_agent: "ClashforWindows/0.20.39"
 
-# At least one subscription. format: auto | clash | singbox | uri | sip008
-# (singbox is still a valid PARSING format — many airports return native
-# sing-box JSON, even though sing-box-as-data-plane was retired in 2026-06.)
+# [不变] 至少一个订阅。format: auto | clash | singbox | uri | sip008
 subscriptions:
   - name: "main"
     url: "https://example.com/your/subscription/url"
     format: "auto"
     enabled: true
-    # user_agent: "clash.meta/v1.19.26"   # uncomment if airport needs a specific UA
 
-# FeiLian SaaS-assigned values for this forwarding node. The deploy operator
-# must fill these in — they cannot be defaulted.
+# ─────────────────────────────────────────────────────────────
+# 旁挂角色定义 —— 本节点全部改动集中在这一块
+# ─────────────────────────────────────────────────────────────
 node:
-  client_subnet:    "10.8.11.0/24"   # CIDR of the FeiLian client pool on this node
-  tun0_gateway_ip:  "10.8.11.1"      # gateway IP on tun0; mihomo DNS binds here
-  egress_iface:     "ens18"          # public-internet egress NIC
+  # [改] 飞连客户端池 → 办公网网段。这是 PBR 引流过来、需要判定的源地址范围。
+  # 必须与防火墙上 PBR 规则的 source-address 一致。
+  client_subnet: "10.1.0.0/16"
 
-# Data-plane (mihomo) configuration.
+  # [新] 面向防火墙的网卡（收引流、送回程）。替换上游的 tun0。
+  # 防火墙上 PBR 的下一跳就指到本机这个网卡的同网段地址。
+  ingress_iface: "ens19"
+
+  # [新] 本机在引流网段上的地址。mihomo 的 DNS 服务监听在这个地址的 :53，
+  # 替代上游的 node.tun0_gateway_ip。
+  ingress_ip: "10.255.255.2"
+
+  # [不变] 出去到机场节点的网卡。mihomo 的代理出站绑定它。
+  egress_iface: "ens18"
+
+  # [新] 回程路径。判定为"不翻墙"的流量从这里交还防火墙。
+  #
+  # 已定方案 B（TPROXY 全量 + mihomo DIRECT 出站），见 PLAN.md P2 决策门。
+  # 机制：mihomo 判定为 DIRECT 的流量从其出站走本机默认路由，
+  # 而默认路由的下一跳就是防火墙 —— 流量因此原路交回，由防火墙正常转发。
+  #
+  # 回程是 FORWARD 语义，不打 fwmark，因此**不会**被 TPROXY 二次劫持。
+  # 但必须在 nft 侧确认 FORWARD 链没有挂 TPROXY（见 PLAN.md P2 验证项）。
+  return:
+    # [新] 回程下一跳 —— 指防火墙在同网段的地址。
+    # install.sh 据此安装默认路由：ip route replace default via <gateway_ip>。
+    gateway_ip: "10.255.255.1"
+    # [新] 回程出口接口。方案 B 下回程复用 ingress_iface 即可（留空 = 用 entry 口），
+    # 因为回程包由 TPROXY 后的 mihomo 发出，与入向引流是两条独立路径，
+    # 不存在防火墙 PBR 二次命中问题 —— 前提是防火墙 PBR 指定了原入接口。
+    iface: ""
+
+# ─────────────────────────────────────────────────────────────
+# 数据面（mihomo）
+# ─────────────────────────────────────────────────────────────
 data_plane:
-  config_path:    "/var/lib/leap/mihomo/config.yaml"
-  rule_sets_dir:  "/var/lib/leap/mihomo/rule-sets"
+  config_path:    "/var/lib/turnout/mihomo/config.yaml"
+  rule_sets_dir:  "/var/lib/turnout/mihomo/rule-sets"
   log_level:      "info"
 
   clash_api:
     external_controller: "127.0.0.1:9090"
     secret: ""
 
-  # TUN inbound that catches forwarded traffic via fwmark policy routing.
+  # [不变] TUN 块保留但禁用。上游同样只靠 TPROXY —— TUN 的两种 stack 都会把
+  # 客户端源 IP 塌缩成 198.18.0.0，per-terminal 就废了。
   tun:
-    enabled:        true
-    interface_name: "utun-leap"
-    address:        "172.19.0.1/30"
-    fwmark:         0x42       # leap-nft tags client packets with this
-    routing_table:  100        # ip rule fwmark X lookup TABLE → utun-leap
-    # stack: system (default) | gvisor.
-    # Neither stack preserves real client sourceIP — both TUN modes collapse
-    # all clients to 198.18.0.0. Per-terminal routing requires TPROXY
-    # (data_plane.tproxy_port), not gvisor. Stack choice only affects CPU.
-    stack: "system"
+    enabled: false
 
-  # mihomo's DNS server. enhanced-mode 为 redir-host（真实 IP），不再
-  # 全局劫持。cn_doh 处理 CN 域名（geosite-cn / nameserver-policy 命中）、
-  # 内网后缀（fake_ip_skip_suffixes），proxy_doh 处理海外域名（经 us-pool
-  # 解析，绕过 GFW 污染）。
-  dns:
-    cn_doh:
-      - "https://doh.pub/dns-query"
-      - "https://dns.alidns.com/dns-query"
-    proxy_doh:
-      - "tls://1.1.1.1:853"
-      - "https://doh.pub/dns-query"
-    bootstrap_resolver: "udp://119.29.29.29"
-
-    # 机场节点主机名的解析上游（proxy-server-nameserver）默认只用 cn_doh。
-    # 下面两项是针对「DoH 前端对活着的域名间歇返回 NXDOMAIN」的定向补丁：
-    # node_resolver_suffixes 命中的后缀，改用 node_resolver 解析。
-    #
-    # 为什么必须按后缀限定，而不是把 UDP 上游直接加进 psn 列表：
-    # mihomo 对 psn 的多个上游是**并行竞速**，取第一个非 error 的回答，而
-    # NXDOMAIN 在这条路径上**不算 error**（只有 SERVFAIL/REFUSED 才算）。
-    # 所以最快的 NXDOMAIN 会赢，加健康上游救不回来 —— 节点实测：psn =
-    # [永远 NXDOMAIN 的服务器, udp://119.29.29.29]，10 次拨号 10 次全失败。
-    # 而加上 policy 把后缀钉到 udp://119.29.29.29 后，10 次 0 失败。
-    #
-    # 另外 119.29.29.29 (0.04-0.06s) 比 doh.pub (0.164-0.291s) 快 4-5 倍，
-    # 放进同一个竞速列表会让它静默变成**所有**节点主机名的实际主解析器，
-    # 把节点解析整体挪到可被投毒的明文 UDP 上。按后缀限定就只有确实需要的
-    # provider 域名承担这个风险。
-    #
-    # 默认空 = 不下发 policy，全部走 DoH。只在确认某 provider 的 ingress
-    # 域名有 DoH-NXDOMAIN 问题时才加，并保持尽可能窄。
-    # 需要 mihomo >= v1.19.26。
-    node_resolver:
-      - "udp://119.29.29.29"
-    node_resolver_suffixes: []
-    #  - edg3.org        # ash 的 ingress，2026-08-12 实测 DoH 间歇 NXDOMAIN
-
-    # DNS preload — leap-gateway 周期性 resolve 这里列的域名，把对应真实
-    # IP 灌进 mihomo 的 DNS 缓存。员工首次访问这些域名时不再付 ~400ms
-    # 跨境 DoH 冷查询的代价。条目不要过多（20 以内）。空列表 = 关闭。
-    preload_domains:
-      - claude.ai
-      - anthropic.com
-      - openai.com
-      - chatgpt.com
-      - api.openai.com
-      - github.com
-      - cursor.sh
-      - cursor.so
-      - perplexity.ai
-    preload_interval: 5m
-
-    # 内网/私有域名后缀：写入 nameserver-policy → CN DoH，确保内网域名
-    # 走国内解析（默认 nameserver 是 proxy_doh，查不到内网记录）。
-    # 2026-07-06 起不再需要排除 fake-ip（改 redir-host 后所有域名本就
-    # 拿真实 IP），也不再需要加节点服务器域名（quandao.com 等自动真实
-    # IP）。任意写法被 normalizer 转成 "+." 前缀。
-    fake_ip_skip_suffixes: []
-
-  # Route classification (geosite-cn / geoip-cn for CN-direct, whitelist
-  # for managed overseas access).
-  route:
-    geosite_url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/cn.srs"
-    geoip_url:   "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/cn.srs"
-
-    # mode: how non-CN traffic is split.
-    #   overseas (default): every non-CN destination → us-pool. The most
-    #                       transparent option — clients don't curate.
-    #   whitelist:          only sites matching whitelist.* → us-pool;
-    #                       everything else goes direct. Saves airport
-    #                       bandwidth at the cost of curating.
-    # CN domains/IPs and private LAN ranges always go direct in both modes.
-    mode: overseas
-
-    # whitelist is consulted only when mode == whitelist. The four lists
-    # below are unioned at render time. Configure via PUT /api/whitelist —
-    # values here are just initial defaults at first boot.
-    whitelist:
-      geosites: []         # e.g. geosite-google, geosite-anthropic
-      geoips:   []         # e.g. geoip-google, geoip-telegram
-      domain_suffix: []    # e.g. anthropic.com, claude.ai
-      ip_cidr:  []         # e.g. 149.154.0.0/16
-      fake_ip_skip: []     # synced to data_plane.dns.fake_ip_skip_suffixes on PUT
-
-  # mihomo's load-balance internal probe + url-test. Distinct from
-  # node_qualify below (which is leap-gateway's own scorer).
-  #
-  # Architectural split:
-  #   • health_check_interval: FAST/binary liveness. mihomo internally
-  #     skips dead nodes per-flow on this cycle WITHOUT yaml rerender.
-  #     Default 30s. Pick this one when you want faster failover.
-  #   • node_qualify.scoring_interval (default 5m): SLOW/graded eviction.
-  #     The scorer wakes up much less often, applies stricter thresholds,
-  #     and only triggers a hot-reload for persistent degradation. Pick
-  #     this knob when you want stricter quality bars.
-  url_test:
-    interval:              3m     # legacy: kept for back-compat; superseded by health_check_interval
-    health_check_interval: 30s    # mihomo's per-flow liveness probe cycle
-    tolerance: 50
-    probe_url: "https://www.gstatic.com/generate_204"
-    # Filter us-pool by node-tag regex. Empty = every airport node a
-    # candidate. 下例只放美国节点（中文/国旗/拉丁三种命名都涵盖；\b 防误
-    # 伤 Russia 等）。0 命中时 renderer 兜底回到全集。
-    node_pattern: '美国|🇺🇸|\bUS'
-
-  # Optional ad-hoc inbounds for debugging from the node itself. Leave
-  # empty in production — TUN + DNS direct on tun0_gateway_ip is enough.
-  # socks_listen: "127.0.0.1:1080"
-  # http_listen:  "127.0.0.1:1081"
-
-  # tproxy_port: TPROXY inbound port. REQUIRED — TPROXY is the production
-  # data path; it preserves the real client sourceIP (10.8.x.x) in mihomo
-  # metadata. TUN-only mode collapses all clients to 198.18.0.0 and is no
-  # longer supported (validate + iproute.sh both refuse tproxy_port=0).
+  # [不变] 必需。TPROXY 监听端口，保留真实客户端源 IP。
+  # 方案 B 下同样需要：被选中翻墙的那部分流量仍由 TPROXY 送进 mihomo。
   tproxy_port: 7893
 
-# leap-gateway's NodeScorer: dynamic pool management. Scores every us-pool
-# candidate every scoring_interval; nodes that fail thresholds are evicted;
-# mihomo is hot-reloaded when membership changes.
+# ─────────────────────────────────────────────────────────────
+# 分流
+# ─────────────────────────────────────────────────────────────
+route:
+  # [不变] whitelist —— 只有白名单命中才翻墙，其余一律直连（交回防火墙）。
+  # 这个语义正好满足旁挂需求：规则最后一行 MATCH,DIRECT 就是兜底回程。
+  mode: "whitelist"
+
+  whitelist:
+    # [不变] 域类白名单（geosite 标签）。命中后按 per-terminal 分配到出口。
+    geosites:
+      - "openai"
+      - "anthropic"
+      - "github"
+      - "google-gemini"
+    # [不变] 直接列域名后缀。
+    domain_suffix:
+      - "claude.ai"
+      # ... 按需补
+    # [不变] IP 类白名单 —— 硬编码 IP 的应用（Telegram MTProto 等）。
+    # 走 no-resolve，**不依赖 DNS**，因此不受 DoH/嗅探失效影响。
+    # 方案 B 下这些 CIDR 会被静态灌进 nft 集合，同样不依赖 DNS。
+    geoips: []
+    ip_cidr: []
+      # - "91.108.56.0/22"   # Telegram
+
+# ─────────────────────────────────────────────────────────────
+# DNS —— 旁挂场景下角色变了（见 README §3）
+# ─────────────────────────────────────────────────────────────
+dns:
+  # [改] 监听地址由 node.ingress_ip 决定（上游绑 tun0_gateway_ip）。
+  # 防火墙上把办公网段的 :53 引流到本机。
+  listen: ""            # 留空 = 自动用 node.ingress_ip + ":53"
+
+  # [不变] redir-host：不用 fake-ip。办公网里 NAS/打印机/监控/内网业务系统
+  # 大量靠纯 IP 或内网域名直连，fake-ip 的 filter 会变成无底洞。
+  # 上游 2026-07-06 从 fake-ip 切回 redir-host，血泪在此。
+  enhanced_mode: "redir-host"
+
+  # [不变] 国内外 DoH 上游。
+  cn_doh:    ["https://doh.pub/dns-query"]
+  proxy_doh: ["tls://1.1.1.1:853"]
+  bootstrap_resolver: "udp://119.29.29.29"
+
+  # [改] 飞连内网后缀 → 办公网内网后缀。这些域走 CN DoH 解析，避免
+  # 默认的 proxyDoH（海外）拿不到内网记录。
+  #
+  # 注意：字段名沿用了上游的 fake_ip_skip_suffixes，但**语义与 fake-ip 无关** ——
+  # redir-host 模式下没有 fake-ip 可跳过（见上方 enhanced_mode 注释）。
+  # 它当前的唯一作用是喂给 nameserver-policy，让这些内网后缀走 CN DoH。
+  # 上游保留了历史命名，本项目同样保留以避免无谓的 schema 变动。
+  fake_ip_skip_suffixes:
+    - "corp.example.com"
+    - "internal.example.com"
+
+# ─────────────────────────────────────────────────────────────
+# 出口池 —— [不变] 完全沿用上游
+# ─────────────────────────────────────────────────────────────
 node_qualify:
-  enabled:           true
-  # 5min: this is the SLOW/graded decision cycle. Liveness (alive/dead) is
-  # mihomo's job at health_check_interval=30s above; the scorer here only
-  # wakes up to evaluate persistent quality bars. Bumped from the original
-  # 60s — at 60s every probe-noise round was triggering a pool-membership
-  # change and a clash-api PUT /configs reload, ~108 reloads / 10h.
-  scoring_interval:  5m
-  max_rtt_p50_ms:    500
-  max_rtt_p95_ms:    800
-  max_jitter_ms:     300
-  max_fail_rate:     0.25
-  min_probes:        2
-  # evict_strikes: 不生效 —— 没有任何代码路径用它决定出池，唯一的读取处是启动
-  # 日志。原意是"连续 N 轮失败才剔除"，但 eligibility 模式下 strikes 只累加不比较，
-  # legacy 模式下按排名即时剔除。实际出池 = 1 轮 Qualified=false。保留仅为兼容旧
-  # 配置能解析，不要依赖它做容量规划。
-  evict_strikes:     2
-  readmit_strikes:   1
-  # hot_reload_min_interval: 节流多久内不允许再触发 mihomo PUT /configs。
-  # 0 = 不节流（每次 pool 变化都立即热加载，会打断 LoadBalance 长流如 ChatGPT
-  # SSE）。默认 90s 在两次 scoring 周期里只允许一次 reload，足够吸收探针噪声。
-  hot_reload_min_interval: 90s
+  # 只收美国节点，配合机场订阅。
+  node_pattern: "美国|🇺🇸|\\bUS"
 
-  # Site-specific reachability probes. Each probe runs from each candidate
-  # node every `interval`. Results gate membership in named pools (see
-  # `pools` below) — they do NOT affect base us-pool qualification.
-  #
-  # IMPORTANT — pick probe targets that reflect the node's IP REPUTATION,
-  # not ones that JS-challenge a headless client. chatgpt.com/ (the root
-  # HTML) returns 403 + cf-mitigated:challenge to ANY non-browser, so it
-  # marks every node "bad" and tells you nothing. Use API/edge endpoints
-  # that answer cleanly:
-  #   - api.openai.com/v1/models → 401 (reached OpenAI API plane,
-  #     unauthenticated). A hard-blocked IP gets a CF challenge instead,
-  #     so 401 = the node's egress IP is accepted by OpenAI. max_status:401.
-  #   - api.anthropic.com/v1/models → 401 likewise.
-  #
-  # A `cf-mitigated: challenge` response is ALWAYS scored as a failure, on
-  # every probe, and there is no knob to turn that off — a challenge means
-  # the request never reached the origin, so it cannot count as reachable.
-  # That is what catches the case where even the API path is challenged
-  # (genuinely blocklisted egress IP). There WAS a reject_cf_challenge
-  # field until 2026-08-12; it never did anything (the check was always
-  # unconditional) and has been removed. Leftover reject_cf_challenge lines
-  # in an existing gateway.yaml are harmless — unknown keys are ignored.
-  #
-  # Default 5min interval × N nodes × M probes airport traffic; see the
-  # capacity note. ~0.4-1.6% of a 70-100GB/sub monthly quota at 5min.
-  probes:
-    - name: openai-api
-      url:  https://api.openai.com/v1/models
-      interval: 5m
-      timeout:  10s
-      check:
-        max_status: 401          # 401 = reached API, IP accepted
-    - name: anthropic-api
-      url:  https://api.anthropic.com/v1/models
-      interval: 5m
-      timeout:  10s
-      check:
-        max_status: 401
-    - name: accounts.google.com
-      url:  https://accounts.google.com/
-      interval: 5m
-      timeout:  10s
-      check:
-        max_status: 399
-    - name: github
-      url:  https://github.com/favicon.ico
-      interval: 5m
-      timeout:  10s
-      check:
-        max_status: 399
+pools:
+  # [不变] us-pool 等定义、成员、rule_sets 归属，与上游一致。
+  # 详见上游 docs/design-eligibility-set-selection.md。
+  []
 
-# Named select groups rendered alongside the default us-pool. Each pool is
-# gated by `requires_passing` — every member must currently pass all listed
-# probes. The `rule_sets` listed here route through this pool instead of
-# the default `out` selector.
-#
-# Use this to segregate sites with special needs (anti-bot IP rep, session
-# continuity) onto a curated subset of nodes. Empty = use the default
-# us-pool for everything (the previous behavior).
-pools: []
-  # Example — first openai-pool deployment (1.1):
-  # - name: openai-pool
-  #   requires_passing: [openai-api, anthropic-api]
-  #   rule_sets:
-  #     - geosite-openai
-  #     - geosite-anthropic
+per_terminal:
+  # [不变] 一个终端一个出口 IP，避免 Cloudflare / OpenAI 风控。
+  enabled: true
 
-# Static single-node capacity ceiling from scripts/stress.sh. These are
-# operator-supplied measurements, not runtime-measured — re-run the stress
-# test and update after any binary / mihomo version change (bump
-# measured_with). Surfaced in GET /api/status.capacity so the control plane
-# can compare live user count against the ceiling. Omit the block entirely
-# until you've actually stress-tested.
+# ─────────────────────────────────────────────────────────────
+# 自检与降级 —— [新] 本项目的核心增量
+# ─────────────────────────────────────────────────────────────
+watchdog:
+  enabled: true
+
+  # 自检周期。太短会抖动，太长会延长黑洞窗口。10s 是默认起点。
+  interval: "10s"
+
+  # 连续失败多少次才判定为不健康（避免单次抖动就摘地址）。
+  fail_threshold: 3
+  # 连续成功多少次才恢复（与华为 IP-Link 的 revertive 语义对齐）。
+  recover_threshold: 3
+
+  checks:
+    # mihomo 进程存活 + clash-api /version 可达。
+    engine_alive: true
+    # 数据面规则在位。
+    # ⚠️ 不重复实现 —— 直接消费 internal/dataplane/assert.go 的现有状态。
+    # assert.go 每 30s 断言规则并做定点自修复，watchdog 只读它的结论。
+    # 两者分工见 CHANGES-FROM-UPSTREAM.md §六。
+    dataplane_rules: true
+    # 出口池里至少 N 个节点健康（复用 NodeScorer 状态）。
+    pool_healthy_min: 1
+    # 端到端探测：经代理实际取一个 URL。
+    # 这是唯一能证明"整条链路真的通"的检查，但会产生真实流量。
+    egress_probe: false
+    egress_probe_url: "http://cp.cloudflare.com/generate_204"
+    egress_probe_timeout: "5s"
+
+  # ───────────────────────────────────────────────────────────
+  # 探活地址 —— 防火墙上 IP-Link 的探测目标
+  # ───────────────────────────────────────────────────────────
+  #
+  # ⚠️ 部署时必填，无默认值。install.sh 的 precheck 会拒绝空值。
+  #
+  # 为什么强制显式配置：这是本机与防火墙之间唯一的健康信号通道，
+  # 配错（漏填/填成 ingress_ip/填成别的机器在用的地址）会导致
+  # "watchdog 摘了地址但防火墙没感知"或"摘掉地址把 SSH 一起干掉了"，
+  # 两种都是静默故障。宁可让部署脚本报错。
+  #
+  # 必须满足：
+  #   1. **独立于 node.ingress_ip** —— 摘掉 ingress_ip 会让 SSH 和 API 一起失联
+  #   2. 与防火墙 IP-Link 的 destination 完全一致
+  #   3. 不与网段内任何真实设备冲突
+  # 建议做法：在 ingress 网段里挑一个空闲地址，绑在 lo 上。
+  liveness_ip: ""          # 必填，例如 "10.255.255.3"
+  liveness_iface: "lo"     # 默认绑 lo；若防火墙用 arp 模式探测则需绑物理口
+
+  # ───────────────────────────────────────────────────────────
+  # 降级动作 —— 决定 watchdog 是只报信，还是真的去摘地址
+  # ───────────────────────────────────────────────────────────
+  #
+  # ⚠️ 建议上线初期保持 false，只告警不动作，观察一到两周真实故障率。
+  #
+  # 试用期用户少，手动切回足够。自动摘地址在"数据面半死"时会给出
+  # 假的安全感（探针说健康、实际黑洞），反而不如没有。
+  # 确认故障模式可预期后再置 true。
+  #
+  # false 时：判定不健康 → 仅推飞书告警，探活地址保持应答
+  # true  时：判定不健康 → 摘掉探活地址 → 防火墙 IP-Link Down → PBR 失效 → 回落直连
+  auto_failover: false
+
+  # [改] 告警沿用上游飞书通路。
+  notify_on_state_change: true
+
+# ─────────────────────────────────────────────────────────────
+# 容量基线 —— [不变]
+# ─────────────────────────────────────────────────────────────
 capacity:
-  # Reference numbers measured on 89 + 92 (both 4 subs / ~22 US nodes) 2026-06-07
-  # against commit 941d55f (mihomo + TPROXY + per_terminal). Re-run
-  # scripts/stress.sh on YOUR node and overwrite — these are a starting
-  # anchor, not a universal truth. Finding: mihomo CPU stayed <36% even at
-  # tier 150 with ~0% errors on both nodes; the ceiling is cross-border
-  # airport throughput (p95 climbs), not the local data plane. Workers are
-  # ~5-10x a real bursty employee, so the real sustained user count is well
-  # above these conservative floors.
-  sustained_max_users: 50    # p95 ~2s    (tier 50, continuous-load workers)
-  degraded_max_users:  150   # p95 ~5s    (tier 150, ~0 errors)
-  measured_at:   "2026-06-07"
-  measured_with: "stress.sh on 89+92 / mihomo v1.19.26 / 941d55f / TPROXY+per_terminal; upstream-bandwidth-bound"
-
-# Load-balance behavior for overseas (us-pool-bound) traffic.
-load_balance:
-  # per_terminal: pin each client terminal's whitelisted traffic to ONE
-  # egress node ("one terminal, one egress"). Fixes the multi-node drift
-  # within a single logical session (e.g. ChatGPT spread across
-  # chatgpt.com / chat.openai.com / ws.chatgpt.com → 3 IPs) that trips
-  # OpenAI/Cloudflare anomaly detection.
-  #
-  # REQUIRES data_plane.tproxy_port to be set. TPROXY preserves the real
-  # client sourceIP (10.8.x.x). With TUN mode (tproxy_port=0 or unset) all
-  # clients look like 198.18.0.0 regardless of tun.stack — per_terminal is a
-  # no-op and degenerate (everyone collapses to one node).
-  #
-  # Mechanism: node.client_subnet is sliced per-/32 into SRC-IP-CIDR rules
-  # under a `perterm` sub-rule, each terminal HRW-assigned to a us-pool
-  # member. Domain whitelist hits route through perterm; IP whitelist
-  # (geoip / ip_cidr, no-resolve) stays on the load-balance pool.
-  #
-  # false (default) = per-destination consistent-hashing (original).
-  per_terminal: false
+  stable_users: 50
+  degraded_users: 150

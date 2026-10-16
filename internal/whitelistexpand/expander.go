@@ -32,15 +32,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/leaphttp"
+	"github.com/turnout-gateway/turnout-gateway/internal/turnouthttp"
 )
 
 const (
-	defaultCachePath = "/var/lib/leap/whitelist-resolved.json"
+	defaultCachePath = "/var/lib/turnout/whitelist-resolved.json"
 	// legacyCachePath is the pre-rename location. Loaded as a fallback so the
 	// first start after upgrade doesn't serve empty until the warm refresh
 	// finishes.
-	legacyCachePath = "/var/lib/leap/whitelist-domains.json"
+	legacyCachePath = "/var/lib/turnout/whitelist-domains.json"
 	httpTimeout     = 12 * time.Second
 )
 
@@ -76,7 +76,7 @@ type Snapshot struct {
 // Expander owns the cache + the build worker.
 type Expander struct {
 	cachePath   string
-	proxyURL    string // empty = direct dial; set via WithProxy. See package leaphttp for why this exists.
+	proxyURL    string // empty = direct dial; set via WithProxy. See package turnouthttp for why this exists.
 	client      *http.Client
 	sources     []string
 	ruleSetsDir string // "" disables geoip expansion (sing-box-mode lookup path)
@@ -86,7 +86,7 @@ type Expander struct {
 	// /sing/ branch and stored here. Required under engine=mihomo, where
 	// the active rule-sets dir holds .mrs files that sing-box CLI can't
 	// decompile. srsHTTPClient routes the fetch through the local proxy
-	// engine's HTTP inbound (via leaphttp's proxy-or-direct fallback) so
+	// engine's HTTP inbound (via turnouthttp's proxy-or-direct fallback) so
 	// the upstream connect egresses through the pool, not direct into the GFW.
 	srsCacheDir   string
 	srsHTTPClient *http.Client
@@ -104,16 +104,16 @@ func New(cachePath string) *Expander {
 	return &Expander{
 		cachePath: cachePath,
 		// Default to direct-dial. Production callers MUST follow up with
-		// WithProxy(LeapInternalProxyURL) — otherwise this client dials
+		// WithProxy(TurnoutInternalProxyURL) — otherwise this client dials
 		// overseas hosts directly through the host's resolver, which sees
-		// mihomo's fake IPs and times out. See package leaphttp.
-		client:  leaphttp.NewClient("", httpTimeout, "whitelistexpand-domain"),
+		// mihomo's fake IPs and times out. See package turnouthttp.
+		client:  turnouthttp.NewClient("", httpTimeout, "whitelistexpand-domain"),
 		sources: defaultSources,
 	}
 }
 
-// WithProxy wires the leap-internal HTTP proxy URL (typically
-// http://127.0.0.1:11080 = singbox.LeapInternalProxyURL) for ALL outbound
+// WithProxy wires the turnout-internal HTTP proxy URL (typically
+// http://127.0.0.1:11080 = singbox.TurnoutInternalProxyURL) for ALL outbound
 // HTTP from this expander — the v2fly domain fetcher AND the on-demand
 // .srs cache fetcher.
 //
@@ -129,9 +129,9 @@ func New(cachePath string) *Expander {
 // Idempotent: safe to call multiple times; takes effect from next fetch.
 func (e *Expander) WithProxy(proxyURL string) *Expander {
 	e.proxyURL = proxyURL
-	e.client = leaphttp.NewClient(proxyURL, httpTimeout, "whitelistexpand-domain")
+	e.client = turnouthttp.NewClient(proxyURL, httpTimeout, "whitelistexpand-domain")
 	if e.srsCacheDir != "" {
-		e.srsHTTPClient = leaphttp.NewClient(proxyURL, httpTimeout, "whitelistexpand-srs")
+		e.srsHTTPClient = turnouthttp.NewClient(proxyURL, httpTimeout, "whitelistexpand-srs")
 	}
 	return e
 }
@@ -156,7 +156,7 @@ func (e *Expander) WithRuleSets(dir, singboxBin string) *Expander {
 // against the GFW; deliberate caller responsibility, not silently swallowed.
 func (e *Expander) WithMihomoSrsCache(cacheDir string) *Expander {
 	e.srsCacheDir = cacheDir
-	e.srsHTTPClient = leaphttp.NewClient(e.proxyURL, httpTimeout, "whitelistexpand-srs")
+	e.srsHTTPClient = turnouthttp.NewClient(e.proxyURL, httpTimeout, "whitelistexpand-srs")
 	return e
 }
 
@@ -413,15 +413,15 @@ func (e *Expander) decompileGeoip(tag string) ([]string, error) {
 			return nil, err
 		}
 	}
-	// Use the cache dir's parent for scratch, NOT $TMPDIR — leap-gateway's
+	// Use the cache dir's parent for scratch, NOT $TMPDIR — turnout-gateway's
 	// systemd unit sets ProtectSystem=strict with ReadWritePaths limited to
-	// /var/lib/leap and /etc/leap, so /tmp is read-only. cachePath defaults
-	// to /var/lib/leap/whitelist-resolved.json so its parent is writable.
+	// /var/lib/turnout and /etc/turnout, so /tmp is read-only. cachePath defaults
+	// to /var/lib/turnout/whitelist-resolved.json so its parent is writable.
 	tmpParent := filepath.Dir(e.cachePath)
 	if err := os.MkdirAll(tmpParent, 0o755); err != nil {
 		return nil, err
 	}
-	tmpDir, err := os.MkdirTemp(tmpParent, "leap-srs-")
+	tmpDir, err := os.MkdirTemp(tmpParent, "turnout-srs-")
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +491,7 @@ func (e *Expander) fetchSrsOnce(c *http.Client, srsURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "leap-gateway/whitelistexpand")
+	req.Header.Set("User-Agent", "turnout-gateway/whitelistexpand")
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err

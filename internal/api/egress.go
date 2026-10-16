@@ -214,7 +214,7 @@ func getThrough(ctx context.Context, client *http.Client, target string) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "leap-gateway-egressprobe/0.1")
+	req.Header.Set("User-Agent", "turnout-gateway-egressprobe/0.1")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("get %s: %w", target, err)

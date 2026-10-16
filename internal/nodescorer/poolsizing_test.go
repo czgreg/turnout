@@ -3,7 +3,7 @@ package nodescorer
 import (
 	"testing"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // TestComputeK exercises the K formula across the boundary cases that

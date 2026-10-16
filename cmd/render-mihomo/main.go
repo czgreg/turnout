@@ -4,8 +4,8 @@
 //
 // Usage:
 //
-//	render-mihomo --config /etc/leap/gateway.yaml > mihomo.yaml
-//	render-mihomo --config /etc/leap/gateway.yaml --out /tmp/mihomo.yaml
+//	render-mihomo --config /etc/turnout/gateway.yaml > mihomo.yaml
+//	render-mihomo --config /etc/turnout/gateway.yaml --out /tmp/mihomo.yaml
 //
 // The rendered config does NOT replace anything — caller decides where to
 // drop it. Subscriptions are fetched directly from upstream URLs (no
@@ -20,14 +20,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/mihomo"
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/mihomo"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 func main() {
 	var (
-		configPath = flag.String("config", "/etc/leap/gateway.yaml", "path to gateway.yaml")
+		configPath = flag.String("config", "/etc/turnout/gateway.yaml", "path to gateway.yaml")
 		outPath    = flag.String("out", "", "write rendered yaml here (default: stdout)")
 		timeout    = flag.Duration("timeout", 60*time.Second, "subscription fetch + render budget")
 	)

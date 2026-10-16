@@ -1,7 +1,7 @@
 package config
 
 // The shipped example config must actually load. It is the template
-// operators copy to /etc/leap/gateway.yaml, and it is the only executable
+// operators copy to /etc/turnout/gateway.yaml, and it is the only executable
 // documentation for the schema — a field renamed in Go without updating it
 // leaves the example silently wrong.
 //

@@ -20,12 +20,12 @@
 //
 //   Nothing noticed for 103 minutes. /healthz was a hardcoded
 //   {"ok": true}, and engine_ok only pinged mihomo's clash API, which
-//   traverses no part of the TPROXY path. leap-nft.service is
+//   traverses no part of the TPROXY path. turnout-nft.service is
 //   Type=oneshot + RemainAfterExit=yes, so its ExecStart can never re-run
 //   on its own — it is structurally unable to notice or repair the loss.
 //
 // The root cause is fixed on the node by
-// /etc/systemd/networkd.conf.d/10-keep-leap-rules.conf
+// /etc/systemd/networkd.conf.d/10-keep-turnout-rules.conf
 // (ManageForeignRoutingPolicyRules=no). This file is the defence in depth:
 // it re-asserts every 30s, so any future remover — a networkd restart on a
 // node missing that conf, a BindsTo=feilian-tun@tun0 stop propagating
@@ -57,12 +57,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // TPROXY constants — must match deploy/node/iproute.sh. Divergence here
 // means the asserter would "repair" objects into a shape iproute.sh then
-// overwrites on the next leap-nft start, so keep them in lockstep.
+// overwrites on the next turnout-nft start, so keep them in lockstep.
 const (
 	tproxyMark  = "0x44"
 	tproxyTable = "101"
@@ -334,11 +334,11 @@ func (a *Asserter) checkPreroutingJump(ctx context.Context) CheckResult {
 	res.Detail = fmt.Sprintf("PREROUTING jump for -i %s -s %s MISSING", a.tun0Iface, a.clientSubnet)
 	// Repair only the jump. If the LEAP_TPROXY chain itself is gone this
 	// add fails, and that is the correct outcome: rebuilding the chain is
-	// leap-nft's job (iproute.sh up) and doing it here would flush live
+	// turnout-nft's job (iproute.sh up) and doing it here would flush live
 	// state on a 30s timer.
 	if rout, rerr := a.runner(ctx, "iptables", "-t", "mangle", "-A", "PREROUTING",
 		"-i", a.tun0Iface, "-s", a.clientSubnet, "-j", "LEAP_TPROXY"); rerr != nil {
-		res.Detail += fmt.Sprintf("; repair failed (chain may be gone — run `systemctl restart leap-nft`): %v: %s",
+		res.Detail += fmt.Sprintf("; repair failed (chain may be gone — run `systemctl restart turnout-nft`): %v: %s",
 			rerr, strings.TrimSpace(rout))
 	} else {
 		res.Repaired = true

@@ -289,15 +289,15 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
                   { label: '系统', value: ac.node?.os || '—' },
                   { label: '内核', value: <span className="mono">{ac.node?.kernel || '—'}</span> },
                   { label: '运行时长', value: fmtUptime(ac.node?.uptime_seconds) },
-                  { label: '控制面版本', value: <span className="mono">{ac.leap?.gateway_version || '—'}</span> },
-                  { label: '数据面', value: `${ac.leap?.engine || '—'} ${ac.leap?.engine_version || ''}` },
+                  { label: '控制面版本', value: <span className="mono">{ac.turnout?.gateway_version || '—'}</span> },
+                  { label: '数据面', value: `${ac.turnout?.engine || '—'} ${ac.turnout?.engine_version || ''}` },
                   { label: '客户端网段', value: <span className="mono">{ac.node?.client_subnet || '—'}</span> },
                   { label: '出口网卡', value: <span className="mono">{ac.node?.egress_iface || '—'}</span> },
                   {
                     label: '飞连 tun0',
                     value: <Badge status={ac.feilian?.tun0_active ? 'success' : 'error'} text={ac.feilian?.tun0_active ? 'active' : 'inactive'} />,
                   },
-                  ...Object.entries(ac.leap?.services || {}).map(([name, state]) => ({
+                  ...Object.entries(ac.turnout?.services || {}).map(([name, state]) => ({
                     label: name,
                     value: <Badge status={state === 'active' ? 'success' : 'error'} text={state} />,
                   })),

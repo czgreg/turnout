@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 // TestWrite_ConcurrentWritersPublishCompleteRenders covers the scorer

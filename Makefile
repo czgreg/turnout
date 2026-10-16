@@ -1,4 +1,4 @@
-# Makefile — leap-gateway dev / deploy targets.
+# Makefile — turnout-gateway dev / deploy targets.
 #
 # Quick reference:
 #   make help              # list targets
@@ -12,7 +12,7 @@
 #   make status            # /api/status
 #   make health            # /api/proxies/active
 #   make nodes             # /api/nodes/health
-#   make logs              # tail leap-gateway 日志
+#   make logs              # tail turnout-gateway 日志
 #   make ssh               # ssh 进节点
 #
 # 首次使用：
@@ -53,15 +53,15 @@ help:  ## 列出所有 target
 
 .PHONY: build
 build:  ## 本地构建 (macOS dev)
-	go build -o build/leap-gateway ./cmd/gateway
+	go build -o build/turnout-gateway ./cmd/gateway
 
 .PHONY: build-linux
 build-linux:  ## 交叉编译 linux/amd64（部署用）
 	@mkdir -p build
 	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=0 go build \
 	  -ldflags='$(LDFLAGS)' \
-	  -o build/leap-gateway-linux-amd64 ./cmd/gateway
-	@echo "  built build/leap-gateway-linux-amd64  version=$(VERSION)"
+	  -o build/turnout-gateway-linux-amd64 ./cmd/gateway
+	@echo "  built build/turnout-gateway-linux-amd64  version=$(VERSION)"
 
 .PHONY: ui
 ui:  ## 构建 Web 控制台：web/ → internal/api/ui/（需 Node 20.19+；产物要一起提交）
@@ -77,7 +77,7 @@ test:  ## go vet + go test ./...
 	go test ./...
 
 .PHONY: stage
-stage:  ## 打全量部署 tarball (build/leap-stage.tgz)
+stage:  ## 打全量部署 tarball (build/turnout-stage.tgz)
 	./scripts/stage.sh
 
 # ---------------------------------------------------------------------------
@@ -96,9 +96,9 @@ deploy-92: build-linux  ## deploy to production 92
 deploy-yaml:  ## 仅推 gateway.yaml + 重启  GATEWAY_YAML=./path/to/yaml
 	@test -f $(GATEWAY_YAML) || (echo "GATEWAY_YAML not found: $(GATEWAY_YAML)" && exit 1)
 	$(SCP) $(GATEWAY_YAML) $(NODE):/tmp/gateway.yaml.new
-	$(SSH) 'sudo install -m0640 /tmp/gateway.yaml.new /etc/leap/gateway.yaml && \
-	  sudo systemctl restart leap-gateway && rm -f /tmp/gateway.yaml.new && \
-	  sleep 1 && sudo journalctl -u leap-gateway -n 5 --no-pager'
+	$(SSH) 'sudo install -m0640 /tmp/gateway.yaml.new /etc/turnout/gateway.yaml && \
+	  sudo systemctl restart turnout-gateway && rm -f /tmp/gateway.yaml.new && \
+	  sleep 1 && sudo journalctl -u turnout-gateway -n 5 --no-pager'
 
 .PHONY: redeploy-full
 redeploy-full:  ## ★ 安全全量重装：先拉节点 yaml，再 stage+install+verify  NODE=ops@<ip>
@@ -110,9 +110,9 @@ redeploy-92:  ## redeploy-full 到 92（pulls 92's yaml first）
 
 .PHONY: deploy-full-LOCAL-YAML
 deploy-full-LOCAL-YAML: stage  ## ⚠️ 全量重装，使用本地 ./gateway.yaml（容易踩雷；优先用 redeploy-full）
-	$(SCP) build/leap-stage.tgz $(NODE):/tmp/
-	$(SSH) 'cd /tmp && rm -rf leap-stage && tar --no-same-owner -xzf leap-stage.tgz && \
-	  sudo bash leap-stage/install.sh'
+	$(SCP) build/turnout-stage.tgz $(NODE):/tmp/
+	$(SSH) 'cd /tmp && rm -rf turnout-stage && tar --no-same-owner -xzf turnout-stage.tgz && \
+	  sudo bash turnout-stage/install.sh'
 
 # ---------------------------------------------------------------------------
 # Observe
@@ -131,20 +131,20 @@ nodes:  ## GET /api/nodes/health (probe + passive stats)
 	@curl -s --max-time 5 $(LEAP_AUTH) $(LEAP_API)/api/nodes/health | python3 -m json.tool
 
 .PHONY: logs
-logs:  ## tail leap-gateway 日志
-	$(SSH) 'sudo journalctl -fu leap-gateway --no-pager'
+logs:  ## tail turnout-gateway 日志
+	$(SSH) 'sudo journalctl -fu turnout-gateway --no-pager'
 
 .PHONY: mihomo-logs
-mihomo-logs:  ## tail leap-mihomo 日志
-	$(SSH) 'sudo journalctl -fu leap-mihomo --no-pager'
+mihomo-logs:  ## tail turnout-mihomo 日志
+	$(SSH) 'sudo journalctl -fu turnout-mihomo --no-pager'
 
 .PHONY: ssh
 ssh:  ## 直接 ssh 进节点  NODE=ops@<ip>
 	@ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 $(NODE)
 
 .PHONY: nft
-nft:  ## 查看 leap nft table
-	$(SSH) 'sudo nft list table inet leap'
+nft:  ## 查看 turnout nft table
+	$(SSH) 'sudo nft list table inet turnout'
 
 # ---------------------------------------------------------------------------
 # One-time bootstrap (run once per node before anything else)

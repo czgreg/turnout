@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/dataplane"
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/dataplane"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 // blockingRenderer is a Renderer whose Write parks until release is closed,
@@ -31,7 +31,7 @@ func newBlockingRenderer() *blockingRenderer {
 	}
 }
 
-func (b *blockingRenderer) Path() string { return "/tmp/leap-test-config.yaml" }
+func (b *blockingRenderer) Path() string { return "/tmp/turnout-test-config.yaml" }
 
 func (b *blockingRenderer) Write(_ []subscribe.Outbound) ([]byte, error) {
 	b.writes.Add(1)

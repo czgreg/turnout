@@ -15,11 +15,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 // outboundToProxy converts a single sing-box outbound (the internal Outbound
-// shape used everywhere in leap-gateway) to a mihomo Clash proxy entry.
+// shape used everywhere in turnout-gateway) to a mihomo Clash proxy entry.
 // Returns nil if the type is not a node-bearing outbound (selector, urltest,
 // direct, block, dns, etc. — these don't translate, mihomo synthesizes its
 // own infrastructure outbounds from proxy-groups).

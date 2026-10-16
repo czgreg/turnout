@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 // emergencyCfg builds a manual-mode config for the tests.

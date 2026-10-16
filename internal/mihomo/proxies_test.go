@@ -3,7 +3,7 @@ package mihomo
 import (
 	"testing"
 
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 func TestNormalizeWSHeaders(t *testing.T) {

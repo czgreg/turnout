@@ -8,7 +8,7 @@ import (
 
 // uiFS holds the control-plane web UI. Embedded into the binary so the
 // deployment story stays "ship one file" — install.sh copies a single
-// leap-gateway binary and there is no separate asset directory to keep in
+// turnout-gateway binary and there is no separate asset directory to keep in
 // sync with it.
 //
 // internal/api/ui/ is BUILD OUTPUT, committed on purpose: the source is the

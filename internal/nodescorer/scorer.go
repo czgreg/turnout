@@ -27,8 +27,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 // NodeHealth holds the latest scored state of one proxy node.
@@ -226,7 +226,7 @@ type Scorer struct {
 	probeOKHistory map[string]map[string][]bool
 
 	httpc      *http.Client // clash-api client
-	probeHTTPc *http.Client // dials through the leap-probe listener
+	probeHTTPc *http.Client // dials through the turnout-probe listener
 
 	// throughput tracking: previous /connections snapshot, keyed by
 	// CONNECTION ID (not node). Keyed by node until 2026-08-12, which made
@@ -365,7 +365,7 @@ func New(
 	r Renderer,
 	allOutbounds func() []subscribe.Outbound,
 ) *Scorer {
-	// probeHTTPc dials through the leap-probe listener (127.0.0.1:probePort)
+	// probeHTTPc dials through the turnout-probe listener (127.0.0.1:probePort)
 	// so each request egresses via whatever node probe-out currently points
 	// at. Short timeout — a probe that hangs is itself a failure signal.
 	probeProxy, _ := url.Parse("http://127.0.0.1:11081")
@@ -399,7 +399,7 @@ func New(
 }
 
 // probesEnabled reports whether any configured pool gates on probes (i.e.
-// the renderer emitted probe-out + the leap-probe listener, so the probe
+// the renderer emitted probe-out + the turnout-probe listener, so the probe
 // loop has something to drive).
 func (s *Scorer) probesEnabled() bool {
 	if len(s.cfg.Probes) == 0 {

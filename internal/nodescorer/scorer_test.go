@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 func buildProxyEntry(alive bool, probeURL string, delays []int) map[string]interface{} {

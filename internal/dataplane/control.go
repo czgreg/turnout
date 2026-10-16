@@ -21,27 +21,27 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
-// Loopback HTTP-proxy ports the renderer always emits for leap-gateway's
+// Loopback HTTP-proxy ports the renderer always emits for turnout-gateway's
 // own outbound use:
 //
-//   - LeapInternalProxyPort: rulesets.Manager / whitelistexpand / etc. dial
+//   - TurnoutInternalProxyPort: rulesets.Manager / whitelistexpand / etc. dial
 //     through this so .srs / domain-list fetches transit the airport
 //     (raw.githubusercontent and friends are GFW-blocked from inside CN).
 //     Behind mihomo's "out" selector → us-pool by default.
 //
-// LeapInternalProxyURL is the http:// URL form, ready to pass to
-// http.Transport.Proxy or to leaphttp.NewClient.
+// TurnoutInternalProxyURL is the http:// URL form, ready to pass to
+// http.Transport.Proxy or to turnouthttp.NewClient.
 const (
-	LeapInternalProxyPort = 11080
-	LeapInternalProxyURL  = "http://127.0.0.1:11080"
+	TurnoutInternalProxyPort = 11080
+	TurnoutInternalProxyURL  = "http://127.0.0.1:11080"
 )
 
 // Controller manages the proxy data-plane process (mihomo). Reload
 // hot-reloads via clash-api PUT /configs?force=true (in-process — no
-// process restart, so the listeners stay bound and leap-gateway's own API
+// process restart, so the listeners stay bound and turnout-gateway's own API
 // client / in-flight ssh sessions survive).
 //
 // It does NOT preserve users' established proxied connections. This
@@ -61,13 +61,13 @@ const (
 //
 // Falls back to `systemctl restart` only when clash-api is unreachable —
 // that path additionally drops the listeners, and on at least one node
-// (89, 2026-06-07) leaked out to the host SSH session via leap-nft's
-// PartOf=leap-mihomo restart chain re-running iproute.sh.
+// (89, 2026-06-07) leaked out to the host SSH session via turnout-nft's
+// PartOf=turnout-mihomo restart chain re-running iproute.sh.
 type Controller struct {
 	api    config.ClashAPIConfig
 	client *http.Client
 	// SystemdUnit is the systemd service name to restart on Reload.
-	// Defaults to "leap-mihomo.service".
+	// Defaults to "turnout-mihomo.service".
 	SystemdUnit string
 }
 
@@ -75,7 +75,7 @@ func NewController(api config.ClashAPIConfig) *Controller {
 	return &Controller{
 		api:         api,
 		client:      &http.Client{Timeout: 10 * time.Second},
-		SystemdUnit: "leap-mihomo.service",
+		SystemdUnit: "turnout-mihomo.service",
 	}
 }
 
@@ -99,9 +99,9 @@ func (c *Controller) Reload(ctx context.Context, configPath string) error {
 	// on an already-cancelled ctx fails before systemctl is even spawned, and
 	// the engine silently stays on its previous config while the new one sits
 	// on disk. Verified 2026-09-24: two "falling back to systemctl restart"
-	// warnings, leap-mihomo NRestarts=0 and 23 days of uptime.
+	// warnings, turnout-mihomo NRestarts=0 and 23 days of uptime.
 	//
-	// No timeout wrapper either: systemd self-bounds this. leap-mihomo has
+	// No timeout wrapper either: systemd self-bounds this. turnout-mihomo has
 	// TimeoutStartUSec=1min30s plus an ExecStartPre config check, so a
 	// legitimate restart can exceed any short cap we would pick here.
 	cmd := exec.Command("systemctl", "restart", c.SystemdUnit)

@@ -16,7 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 func (s *Server) handleNotificationsStatus(w http.ResponseWriter, _ *http.Request) {
@@ -64,7 +64,7 @@ func (s *Server) handleNotificationsLark(w http.ResponseWriter, r *http.Request)
 	// Persist to disk: secret file (chmod 0600), then yaml (URL only).
 	secretPath := s.deps.Cfg.Notifications.Lark.SecretFile
 	if secretPath == "" {
-		secretPath = "/var/lib/leap/lark-secret"
+		secretPath = "/var/lib/turnout/lark-secret"
 	}
 	if err := writeLarkSecret(secretPath, dto.Secret); err != nil {
 		http.Error(w, "persist secret: "+err.Error(), http.StatusInternalServerError)
@@ -91,7 +91,7 @@ func (s *Server) handleNotificationsLarkDelete(w http.ResponseWriter, _ *http.Re
 	}
 	secretPath := s.deps.Cfg.Notifications.Lark.SecretFile
 	if secretPath == "" {
-		secretPath = "/var/lib/leap/lark-secret"
+		secretPath = "/var/lib/turnout/lark-secret"
 	}
 	_ = os.Remove(secretPath) // ok if already absent
 	if err := s.deps.Store.Mutate(s.deps.Cfg, func(c *config.Config) error {

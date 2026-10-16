@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 type subscriptionDTO struct {

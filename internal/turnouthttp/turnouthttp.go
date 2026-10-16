@@ -1,10 +1,10 @@
-// Package leaphttp is the canonical HTTP-client factory for any leap-gateway
+// Package turnouthttp is the canonical HTTP-client factory for any turnout-gateway
 // outbound that talks to an OVERSEAS host (anything not on 127.0.0.0/8, the
 // 10.8.x.x FeiLian client subnet, or other LAN ranges).
 //
 // # Why this package exists
 //
-// leap-gateway runs co-located with the mihomo data plane. A direct
+// turnout-gateway runs co-located with the mihomo data plane. A direct
 // `net.Dial` to an overseas host like raw.githubusercontent.com egresses
 // through the host's main interface — straight into the GFW, where the
 // connection is reset or blackholed. Result: indefinite timeout. This was
@@ -21,7 +21,7 @@
 // # The pattern
 //
 // Dial THROUGH the loopback HTTP proxy mihomo exposes
-// (LeapInternalProxyURL = http://127.0.0.1:11080). Mihomo resolves the
+// (TurnoutInternalProxyURL = http://127.0.0.1:11080). Mihomo resolves the
 // host via its own DNS and egresses through us-pool to a real overseas
 // peer, past the GFW.
 //
@@ -35,7 +35,7 @@
 //     and is strictly better than failing.
 //
 //  2. Data-plane crash. mihomo restart cycle should not freeze every
-//     leap-gateway outbound; a direct fallback at least lets refresh
+//     turnout-gateway outbound; a direct fallback at least lets refresh
 //     attempts run while the operator investigates.
 //
 // # The rule
@@ -43,7 +43,7 @@
 // Anything in this codebase that does `&http.Client{}` for an OVERSEAS
 // host is a bug — the direct dial hits the GFW and times out. **Use
 // NewClient always.** The only allowed exception is loopback-only HTTP
-// (clash-api on 127.0.0.1:9090, leap-internal HTTP inbounds on
+// (clash-api on 127.0.0.1:9090, turnout-internal HTTP inbounds on
 // 127.0.0.1:1108x): local, no need to egress through the pool.
 //
 // # Body rewinding
@@ -53,10 +53,10 @@
 // or other body-having requests, callers should set `req.GetBody` so
 // the underlying RoundTripper can rewind — Go's standard library
 // supports this when the body is built from `bytes.Buffer` /
-// `strings.Reader` etc. via `http.NewRequest`. None of leap-gateway's
+// `strings.Reader` etc. via `http.NewRequest`. None of turnout-gateway's
 // current callers POST through this path; this note is a reminder for
 // future use.
-package leaphttp
+package turnouthttp
 
 import (
 	"context"
@@ -67,7 +67,7 @@ import (
 	"time"
 )
 
-// NewClient returns an *http.Client that dials through the leap-internal
+// NewClient returns an *http.Client that dials through the turnout-internal
 // mihomo proxy at proxyURL, transparently falling back to a direct dial
 // when the proxy errors at the transport layer (refused, dial timeout,
 // TLS handshake failure, etc).
@@ -94,7 +94,7 @@ func NewClient(proxyURL string, timeout time.Duration, label string) *http.Clien
 		timeout = 30 * time.Second
 	}
 	if label == "" {
-		label = "leaphttp"
+		label = "turnouthttp"
 	}
 	direct := &http.Transport{}
 	if proxyURL == "" {
@@ -102,7 +102,7 @@ func NewClient(proxyURL string, timeout time.Duration, label string) *http.Clien
 	}
 	u, err := url.Parse(proxyURL)
 	if err != nil {
-		slog.Warn("leaphttp: invalid proxy url, degrading to direct",
+		slog.Warn("turnouthttp: invalid proxy url, degrading to direct",
 			"label", label, "url", proxyURL, "err", err)
 		return &http.Client{Timeout: timeout, Transport: direct}
 	}
@@ -135,7 +135,7 @@ func (r *fallbackRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	if !isTransportError(err) {
 		return resp, err
 	}
-	slog.Warn("leaphttp: primary failed, retrying via direct",
+	slog.Warn("turnouthttp: primary failed, retrying via direct",
 		"label", r.label, "url", req.URL.String(), "err", err)
 	// Body rewind is the caller's responsibility via req.GetBody — see
 	// package doc. GET/HEAD have no body so this is moot for current

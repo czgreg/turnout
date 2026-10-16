@@ -6,8 +6,8 @@
 //  1. Reads the current candidate node list from the latest snapshot.
 //  2. For each node with at least one due probe, flips the probe-out
 //     selector (clash-api PUT /proxies/probe-out {name: <node>}) so the
-//     leap-probe listener (127.0.0.1:11081) egresses via that node.
-//  3. Issues each due probe's GET through the leap-probe proxy, recording
+//     turnout-probe listener (127.0.0.1:11081) egresses via that node.
+//  3. Issues each due probe's GET through the turnout-probe proxy, recording
 //     status code, cf-mitigated header, latency, and error.
 //
 // Probing is fully serialized inside this one goroutine — the shared
@@ -31,11 +31,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // probeOutSelectorName is the clash-api selector group nodescorer flips to
-// point the leap-probe listener at one node at a time. Must match the name
+// point the turnout-probe listener at one node at a time. Must match the name
 // the mihomo renderer emits (internal/mihomo/groups.go probeOutSelector).
 const probeOutSelectorName = "probe-out"
 
@@ -148,7 +148,7 @@ func (s *Scorer) dueProbes(tag string, now time.Time) []config.ProbeConfig {
 	return due
 }
 
-// runProbe issues one GET through the leap-probe proxy and classifies the
+// runProbe issues one GET through the turnout-probe proxy and classifies the
 // result. The proxy egresses via whatever node probe-out currently points
 // at (set by the caller). latency on failure = time waited before the
 // error, not 0.

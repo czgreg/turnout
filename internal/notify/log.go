@@ -11,7 +11,7 @@
 // future-proofing) interleave at line boundaries instead of corrupting.
 //
 // No rotation in v1 — operator should logrotate or truncate
-// /var/lib/leap/notifications.log periodically. File typically grows
+// /var/lib/turnout/notifications.log periodically. File typically grows
 // at ~100 lines/day on a healthy node, ~10 KiB/day = manageable.
 
 package notify

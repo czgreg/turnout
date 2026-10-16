@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // fakeRunner records every command and replays canned output keyed by a

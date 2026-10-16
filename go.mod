@@ -1,4 +1,4 @@
-module github.com/leap-gateway/leap-gateway
+module github.com/turnout-gateway/turnout-gateway
 
 go 1.22.7
 

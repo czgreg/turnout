@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/stress.sh — single-node capacity ceiling finder.
 #
-# Ramps simulated concurrent "users" through the leap-internal mihomo HTTP
+# Ramps simulated concurrent "users" through the turnout-internal mihomo HTTP
 # proxy (127.0.0.1:11080 by default), sampling mihomo CPU / RSS / request
 # latency at each tier. Run it ON the forwarding node (it needs the local
 # proxy + access to mihomo's process stats).
@@ -42,8 +42,8 @@
 #   • PUT /proxies/<selector> to pin the live selector: that drags real
 #     client traffic onto the node under test, and leaves the selector
 #     pinned if the script dies;
-#   • rewrite /var/lib/leap/mihomo/config.yaml + reload: that interrupts
-#     every live connection and races leap-gateway's own renderer.
+#   • rewrite /var/lib/turnout/mihomo/config.yaml + reload: that interrupts
+#     every live connection and races turnout-gateway's own renderer.
 # The child writes only into its own mktemp dir, binds only 127.0.0.1, and
 # picks ports that must differ from live (11080/11081/9090/7893/53).
 #
@@ -55,7 +55,7 @@
 #   EGRESS        proxy name from the live config (exact, quote it)
 #   EGRESS_LIST   =1 → list us-pool member names and exit
 #   CHILD_PORT    child mixed-port        (default 21080)
-#   LIVE_CONFIG   live rendered config    (default /var/lib/leap/mihomo/config.yaml)
+#   LIVE_CONFIG   live rendered config    (default /var/lib/turnout/mihomo/config.yaml)
 
 set -euo pipefail
 
@@ -66,7 +66,7 @@ MIHOMO_PROC="${MIHOMO_PROC:-/usr/local/bin/mihomo}"
 EGRESS="${EGRESS:-}"
 EGRESS_LIST="${EGRESS_LIST:-}"
 CHILD_PORT="${CHILD_PORT:-21080}"
-LIVE_CONFIG="${LIVE_CONFIG:-/var/lib/leap/mihomo/config.yaml}"
+LIVE_CONFIG="${LIVE_CONFIG:-/var/lib/turnout/mihomo/config.yaml}"
 # Ports the live instance owns. The child must not bind any of these; asserted
 # at startup rather than trusted, because binding 7893 or :53 would hijack the
 # production data path.
@@ -250,7 +250,7 @@ worker() {
 # Sample mihomo cpu% over a 1s window + current RSS (MB).
 sample_proc() {
   # Re-resolve MPID if the previously-cached one is gone — mihomo can be
-  # restarted mid-run by leap-gateway's auto-reload after a subscription
+  # restarted mid-run by turnout-gateway's auto-reload after a subscription
   # refresh. Without this, late-tier rows show CPU=0 RSS=0 (sampling
   # artifact) and the operator misreads the ceiling.
   #

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // minimalClash is the smallest Clash-YAML body the parser accepts, with one
@@ -239,7 +239,7 @@ func TestAlternateUA(t *testing.T) {
 		{"ClashX Pro/1.92.1", "sing-box/1.10.7"},
 		{"Stash/2.6.0", "sing-box/1.10.7"},
 		{"mihomo/Meta v1.18.0", "sing-box/1.10.7"},
-		{"leap-gateway/0.1", "sing-box/1.10.7"},
+		{"turnout-gateway/0.1", "sing-box/1.10.7"},
 		{"sing-box/1.10.7", "ClashforWindows/0.20.39"},
 		{"sing-box/1.18", "ClashforWindows/0.20.39"},
 		{"Mozilla/5.0", ""}, // unknown family: no fallback

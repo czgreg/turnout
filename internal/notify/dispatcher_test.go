@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // TestDispatcherFlushSentinelDoesNotDrop pins the regression: the
@@ -89,7 +89,7 @@ func TestRenderBatchHeader(t *testing.T) {
 	if !strings.HasPrefix(got, "🚨") {
 		t.Errorf("urgent header missing 🚨: %q", got[:30])
 	}
-	if !strings.Contains(got, "leap-gateway@92") {
+	if !strings.Contains(got, "turnout-gateway@92") {
 		t.Errorf("header missing instance label: %q", got[:40])
 	}
 	got = renderBatch([]Event{{Severity: SeverityInfo, Subject: "x"}}, "92")

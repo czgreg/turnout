@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/dataplane"
-	"github.com/leap-gateway/leap-gateway/internal/nodeinfo"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/dataplane"
+	"github.com/turnout-gateway/turnout-gateway/internal/nodeinfo"
 )
 
 // activeDTO is the comprehensive "what's happening on this node" view. The
@@ -21,11 +21,11 @@ import (
 type activeDTO struct {
 	Node        nodeinfo.NodeInfo    `json:"node"`
 	FeiLian     nodeinfo.FeiLianInfo `json:"feilian"`
-	Leap        leapDTO              `json:"leap"`
+	Turnout        turnoutDTO              `json:"turnout"`
 	ActiveProxy activeProxyDTO       `json:"active_proxy"`
 }
 
-type leapDTO struct {
+type turnoutDTO struct {
 	GatewayVersion     string            `json:"gateway_version"`
 	Engine             string            `json:"engine"`
 	EngineVersion      string            `json:"engine_version"`
@@ -54,8 +54,8 @@ type poolStatusDTO struct {
 	PoolSize int             `json:"pool_size"`
 	Active   bool            `json:"active"` // whether "out" selector points at this pool
 	// Egress is the IP+geo seen by the public internet when traffic exits
-	// via this pool's currently-selected member. Probed through the leap-
-	// internal HTTP proxy (LeapInternalProxyURL = 127.0.0.1:11080), which
+	// via this pool's currently-selected member. Probed through the turnout-
+	// internal HTTP proxy (TurnoutInternalProxyURL = 127.0.0.1:11080), which
 	// follows mihomo's "out" selector → us-pool. Cached 60s. nil = no
 	// probe has succeeded yet (cold start, or upstream unreachable).
 	Egress *egressInfo `json:"egress,omitempty"`
@@ -84,16 +84,16 @@ func (s *Server) handleProxiesActive(w http.ResponseWriter, r *http.Request) {
 	for _, rs := range results {
 		nodesParsed += len(rs.Outbounds)
 	}
-	leap := leapDTO{
-		GatewayVersion:     ni.Leap.GatewayVersion,
-		Engine:             ni.Leap.Engine,
-		EngineVersion:      ni.Leap.EngineVersion,
-		Services:           ni.Leap.Services,
+	turnout := turnoutDTO{
+		GatewayVersion:     ni.Turnout.GatewayVersion,
+		Engine:             ni.Turnout.Engine,
+		EngineVersion:      ni.Turnout.EngineVersion,
+		Services:           ni.Turnout.Services,
 		SubscriptionsCount: len(s.deps.Cfg.Subscriptions),
 		NodesParsed:        nodesParsed,
 	}
 	if !last.IsZero() {
-		leap.LastRefresh = last.UTC().Format(time.RFC3339)
+		turnout.LastRefresh = last.UTC().Format(time.RFC3339)
 	}
 
 	// Live clash-api hit for the active proxy state.
@@ -102,7 +102,7 @@ func (s *Server) handleProxiesActive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, activeDTO{
 		Node:        ni.Node,
 		FeiLian:     ni.FeiLian,
-		Leap:        leap,
+		Turnout:        turnout,
 		ActiveProxy: ap,
 	})
 }
@@ -112,7 +112,7 @@ func (s *Server) handleProxiesActive(w http.ResponseWriter, r *http.Request) {
 //  1. GET /proxies — bulk dump of every proxy + its history (1 round-trip)
 //  2. From it: pluck the "out" selector's `now` field (us-pool / pin / DIRECT)
 //  3. For us-pool, list its members and per-node latency
-//  4. Kick the lazy egress probe through LeapInternalProxyURL (which goes
+//  4. Kick the lazy egress probe through TurnoutInternalProxyURL (which goes
 //     "out → us-pool" via mihomo, so the IP we sample IS us-pool's egress)
 //
 // Returns Reachable=false on any clash-api error so the rest of the response
@@ -200,7 +200,7 @@ func (s *Server) queryActiveProxy(ctx context.Context) activeProxyDTO {
 		ps.PoolSize = len(ps.Nodes)
 
 		if ps.Active {
-			ps.Egress = s.egress.GetOrRefresh(name, dataplane.LeapInternalProxyURL, pool.Now)
+			ps.Egress = s.egress.GetOrRefresh(name, dataplane.TurnoutInternalProxyURL, pool.Now)
 		}
 		dto.Pools = append(dto.Pools, ps)
 		if ps.Active {

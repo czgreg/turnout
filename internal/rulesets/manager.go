@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/leaphttp"
+	"github.com/turnout-gateway/turnout-gateway/internal/turnouthttp"
 )
 
 //go:embed catalog.json
@@ -69,7 +69,7 @@ type Manager struct {
 // direct OS network.
 //
 // The HTTP client falls back to direct dial when the proxy is unreachable
-// (data plane crash-looping or mid-restart) — matches the leaphttp
+// (data plane crash-looping or mid-restart) — matches the turnouthttp
 // pattern used by subscribe + whitelistexpand. Without fallback, a single
 // data-plane outage would block all on-demand .srs fetches indefinitely.
 //
@@ -85,7 +85,7 @@ func New(dir string, httpTimeout time.Duration, proxyURL string) (*Manager, erro
 		dir:     dir,
 		catalog: cat,
 		items:   items,
-		httpc:   leaphttp.NewClient(proxyURL, httpTimeout, "rulesets"),
+		httpc:   turnouthttp.NewClient(proxyURL, httpTimeout, "rulesets"),
 		engine:  "sing-box",
 	}, nil
 }

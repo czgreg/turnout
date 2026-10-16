@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // Severity classifies an event's urgency. The dispatcher applies different
@@ -228,7 +228,7 @@ func (n *Notifier) TestSend() error {
 		Time:     time.Now(),
 		Severity: SeverityInfo,
 		Type:     "test",
-		Subject:  "leap-gateway notification test",
+		Subject:  "turnout-gateway notification test",
 		Body:     "If you see this, the Lark webhook + signing config are working.",
 	}
 	if n.fileLog != nil {

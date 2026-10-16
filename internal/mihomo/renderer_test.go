@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 	"gopkg.in/yaml.v3"
 )
 
@@ -179,7 +179,7 @@ func TestRenderer_OverseasMode(t *testing.T) {
 		t.Errorf("tun.enable = %v, want true", tun["enable"])
 	}
 	if tun["auto-route"] != false {
-		t.Error("tun.auto-route MUST be false (leap-nft manages routing)")
+		t.Error("tun.auto-route MUST be false (turnout-nft manages routing)")
 	}
 	dev, _ := tun["device"].(string)
 	if len(dev) > 15 {
@@ -502,7 +502,7 @@ func TestRenderer_YAMLValid(t *testing.T) {
 
 // TestRenderer_NamedPool covers the openai-pool path (1.1): a pool that
 // gates on probes should produce (a) a load-balance group named after the
-// pool, (b) the probe-out selector + leap-probe listener, (c) rules
+// pool, (b) the probe-out selector + turnout-probe listener, (c) rules
 // routing the pool's rule_sets to the pool instead of `out`.
 func TestRenderer_NamedPool(t *testing.T) {
 	r := newTestRenderer(t)
@@ -544,17 +544,17 @@ func TestRenderer_NamedPool(t *testing.T) {
 	if openai["type"] != "load-balance" {
 		t.Errorf("openai-pool type = %v, want load-balance", openai["type"])
 	}
-	// (b) probe-out selector + leap-probe listener.
+	// (b) probe-out selector + turnout-probe listener.
 	if probeOut == nil {
 		t.Error("probe-out selector group missing (pool gates on probes)")
 	}
 	listeners, _ := doc["listeners"].([]any)
 	if len(listeners) == 0 {
-		t.Fatal("listeners block missing (expected leap-probe)")
+		t.Fatal("listeners block missing (expected turnout-probe)")
 	}
 	l0, _ := listeners[0].(map[string]any)
-	if l0["name"] != "leap-probe" || l0["proxy"] != "probe-out" {
-		t.Errorf("listener[0] = %v, want leap-probe pinned to probe-out", l0)
+	if l0["name"] != "turnout-probe" || l0["proxy"] != "probe-out" {
+		t.Errorf("listener[0] = %v, want turnout-probe pinned to probe-out", l0)
 	}
 
 	// (c) rules: geosite-openai → openai-pool; geosite-github → out.

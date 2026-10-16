@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/leaphttp"
+	"github.com/turnout-gateway/turnout-gateway/internal/turnouthttp"
 )
 
 // HTTPError is returned by fetcher when the upstream responded with a
@@ -33,7 +33,7 @@ func AsHTTPError(err error) *HTTPError {
 }
 
 type fetcher struct {
-	httpc     *http.Client // leaphttp client: proxy-via with direct fallback
+	httpc     *http.Client // turnouthttp client: proxy-via with direct fallback
 	userAgent string
 }
 
@@ -43,14 +43,14 @@ func newFetcher(timeout time.Duration, ua string) *fetcher {
 
 // newFetcherWithProxy builds a fetcher that routes upstream HTTPS through
 // the given HTTP proxy URL. Production use: route through the local mihomo
-// loopback HTTP inbound (LeapInternalProxyURL) so subscription fetches
+// loopback HTTP inbound (TurnoutInternalProxyURL) so subscription fetches
 // egress through the pool instead of dialing overseas airport hostnames
 // directly into the GFW. Without this, fetches to those hostnames time out
 // — caught in production 2026-06-05 when 3 of 5 subscriptions stopped
 // pulling nodes.
 //
 // Transport-layer failures (proxy unreachable, dial timeout) automatically
-// fall back to direct dial inside leaphttp.NewClient — better to attempt a
+// fall back to direct dial inside turnouthttp.NewClient — better to attempt a
 // direct fetch and risk one failure than to lock the operator out of
 // refresh entirely while the data plane is recovering. HTTP-status
 // errors (4xx/5xx) do NOT trigger fallback because the upstream answered
@@ -62,10 +62,10 @@ func newFetcherWithProxy(timeout time.Duration, ua, proxyURL string) *fetcher {
 		timeout = 30 * time.Second
 	}
 	if ua == "" {
-		ua = "leap-gateway/0.1"
+		ua = "turnout-gateway/0.1"
 	}
 	return &fetcher{
-		httpc:     leaphttp.NewClient(proxyURL, timeout, "subscribe"),
+		httpc:     turnouthttp.NewClient(proxyURL, timeout, "subscribe"),
 		userAgent: ua,
 	}
 }
@@ -78,7 +78,7 @@ func (f *fetcher) Get(ctx context.Context, url string) ([]byte, error) {
 // fetcher's default. Used by Manager.Refresh to support per-subscription
 // User-Agent (some airports gate content by UA in incompatible ways).
 //
-// Proxy/direct fallback is handled transparently inside the leaphttp
+// Proxy/direct fallback is handled transparently inside the turnouthttp
 // client; this method only converts non-200 responses to *HTTPError so
 // callers can distinguish "upstream said no" from "transport failure"
 // for retry decisions (see parser.go's 5xx-retry).

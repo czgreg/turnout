@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/leap-gateway/leap-gateway/internal/nodescorer"
+	"github.com/turnout-gateway/turnout-gateway/internal/nodescorer"
 )
 
 // TerminalAssignment is the response shape for GET /api/pool/terminal?ip=X.

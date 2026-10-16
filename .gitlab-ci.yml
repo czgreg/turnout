@@ -1,4 +1,4 @@
-# leap-gateway GitLab CI/CD
+# turnout-gateway GitLab CI/CD
 #
 # Prerequisites (one-time setup):
 #   1. Register a GitLab Runner on the internal network (10.0.0.x subnet).
@@ -6,7 +6,7 @@
 #      See: docs/ops.md — "Register CI Runner"
 #
 #   2. Mirror this repo to GitLab (or use GitLab as primary remote):
-#      git remote add gitlab http://<gitlab>/czgreg/leap-gateway.git
+#      git remote add gitlab http://<gitlab>/czgreg/turnout-gateway.git
 #
 # This pipeline tests and builds only — it does NOT deploy. Deployment is
 # operator-driven from a workstation: `make deploy-92` (binary swap) or
@@ -52,12 +52,12 @@ build:
     - echo "Building $VERSION"
     - go build
         -ldflags="-s -w -X main.Version=$VERSION"
-        -o build/leap-gateway-linux-amd64
+        -o build/turnout-gateway-linux-amd64
         ./cmd/gateway
-    - ls -lh build/leap-gateway-linux-amd64
+    - ls -lh build/turnout-gateway-linux-amd64
   artifacts:
-    name: "leap-gateway-$CI_COMMIT_SHORT_SHA"
-    paths: [build/leap-gateway-linux-amd64]
+    name: "turnout-gateway-$CI_COMMIT_SHORT_SHA"
+    paths: [build/turnout-gateway-linux-amd64]
     expire_in: 30 days
     when: on_success
 

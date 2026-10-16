@@ -224,7 +224,7 @@ Z 保证的是**不再乒乓、稳定收敛**;完整自愈是 §8。
 
 | 阶段 | 内容 | 代码? | 回滚 |
 |---|---|---|---|
-| 0 | 接 Lark webhook；`cp /usr/local/bin/leap-gateway{,.bak-preplan}` + 备份 on-node yaml | 否 | — |
+| 0 | 接 Lark webhook；`cp /usr/local/bin/turnout-gateway{,.bak-preplan}` + 备份 on-node yaml | 否 | — |
 | 1 | `ProbeResult` TTL + `poolSet` 恢复 + `openai-pool` 删除 | 是 | 换回二进制 |
 | 2 | 删无条件回填 + K 上限 + fast-evict 迟滞 + 边界 swap 迟滞（§3.1-3.3，`sizing_mode` flag 默认 legacy，**影子模式** §6） | 是 | flag 切回 legacy |
 | 3 | 影子达标切 `sizing_mode: convergent`；`swap_threshold_score` 提到 ≥200；`readmit_strikes` 调到 2–3 | 配置 | flag/值切回 |

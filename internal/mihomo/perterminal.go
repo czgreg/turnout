@@ -5,7 +5,7 @@
 // rules in the perterm sub-rule route the terminal to its fb-<ip> group.
 // mihomo's fallback type tries members in order and uses the first one
 // whose alive bit is true — so when primary dies, traffic auto-routes to
-// secondary within mihomo's url-test interval, no leap-gateway intervention.
+// secondary within mihomo's url-test interval, no turnout-gateway intervention.
 //
 // Why not bare-node SRC-IP-CIDR (the previous design): SRC-IP-CIDR is a
 // hard route — when its target proxy is alive=false, mihomo just fails
@@ -27,7 +27,7 @@ import (
 	"net"
 	"sort"
 
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 const (

@@ -197,7 +197,7 @@ export function healthz(): Healthz {
 export function active(subs: Subscription[]): Active {
   return {
     node: {
-      hostname: 'leap-node-a',
+      hostname: 'turnout-node-a',
       kernel: '5.15.0-179-generic',
       os: 'Ubuntu 22.04.5 LTS',
       uptime_seconds: 41 * 86400 + 5 * 3600,
@@ -205,11 +205,11 @@ export function active(subs: Subscription[]): Active {
       egress_iface: 'ens18',
     },
     feilian: { tun0_active: true, vpn_active: true, proxy_active: true, sentry_active: true },
-    leap: {
+    turnout: {
       gateway_version: '96cfcb5',
       engine: 'mihomo',
       engine_version: 'v1.19.26',
-      services: { 'leap-gateway': 'active', 'leap-mihomo': 'active', 'leap-nft': 'active' },
+      services: { 'turnout-gateway': 'active', 'turnout-mihomo': 'active', 'turnout-nft': 'active' },
       subscriptions_count: subs.length,
       nodes_parsed: subs.reduce((a, s) => a + (s.nodes_count || 0), 0),
       last_refresh: iso(52 * MIN),

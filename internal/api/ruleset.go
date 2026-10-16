@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/leap-gateway/leap-gateway/internal/rulesets"
+	"github.com/turnout-gateway/turnout-gateway/internal/rulesets"
 )
 
 // ruleSetEntryDTO is one item of GET /api/rule-sets — name + url + category

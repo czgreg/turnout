@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 type larkClient struct {
@@ -154,9 +154,9 @@ func renderBatch(batch []Event, instance string) string {
 			break
 		}
 	}
-	label := "leap-gateway"
+	label := "turnout-gateway"
 	if instance != "" {
-		label = "leap-gateway@" + instance
+		label = "turnout-gateway@" + instance
 	}
 	var b strings.Builder
 	switch maxSev {

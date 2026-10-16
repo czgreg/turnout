@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 func (s *Server) handleRefreshIntervalGet(w http.ResponseWriter, _ *http.Request) {

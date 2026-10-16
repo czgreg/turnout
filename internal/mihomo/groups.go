@@ -15,7 +15,7 @@ package mihomo
 import (
 	"regexp"
 
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 const (
@@ -36,11 +36,11 @@ const (
 
 	// probeOutSelector is a select group over every candidate node, flipped
 	// one node at a time by nodescorer to run site-specific probes through
-	// the leap-probe listener.
+	// the turnout-probe listener.
 	probeOutSelector = "probe-out"
 
 	// probePort is the loopback HTTP listener nodescorer dials to probe
-	// the node probe-out currently points at. 11081 (11080 is the leap-
+	// the node probe-out currently points at. 11081 (11080 is the turnout-
 	// internal proxy that follows `out`).
 	probePort = 11081
 )
@@ -158,7 +158,7 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 
 	// probe-out: a select group over EVERY candidate node. nodescorer
 	// flips it one node at a time and runs site probes through the
-	// leap-probe listener (which is pinned to this group). Separate from
+	// turnout-probe listener (which is pinned to this group). Separate from
 	// us-pool so probing never perturbs production routing.
 	if r.probeListener {
 		probeMembers := pool
@@ -211,7 +211,7 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 	return groups
 }
 
-// buildListeners emits the `listeners:` array. Currently just the leap-probe
+// buildListeners emits the `listeners:` array. Currently just the turnout-probe
 // HTTP listener used by nodescorer's per-node site probes: a loopback HTTP
 // proxy on probePort whose traffic is pinned (via `proxy:`) to the
 // probe-out selector group, bypassing the normal rule table. nodescorer
@@ -220,7 +220,7 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 func (r *Renderer) buildListeners() []map[string]any {
 	return []map[string]any{
 		{
-			"name":   "leap-probe",
+			"name":   "turnout-probe",
 			"type":   "http",
 			"listen": "127.0.0.1",
 			"port":   probePort,

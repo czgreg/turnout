@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // TestLastHealth_PerSubscriptionOutcomes reproduces the 2026-09-08 Hutao

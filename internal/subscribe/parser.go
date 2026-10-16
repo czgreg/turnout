@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // Manager owns subscriptions and the latest aggregated outbound list.
@@ -39,14 +39,14 @@ type Manager struct {
 
 // NewManagerWithFetch lets callers thread http_timeout and user_agent from
 // config — many subscription providers gate by UA, so the default
-// "leap-gateway/0.1" gets connection-reset on some upstreams.
+// "turnout-gateway/0.1" gets connection-reset on some upstreams.
 func NewManagerWithFetch(entries []config.SubscriptionEntry, timeout time.Duration, ua string) *Manager {
 	return NewManagerWithFetchAndProxy(entries, timeout, ua, "")
 }
 
 // NewManagerWithFetchAndProxy is NewManagerWithFetch + proxyURL routing.
 // Production wires this with the local mihomo loopback HTTP inbound
-// (LeapInternalProxyURL) so subscription fetches egress through the pool
+// (TurnoutInternalProxyURL) so subscription fetches egress through the pool
 // instead of dialing overseas subscription hosts directly into the GFW,
 // where they time out. Caught in production 2026-06-05.
 //
@@ -209,7 +209,7 @@ func alternateUA(ua string) string {
 		strings.Contains(lc, "clash") ||
 		strings.Contains(lc, "stash") ||
 		strings.Contains(lc, "mihomo") ||
-		strings.HasPrefix(lc, "leap-gateway"):
+		strings.HasPrefix(lc, "turnout-gateway"):
 		return "sing-box/1.10.7"
 	}
 	return ""

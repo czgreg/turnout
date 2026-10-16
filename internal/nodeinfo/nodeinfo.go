@@ -1,9 +1,9 @@
-// Package nodeinfo collects shell-out-y node + FeiLian + leap-services status
+// Package nodeinfo collects shell-out-y node + FeiLian + turnout-services status
 // in a background goroutine and exposes a cached snapshot so the API can
 // answer /api/proxies/active without forking systemctl/nft per request.
 //
 // Cache TTL is intentionally short (5s) because operators poll this endpoint
-// in tight loops while debugging, and "is leap-singbox up?" must reflect
+// in tight loops while debugging, and "is turnout-singbox up?" must reflect
 // reality within a few seconds of an event.
 package nodeinfo
 
@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // Snapshot is the structure returned to the API. Times use time.Time so
@@ -23,7 +23,7 @@ import (
 type Snapshot struct {
 	Node    NodeInfo    `json:"node"`
 	FeiLian FeiLianInfo `json:"feilian"`
-	Leap    LeapInfo    `json:"leap"`
+	Turnout    TurnoutInfo    `json:"turnout"`
 }
 
 type NodeInfo struct {
@@ -49,7 +49,7 @@ type FeiLianInfo struct {
 	NftChainsPresent []string `json:"nft_chains_present"`
 }
 
-type LeapInfo struct {
+type TurnoutInfo struct {
 	GatewayVersion string            `json:"gateway_version"`
 	// Engine is the active data-plane name: "mihomo" or "sing-box".
 	Engine string `json:"engine"`
@@ -112,7 +112,7 @@ func (r *Reporter) refresh(ctx context.Context) {
 	s := Snapshot{
 		Node:    r.collectNode(),
 		FeiLian: r.collectFeiLian(ctx),
-		Leap:    r.collectLeap(ctx),
+		Turnout:    r.collectTurnout(ctx),
 	}
 	r.mu.Lock()
 	r.snap = s
@@ -142,16 +142,16 @@ func (r *Reporter) collectFeiLian(ctx context.Context) FeiLianInfo {
 	}
 }
 
-func (r *Reporter) collectLeap(ctx context.Context) LeapInfo {
+func (r *Reporter) collectTurnout(ctx context.Context) TurnoutInfo {
 	services := map[string]string{}
 	for _, u := range []string{
-		"leap-gateway.service",
-		"leap-mihomo.service",
-		"leap-nft.service",
+		"turnout-gateway.service",
+		"turnout-mihomo.service",
+		"turnout-nft.service",
 	} {
 		services[strings.TrimSuffix(u, ".service")] = systemdState(ctx, u)
 	}
-	return LeapInfo{
+	return TurnoutInfo{
 		GatewayVersion: r.gatewayV,
 		Engine:         r.engine,
 		EngineVersion:  mihomoVersion(ctx),

@@ -141,7 +141,7 @@ export default function App() {
   const st = snap.status.data;
   const ac = snap.active.data;
   const host = ac?.node?.hostname;
-  const version = ac?.leap?.gateway_version;
+  const version = ac?.turnout?.gateway_version;
   const deadCount = snap.health.data?.nodes.filter((n) => !n.alive).length;
 
   return (
@@ -177,7 +177,7 @@ export default function App() {
         {!collapsed && (
           <div className="sider-foot">
             <div>控制面 {version || '—'}</div>
-            <div>{ac?.leap?.engine || 'mihomo'} {ac?.leap?.engine_version || ''}</div>
+            <div>{ac?.turnout?.engine || 'mihomo'} {ac?.turnout?.engine_version || ''}</div>
           </div>
         )}
       </Layout.Sider>

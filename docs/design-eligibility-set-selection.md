@@ -164,7 +164,7 @@ p95 4400+)。三件现成的东西合起来就是答案,无需新机制:
 - **fill-skip bug**:`scorer.go:808` 只跳 `newPoolSet||evicted`,swap-gate
   拒绝的节点两者都不在→同轮被回填。删 fill 时一并消除。
 - **接 Lark webhook**:`webhook_url:""`,当前无任何告警通道。§3.3 依赖它。
-- **`cp /usr/local/bin/leap-gateway{,.bak-preship}`**:prod 二进制 mtime
+- **`cp /usr/local/bin/turnout-gateway{,.bak-preship}`**:prod 二进制 mtime
   比 HEAD 早 33min、Makefile 烤了版本串没法 bit 级重建,**这个备份是唯一
   回滚物**,零成本,上线前必做。
 

@@ -1,11 +1,11 @@
 #!/bin/bash
-# leap-gateway sidecar installer for FeiLian forwarding nodes.
+# turnout-gateway sidecar installer for FeiLian forwarding nodes.
 #
 # Run as root on the FeiLian forwarding node (e.g. ops@192.168.70.92 with sudo).
 # Idempotent — safe to re-run after edits.
 #
 # Inputs (must be present in working directory or fetched):
-#   - leap-gateway       Linux binary (built with `GOOS=linux go build ./cmd/gateway`)
+#   - turnout-gateway       Linux binary (built with `GOOS=linux go build ./cmd/gateway`)
 #   - mihomo             1.19.x binary (the data plane)
 #   - sing-box           1.10.x binary (CLI helper for whitelistexpand
 #                        rule-set decompile — NOT run as a service)
@@ -13,8 +13,8 @@
 #   - gateway.yaml       Filled-in config (subscription URL + node values)
 #
 # Companion files (same directory as this script):
-#   leap-mihomo.service / leap-gateway.service / leap-nft.service /
-#   nft.conf.tmpl / iproute.sh / logrotate-leap.conf
+#   turnout-mihomo.service / turnout-gateway.service / turnout-nft.service /
+#   nft.conf.tmpl / iproute.sh / logrotate-turnout.conf
 #
 # Engine is mihomo. The legacy sing-box-as-data-plane path was removed
 # in 2026-06; sing-box is still installed as a CLI helper because
@@ -49,7 +49,7 @@ precheck() {
   log "preflight: feilian-tun@tun0 active"
 
   # tun0 must exist with the IP that matches gateway.yaml.
-  # Note: precheck runs BEFORE leap-gateway is installed, so we can't use
+  # Note: precheck runs BEFORE turnout-gateway is installed, so we can't use
   # --print-env here. The sed extractor accepts both quoted ("10.8.13.1")
   # and unquoted (10.8.13.1) yaml values; trims trailing comments.
   if [ -f "$SCRIPT_DIR/gateway.yaml" ]; then
@@ -91,7 +91,7 @@ precheck() {
     api_addr=$(sed -nE 's/^[[:space:]]*listen:[[:space:]]*"?([^"#[:space:]]+)"?.*/\1/p' "$SCRIPT_DIR/gateway.yaml" | head -1)
     if [ -n "$api_addr" ]; then
       api_port=${api_addr##*:}
-      if ss -tulnp 2>/dev/null | grep -E ":${api_port}\b" | grep -v leap-gateway >/dev/null; then
+      if ss -tulnp 2>/dev/null | grep -E ":${api_port}\b" | grep -v turnout-gateway >/dev/null; then
         ss -tulnp "sport = :${api_port}" >&2
         fail "api.listen ${api_addr} already bound by another process — pick a free port in gateway.yaml"
       fi
@@ -184,75 +184,75 @@ install_singbox_cli() {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Install leap-gateway binary + config
+# 4. Install turnout-gateway binary + config
 
-install_leap() {
-  [ -x "$SCRIPT_DIR/leap-gateway" ] \
-    || fail "missing leap-gateway binary in $SCRIPT_DIR (build with GOOS=linux go build ./cmd/gateway)"
-  install -m 0755 "$SCRIPT_DIR/leap-gateway" /usr/local/bin/leap-gateway
-  log "leap-gateway installed"
+install_turnout() {
+  [ -x "$SCRIPT_DIR/turnout-gateway" ] \
+    || fail "missing turnout-gateway binary in $SCRIPT_DIR (build with GOOS=linux go build ./cmd/gateway)"
+  install -m 0755 "$SCRIPT_DIR/turnout-gateway" /usr/local/bin/turnout-gateway
+  log "turnout-gateway installed"
 
   # Working dirs.
-  install -d -m 0755 /etc/leap /var/lib/leap
-  install -d -m 0755 /var/lib/leap/mihomo /var/lib/leap/mihomo/rule-sets
+  install -d -m 0755 /etc/turnout /var/lib/turnout
+  install -d -m 0755 /var/lib/turnout/mihomo /var/lib/turnout/mihomo/rule-sets
 
   if [ -f "$SCRIPT_DIR/gateway.yaml" ]; then
-    # Auto-backup whatever is currently at /etc/leap/gateway.yaml before
+    # Auto-backup whatever is currently at /etc/turnout/gateway.yaml before
     # overwriting. Cheap insurance — the staged yaml may have schema /
     # field drift from the on-node copy (saw this on 92's 2026-06-07
     # mihomo cutover), and operators were doing manual `sudo cp` for
     # rollback. Now it's automatic. Backups are 0640 root:root, never
     # pruned automatically — operators clean up when they need the disk.
-    if [ -f /etc/leap/gateway.yaml ]; then
-      bak=/etc/leap/gateway.yaml.bak.$(date -u +%Y%m%d-%H%M%S)
-      install -m 0640 /etc/leap/gateway.yaml "$bak"
+    if [ -f /etc/turnout/gateway.yaml ]; then
+      bak=/etc/turnout/gateway.yaml.bak.$(date -u +%Y%m%d-%H%M%S)
+      install -m 0640 /etc/turnout/gateway.yaml "$bak"
       log "backed up existing gateway.yaml → $bak"
     fi
-    install -m 0640 "$SCRIPT_DIR/gateway.yaml" /etc/leap/gateway.yaml
-    log "gateway.yaml installed (edit /etc/leap/gateway.yaml + restart leap-gateway to update)"
-  elif [ ! -f /etc/leap/gateway.yaml ]; then
-    fail "no gateway.yaml provided in $SCRIPT_DIR and none exists at /etc/leap/gateway.yaml"
+    install -m 0640 "$SCRIPT_DIR/gateway.yaml" /etc/turnout/gateway.yaml
+    log "gateway.yaml installed (edit /etc/turnout/gateway.yaml + restart turnout-gateway to update)"
+  elif [ ! -f /etc/turnout/gateway.yaml ]; then
+    fail "no gateway.yaml provided in $SCRIPT_DIR and none exists at /etc/turnout/gateway.yaml"
   else
-    log "keeping existing /etc/leap/gateway.yaml (no gateway.yaml in $SCRIPT_DIR)"
+    log "keeping existing /etc/turnout/gateway.yaml (no gateway.yaml in $SCRIPT_DIR)"
   fi
 
-  # Generate /etc/leap/env — runtime variables sourced by iproute.sh so it
+  # Generate /etc/turnout/env — runtime variables sourced by iproute.sh so it
   # can set up TPROXY rules with the correct subnet and port without needing
   # to parse YAML itself.
   #
-  # Use `leap-gateway --print-env` instead of grep/awk: YAML parsing in shell
+  # Use `turnout-gateway --print-env` instead of grep/awk: YAML parsing in shell
   # is fragile (indent, quoting, comments all affect text matching). The
   # binary parses with the same logic as the runtime, so there are no
   # mismatches. install.sh runs AFTER the binary is installed (step 4), so
   # the binary is available.
-  if ! /usr/local/bin/leap-gateway --config /etc/leap/gateway.yaml --print-env > /etc/leap/env 2>&1; then
-    fail "leap-gateway --print-env failed — check gateway.yaml"
+  if ! /usr/local/bin/turnout-gateway --config /etc/turnout/gateway.yaml --print-env > /etc/turnout/env 2>&1; then
+    fail "turnout-gateway --print-env failed — check gateway.yaml"
   fi
-  chmod 0644 /etc/leap/env
+  chmod 0644 /etc/turnout/env
   # shellcheck disable=SC1091
-  source /etc/leap/env
+  source /etc/turnout/env
   log "env file written: subnet=${LEAP_CLIENT_SUBNET:-?} tproxy_port=${LEAP_TPROXY_PORT:-0}"
 
   # rule-sets — baked into the tarball by stage.sh as .mrs files.
   if [ -d "$SCRIPT_DIR/rule-sets" ] && compgen -G "$SCRIPT_DIR/rule-sets/*.mrs" >/dev/null; then
-    install -m 0644 "$SCRIPT_DIR"/rule-sets/*.mrs /var/lib/leap/mihomo/rule-sets/
+    install -m 0644 "$SCRIPT_DIR"/rule-sets/*.mrs /var/lib/turnout/mihomo/rule-sets/
     n=$(find "$SCRIPT_DIR/rule-sets" -name '*.mrs' | wc -l | tr -d ' ')
-    log "rule-sets installed ($n .mrs in /var/lib/leap/mihomo/rule-sets/)"
+    log "rule-sets installed ($n .mrs in /var/lib/turnout/mihomo/rule-sets/)"
   fi
 
   # mihomo's geoip.metadb (used by the geoip-cn routing rule). If staged,
   # drop in the working dir; otherwise leave for mihomo to download on
-  # first start (works only when leap-gateway has already routed mihomo's
+  # first start (works only when turnout-gateway has already routed mihomo's
   # HTTP fetches through itself, chicken-and-egg).
   if [ -f "$SCRIPT_DIR/geoip.metadb" ]; then
-    install -m 0644 "$SCRIPT_DIR/geoip.metadb" /var/lib/leap/mihomo/geoip.metadb
+    install -m 0644 "$SCRIPT_DIR/geoip.metadb" /var/lib/turnout/mihomo/geoip.metadb
     log "geoip.metadb installed for mihomo"
   fi
 
   # Sanity: rule-sets must be present.
-  compgen -G "/var/lib/leap/mihomo/rule-sets/*.mrs" >/dev/null \
-    || fail "no .mrs files in /var/lib/leap/mihomo/rule-sets/ — re-run scripts/stage.sh"
-  [ -f /var/lib/leap/mihomo/geoip.metadb ] \
+  compgen -G "/var/lib/turnout/mihomo/rule-sets/*.mrs" >/dev/null \
+    || fail "no .mrs files in /var/lib/turnout/mihomo/rule-sets/ — re-run scripts/stage.sh"
+  [ -f /var/lib/turnout/mihomo/geoip.metadb ] \
     || log "WARNING: mihomo geoip.metadb missing; mihomo will fail to start until it downloads one"
 }
 
@@ -260,14 +260,14 @@ install_leap() {
 # 5. Render nft + install policy-routing helper
 
 install_nft() {
-  # Source the env file written by install_leap (line 205, via --print-env).
+  # Source the env file written by install_turnout (line 205, via --print-env).
   # YAML-aware values from the binary's own parser; never grep YAML again
-  # for the same fields — install_leap's env and install_nft's nft.conf
+  # for the same fields — install_turnout's env and install_nft's nft.conf
   # MUST agree, and re-parsing risks divergence on indent/quote edge cases.
   # shellcheck disable=SC1091
-  source /etc/leap/env
-  [ -n "${LEAP_CLIENT_SUBNET:-}" ] || fail "LEAP_CLIENT_SUBNET missing in /etc/leap/env (re-run install_leap)"
-  [ -n "${LEAP_API_PORT:-}" ]      || fail "LEAP_API_PORT missing in /etc/leap/env (re-run install_leap)"
+  source /etc/turnout/env
+  [ -n "${LEAP_CLIENT_SUBNET:-}" ] || fail "LEAP_CLIENT_SUBNET missing in /etc/turnout/env (re-run install_turnout)"
+  [ -n "${LEAP_API_PORT:-}" ]      || fail "LEAP_API_PORT missing in /etc/turnout/env (re-run install_turnout)"
 
   # Render one `ip saddr <cidr> ... accept` line per api.allow_from entry.
   # The nft template now has a fixed deny for 10.8.0.0/16 followed by a
@@ -288,17 +288,17 @@ install_nft() {
   sed -e "s|@CLIENT_SUBNET@|$LEAP_CLIENT_SUBNET|g" \
       -e "s|@API_PORT@|$LEAP_API_PORT|g" \
       "$SCRIPT_DIR/nft.conf.tmpl" \
-    > /etc/leap/nft.conf.stage
+    > /etc/turnout/nft.conf.stage
   # Substitute the multi-line allowlist separately: sed's `s` can't carry
   # embedded newlines portably, so use awk to splice at the placeholder.
   awk -v repl="$api_allow_rules" '
     $0 ~ /@API_ALLOW_RULES@/ { if (repl != "") print repl; next }
     { print }
-  ' /etc/leap/nft.conf.stage > /etc/leap/nft.conf
-  rm -f /etc/leap/nft.conf.stage
+  ' /etc/turnout/nft.conf.stage > /etc/turnout/nft.conf
+  rm -f /etc/turnout/nft.conf.stage
   log "nft.conf rendered (client_subnet=$LEAP_CLIENT_SUBNET, api_port=$LEAP_API_PORT, api_allow_from='${LEAP_API_ALLOW_FROM:-<loopback only>}')"
 
-  install -m 0755 "$SCRIPT_DIR/iproute.sh" /etc/leap/iproute.sh
+  install -m 0755 "$SCRIPT_DIR/iproute.sh" /etc/turnout/iproute.sh
   log "iproute.sh installed"
 }
 
@@ -306,18 +306,14 @@ install_nft() {
 # 6. Install systemd units + logrotate, enable, start
 
 install_units() {
-  # leap-mihomo / leap-gateway / leap-nft. Old leap-singbox.service was
-  # removed; if it exists from a pre-2026-06 install, disable + remove it.
-  if systemctl is-enabled --quiet leap-singbox.service 2>/dev/null; then
-    log "removing legacy leap-singbox.service (sing-box engine retired)"
-    systemctl disable --now leap-singbox.service || true
-    rm -f /etc/systemd/system/leap-singbox.service
-  fi
-  for unit in leap-mihomo.service leap-gateway.service leap-nft.service; do
+  # turnout-mihomo / turnout-gateway / turnout-nft. This is a greenfield
+  # deployment target, so upstream's legacy sing-box cleanup block is
+  # dropped — no node here ever carried that unit.
+  for unit in turnout-mihomo.service turnout-gateway.service turnout-nft.service; do
     [ -f "$SCRIPT_DIR/$unit" ] || continue
     install -m 0644 "$SCRIPT_DIR/$unit" "/etc/systemd/system/$unit"
   done
-  install -m 0644 "$SCRIPT_DIR/logrotate-leap.conf" /etc/logrotate.d/leap
+  install -m 0644 "$SCRIPT_DIR/logrotate-turnout.conf" /etc/logrotate.d/turnout
   systemctl daemon-reload
   log "systemd units installed"
 }
@@ -325,38 +321,38 @@ install_units() {
 # ---------------------------------------------------------------------------
 # 7. Pre-render mihomo config so the first start finds a valid file.
 # Without this, mihomo's parse fails on first boot and the unit fail-
-# restarts for ~5s until leap-gateway has had a chance to write the
+# restarts for ~5s until turnout-gateway has had a chance to write the
 # bootstrap config — harmless but noisy in logs.
 
 prerender_config() {
-  /usr/local/bin/leap-gateway --config /etc/leap/gateway.yaml --render-once \
-    || fail "leap-gateway --render-once failed; check gateway.yaml"
-  log "bootstrap mihomo config rendered at /var/lib/leap/mihomo/config.yaml"
+  /usr/local/bin/turnout-gateway --config /etc/turnout/gateway.yaml --render-once \
+    || fail "turnout-gateway --render-once failed; check gateway.yaml"
+  log "bootstrap mihomo config rendered at /var/lib/turnout/mihomo/config.yaml"
   # mihomo -t: validate the rendered YAML before accepting it.
   # Catches config bugs (invalid rule-provider paths, bad proxy syntax) that
   # render-once won't catch — render-once only verifies the renderer produces
   # valid Go structs, not that mihomo itself can parse the output.
-  /usr/local/bin/mihomo -d /var/lib/leap/mihomo -t \
+  /usr/local/bin/mihomo -d /var/lib/turnout/mihomo -t \
     || fail "mihomo -t failed on rendered config — check gateway.yaml and rule-sets"
   log "mihomo -t passed"
 }
 
 start_services() {
-  log "enabling + starting leap-mihomo + leap-gateway"
+  log "enabling + starting turnout-mihomo + turnout-gateway"
   # Use enable + restart (not enable --now). `enable --now` is a no-op for
   # services already running — so a re-install with new binaries / new
   # gateway.yaml would silently keep the old processes alive. Explicit
   # restart ensures the units pick up whatever this run just installed.
   systemctl daemon-reload
-  systemctl enable leap-mihomo.service leap-gateway.service leap-nft.service
-  systemctl restart leap-mihomo.service
-  # leap-nft has PartOf=leap-mihomo.service so it auto-restarts when
+  systemctl enable turnout-mihomo.service turnout-gateway.service turnout-nft.service
+  systemctl restart turnout-mihomo.service
+  # turnout-nft has PartOf=turnout-mihomo.service so it auto-restarts when
   # mihomo does, but be explicit in case the unit file dependency changed
   # this run (daemon-reload + restart picks up new After=/BindsTo=).
-  systemctl restart leap-nft.service
-  systemctl restart leap-gateway.service
+  systemctl restart turnout-nft.service
+  systemctl restart turnout-gateway.service
 
-  systemctl --no-pager status leap-mihomo.service leap-gateway.service leap-nft.service \
+  systemctl --no-pager status turnout-mihomo.service turnout-gateway.service turnout-nft.service \
     | head -30 || true
 }
 
@@ -369,12 +365,12 @@ main() {
   fi
   install_mihomo
   install_singbox_cli
-  install_leap
+  install_turnout
   install_nft
   install_units
   prerender_config
   start_services
-  log "DONE — verify with 'systemctl status leap-*' and 'journalctl -fu leap-mihomo'"
+  log "DONE — verify with 'systemctl status turnout-*' and 'journalctl -fu turnout-mihomo'"
 }
 
 main "$@"

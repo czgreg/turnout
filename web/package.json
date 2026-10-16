@@ -1,8 +1,8 @@
 {
-  "name": "interchange-console",
+  "name": "turnout-console",
   "private": true,
   "version": "0.0.0",
-  "description": "Interchange 立交网关 web console (Arco Design). Built into internal/api/ui/ and embedded via go:embed.",
+  "description": "Turnout 道岔网关 web console (Arco Design). Built into internal/api/ui/ and embedded via go:embed.",
   "type": "module",
   "scripts": {
     "dev": "vite",

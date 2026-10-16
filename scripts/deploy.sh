@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/deploy.sh — build leap-gateway and deploy to one or more forwarding nodes.
+# scripts/deploy.sh — build turnout-gateway and deploy to one or more forwarding nodes.
 #
 # Usage:
 #   scripts/deploy.sh <host> [<host> ...]          # deploy to given nodes
@@ -7,14 +7,14 @@
 #
 # Prerequisites:
 #   - SSH key auth set up (ssh-copy-id ops@<host>) — no password prompts.
-#   - Gateway.yaml already on the node at /etc/leap/gateway.yaml.
+#   - Gateway.yaml already on the node at /etc/turnout/gateway.yaml.
 #     This script only updates the binary; use --update-config to also push
 #     a local gateway.yaml.
 #
 # Flags (all optional):
-#   --config <file>   also push this gateway.yaml to /etc/leap/gateway.yaml
+#   --config <file>   also push this gateway.yaml to /etc/turnout/gateway.yaml
 #                     (backs up the existing one first)
-#   --skip-build      use the last build/leap-gateway binary (skip recompile)
+#   --skip-build      use the last build/turnout-gateway binary (skip recompile)
 #   --dry-run         show what would happen, don't actually deploy
 #
 # Environment:
@@ -53,12 +53,12 @@ run()  { [ "$DRY_RUN" -eq 1 ] && { echo "  DRY-RUN: $*"; return 0; }; "$@"; }
 # ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
-BIN="$REPO_ROOT/build/leap-gateway-linux-${GOARCH}"
+BIN="$REPO_ROOT/build/turnout-gateway-linux-${GOARCH}"
 mkdir -p "$REPO_ROOT/build"
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
   VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
-  log "building leap-gateway (linux/$GOARCH, version=$VERSION)"
+  log "building turnout-gateway (linux/$GOARCH, version=$VERSION)"
   run env GOOS=linux GOARCH="$GOARCH" CGO_ENABLED=0 go build \
     -ldflags="-s -w -X main.Version=$VERSION" \
     -o "$BIN" ./cmd/gateway
@@ -88,8 +88,8 @@ for HOST in "${HOSTS[@]}"; do
     TMPDIR_VALIDATE=$(mktemp -d)
     cp "$CONFIG_FILE" "$TMPDIR_VALIDATE/gw.yaml"
     sed -i '' \
-      "s|/var/lib/leap/mihomo/config.yaml|$TMPDIR_VALIDATE/config.yaml|;
-       s|/var/lib/leap/mihomo/rule-sets|$TMPDIR_VALIDATE/rs|" \
+      "s|/var/lib/turnout/mihomo/config.yaml|$TMPDIR_VALIDATE/config.yaml|;
+       s|/var/lib/turnout/mihomo/rule-sets|$TMPDIR_VALIDATE/rs|" \
       "$TMPDIR_VALIDATE/gw.yaml" 2>/dev/null || true
     mkdir -p "$TMPDIR_VALIDATE/rs"
     if ! go run ./cmd/gateway --config "$TMPDIR_VALIDATE/gw.yaml" --render-once > /dev/null 2>&1; then
@@ -99,27 +99,27 @@ for HOST in "${HOSTS[@]}"; do
     rm -rf "$TMPDIR_VALIDATE"
     ok "  config validation passed"
 
-    log "  pushing gateway.yaml → /etc/leap/gateway.yaml"
-    REMOTE_BAK="/etc/leap/gateway.yaml.bak.$(date +%Y%m%d-%H%M%S)"
-    run $SSH "sudo bash -c 'cp /etc/leap/gateway.yaml $REMOTE_BAK 2>/dev/null || true'"
+    log "  pushing gateway.yaml → /etc/turnout/gateway.yaml"
+    REMOTE_BAK="/etc/turnout/gateway.yaml.bak.$(date +%Y%m%d-%H%M%S)"
+    run $SSH "sudo bash -c 'cp /etc/turnout/gateway.yaml $REMOTE_BAK 2>/dev/null || true'"
     run $SCP_TO "$CONFIG_FILE" "$REMOTE_USER@$HOST:/tmp/gateway.yaml.new"
-    run $SSH "sudo bash -c 'install -m 0640 /tmp/gateway.yaml.new /etc/leap/gateway.yaml'"
+    run $SSH "sudo bash -c 'install -m 0640 /tmp/gateway.yaml.new /etc/turnout/gateway.yaml'"
     ok "  config pushed (backup: $REMOTE_BAK)"
   fi
 
   # Push binary
-  log "  pushing binary → /tmp/leap-gateway.new"
-  run $SCP_TO "$BIN" "$REMOTE_USER@$HOST:/tmp/leap-gateway.new"
+  log "  pushing binary → /tmp/turnout-gateway.new"
+  run $SCP_TO "$BIN" "$REMOTE_USER@$HOST:/tmp/turnout-gateway.new"
 
   # Validate on node using --validate (temp dir, never writes production config)
   log "  validating with --validate on node ..."
-  run $SSH "sudo bash -c '/tmp/leap-gateway.new --config /etc/leap/gateway.yaml --validate'" \
+  run $SSH "sudo bash -c '/tmp/turnout-gateway.new --config /etc/turnout/gateway.yaml --validate'" \
     || fail "$HOST: --validate failed on node — binary NOT installed"
   ok "  validation passed"
 
   # Atomic install + restart
   log "  installing + restarting ..."
-  run $SSH "sudo bash -c 'install -m 0755 /tmp/leap-gateway.new /usr/local/bin/leap-gateway && systemctl restart leap-gateway'"
+  run $SSH "sudo bash -c 'install -m 0755 /tmp/turnout-gateway.new /usr/local/bin/turnout-gateway && systemctl restart turnout-gateway'"
 
   # Verify
   log "  verifying ..."
@@ -138,17 +138,17 @@ for HOST in "${HOSTS[@]}"; do
   [ -n "${LEAP_TOKEN:-}" ] && AUTHOPT="Authorization: Bearer $LEAP_TOKEN"
   if [ -n "$AUTHOPT" ]; then
     DEPLOYED_VER=$(curl -s -m6 -H "$AUTHOPT" "http://$HOST:18080/api/proxies/active" \
-      | python3 -c "import sys,json;print(json.load(sys.stdin)['leap']['gateway_version'])" 2>/dev/null || echo "API_UNREACHABLE")
+      | python3 -c "import sys,json;print(json.load(sys.stdin)['turnout']['gateway_version'])" 2>/dev/null || echo "API_UNREACHABLE")
   else
     DEPLOYED_VER=$(curl -s -m6 "http://$HOST:18080/api/proxies/active" \
-      | python3 -c "import sys,json;print(json.load(sys.stdin)['leap']['gateway_version'])" 2>/dev/null || echo "API_UNREACHABLE")
+      | python3 -c "import sys,json;print(json.load(sys.stdin)['turnout']['gateway_version'])" 2>/dev/null || echo "API_UNREACHABLE")
   fi
   if [ "$DEPLOYED_VER" = "API_UNREACHABLE" ]; then
-    fail "$HOST: API unreachable after restart — check 'journalctl -u leap-gateway'"
+    fail "$HOST: API unreachable after restart — check 'journalctl -u turnout-gateway'"
   fi
   ok "  $HOST running version $DEPLOYED_VER"
 
-  run $SSH "sudo bash -c 'rm -f /tmp/leap-gateway.new /tmp/gateway.yaml.new'"
+  run $SSH "sudo bash -c 'rm -f /tmp/turnout-gateway.new /tmp/gateway.yaml.new'"
 done
 
 ok "deploy complete: ${HOSTS[*]}"

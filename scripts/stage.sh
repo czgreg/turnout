@@ -2,8 +2,8 @@
 # scripts/stage.sh — produce a deployable tarball for a FeiLian forwarding
 # node sidecar install.
 #
-# Outputs $OUT_DIR/leap-stage.tgz containing:
-#   leap-gateway          (linux/amd64, built from this checkout, version-stamped)
+# Outputs $OUT_DIR/turnout-stage.tgz containing:
+#   turnout-gateway          (linux/amd64, built from this checkout, version-stamped)
 #   mihomo                (1.19.x linux/amd64, the data plane)
 #   sing-box              (1.10.x linux/amd64, CLI-only — used by
 #                          whitelistexpand for `rule-set decompile`,
@@ -11,7 +11,7 @@
 #   geoip.metadb          (mihomo's MaxMind DB; required by geoip routing rules)
 #   gateway.yaml          (operator-supplied; defaults to ./gateway.yaml)
 #   <deploy/node/* files> (install.sh, *.service, nft.conf.tmpl,
-#                          iproute.sh, logrotate-leap.conf)
+#                          iproute.sh, logrotate-turnout.conf)
 #   rule-sets/*.mrs       (cn infra + tags referenced by gateway.yaml's
 #                          whitelist, fetched from MetaCubeX /meta/ branch)
 #
@@ -23,8 +23,8 @@
 # Usage on operator workstation:
 #   cp configs/gateway.example.yaml gateway.yaml   # then edit subscription URL + node values
 #   scripts/stage.sh
-#   scp build/leap-stage.tgz ops@<node>:/tmp/
-#   ssh ops@<node> 'cd /tmp && tar -xzf leap-stage.tgz && sudo bash leap-stage/install.sh'
+#   scp build/turnout-stage.tgz ops@<node>:/tmp/
+#   ssh ops@<node> 'cd /tmp && tar -xzf turnout-stage.tgz && sudo bash turnout-stage/install.sh'
 #
 # Env overrides:
 #   GATEWAY_YAML       path to gateway.yaml (default: ./gateway.yaml)
@@ -53,7 +53,7 @@ fail() { printf '[stage][FAIL] %s\n' "$*" >&2; exit 1; }
 # Without an explicit yaml the staged tarball would be useless. The
 # preferred flow for an existing node is `make redeploy-92`
 # (or `scripts/redeploy-full.sh <host>`) — that pulls
-# /etc/leap/gateway.yaml from the node and feeds it to this script via
+# /etc/turnout/gateway.yaml from the node and feeds it to this script via
 # GATEWAY_YAML, so the staged tarball never lies about what the node will
 # end up running. Only fall back to ./gateway.yaml + plain `make stage`
 # when bootstrapping a fresh node that has no on-disk config yet.
@@ -63,14 +63,14 @@ fail() { printf '[stage][FAIL] %s\n' "$*" >&2; exit 1; }
                                        and fill in subscription URL + node values."
 
 mkdir -p "$OUT_DIR" "$STAGE_CACHE"
-STAGE_DIR="$OUT_DIR/leap-stage"
+STAGE_DIR="$OUT_DIR/turnout-stage"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR"
 
-# 1. Build leap-gateway for the target platform.
+# 1. Build turnout-gateway for the target platform.
 # Version is `git describe --tags --always --dirty`: tag if present, short
 # sha otherwise, with `-dirty` suffix when the worktree has uncommitted
-# changes. Injected into main.Version so /api/proxies/active.leap
+# changes. Injected into main.Version so /api/proxies/active.turnout
 # .gateway_version reports it — `dev` means the binary was built off-tree,
 # which is exactly the case we want to flag during incident triage.
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -80,11 +80,11 @@ case "$VERSION" in
     log "         commit your changes first if this is going to a node you care about."
     ;;
 esac
-log "building leap-gateway (linux/$GOARCH, version=$VERSION)"
+log "building turnout-gateway (linux/$GOARCH, version=$VERSION)"
 GOOS=linux GOARCH="$GOARCH" CGO_ENABLED=0 go build \
   -ldflags="-s -w -X main.Version=$VERSION" \
-  -o "$STAGE_DIR/leap-gateway" ./cmd/gateway
-ls -lh "$STAGE_DIR/leap-gateway" | awk '{print "[stage] leap-gateway", $5}'
+  -o "$STAGE_DIR/turnout-gateway" ./cmd/gateway
+ls -lh "$STAGE_DIR/turnout-gateway" | awk '{print "[stage] turnout-gateway", $5}'
 
 # 2. mihomo data-plane binary. Use the "compatible" build (non-AMD64-v3)
 # so it runs on FeiLian forwarding-node hardware classes that lack AVX2.
@@ -136,15 +136,15 @@ cp "$GATEWAY_YAML" "$STAGE_DIR/gateway.yaml"
 log "gateway.yaml copied from $GATEWAY_YAML"
 
 # 5. deploy/node/* — install.sh, *.service, nft.conf.tmpl, iproute.sh,
-# logrotate-leap.conf. leap-singbox.service was removed in the 2026-06
-# sing-box engine cleanup; only mihomo + gateway + nft units ship now.
+# logrotate-turnout.conf. The sing-box data-plane unit was retired in the
+# 2026-06 upstream engine cleanup; only mihomo + gateway + nft units ship.
 cp deploy/node/install.sh \
    deploy/node/iproute.sh \
    deploy/node/nft.conf.tmpl \
-   deploy/node/logrotate-leap.conf \
-   deploy/node/leap-mihomo.service \
-   deploy/node/leap-gateway.service \
-   deploy/node/leap-nft.service \
+   deploy/node/logrotate-turnout.conf \
+   deploy/node/turnout-mihomo.service \
+   deploy/node/turnout-gateway.service \
+   deploy/node/turnout-nft.service \
    "$STAGE_DIR/"
 chmod 0755 "$STAGE_DIR/install.sh" "$STAGE_DIR/iproute.sh"
 log "deploy/node/* files staged"
@@ -276,8 +276,8 @@ done
 log "rule-sets staged: $fetched ok, $skipped skipped ($(du -sh "$STAGE_DIR/rule-sets" | cut -f1))"
 
 # 7. Tarball.
-TARBALL="$OUT_DIR/leap-stage.tgz"
-tar -czf "$TARBALL" -C "$OUT_DIR" leap-stage
+TARBALL="$OUT_DIR/turnout-stage.tgz"
+tar -czf "$TARBALL" -C "$OUT_DIR" turnout-stage
 log "wrote $TARBALL ($(du -h "$TARBALL" | cut -f1))"
 
 cat <<EOF
@@ -286,6 +286,6 @@ cat <<EOF
 Next steps:
   scp $TARBALL ops@<node>:/tmp/
   ssh ops@<node>
-  $ cd /tmp && tar -xzf leap-stage.tgz
-  $ sudo bash leap-stage/install.sh
+  $ cd /tmp && tar -xzf turnout-stage.tgz
+  $ sudo bash turnout-stage/install.sh
 EOF

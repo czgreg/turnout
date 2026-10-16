@@ -1,0 +1,36 @@
+[Unit]
+Description=Inject turnout nft rules + TPROXY iptables rules for FeiLian forwarding
+# turnout-nft manages two independent things:
+#   1. nft table inet turnout — DNS pass-through rule on tun0 (dport 53 accept)
+#   2. iptables TPROXY rules — intercept non-DNS TCP/UDP on tun0, route to
+#      mihomo's tproxy-port (preserving real client sourceIP 10.8.x.x)
+#
+# With TPROXY as the primary data path, we no longer depend on utun-turnout.
+# The old TUN-based design needed utun-turnout because traffic was routed
+# fwmark→utun-turnout; TPROXY intercepts on tun0 (FeiLian's interface) and
+# hands packets directly to mihomo, so utun-turnout is irrelevant here.
+#
+# PartOf=turnout-mihomo.service: when mihomo restarts, re-run iproute.sh up
+# so the iptables TPROXY chain and ip rule are cleanly re-applied.
+After=feilian-tun@tun0.service turnout-mihomo.service
+BindsTo=feilian-tun@tun0.service
+PartOf=turnout-mihomo.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+ExecStart=/usr/sbin/nft -f /etc/turnout/nft.conf
+ExecStart=/etc/turnout/iproute.sh up
+
+ExecStop=-/usr/sbin/nft delete table inet turnout
+ExecStop=-/etc/turnout/iproute.sh down
+
+# Restart on failure so a transient iptables error (e.g. xt_TPROXY module
+# not loaded yet) is retried rather than leaving the node unprotected.
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

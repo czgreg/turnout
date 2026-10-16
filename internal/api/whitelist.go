@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // whitelistDTO is the on-the-wire shape of GET /api/whitelist and PUT body.

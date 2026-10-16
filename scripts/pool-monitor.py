@@ -38,8 +38,8 @@ import urllib.request
 from datetime import datetime, timezone
 
 DEFAULT_API = "http://127.0.0.1:18080"
-DEFAULT_OUT = "/var/lib/leap/pool-monitor.jsonl"
-DEFAULT_STATE = "/var/lib/leap/pool-monitor-state.json"
+DEFAULT_OUT = "/var/lib/turnout/pool-monitor.jsonl"
+DEFAULT_STATE = "/var/lib/turnout/pool-monitor-state.json"
 
 # Mirrors internal/nodescorer/helpers.go compositeScore. Kept in sync by hand;
 # the passive term is omitted because /api/nodes/health exposes passive stats

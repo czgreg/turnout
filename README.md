@@ -1,530 +1,229 @@
-<div align="center">
+# turnout-gateway · 旁挂网关
 
-# Interchange · 立交网关
+**旁挂在办公网防火墙上，给每一股流判定走哪条道的一台 Linux 设备。**
 
-**在飞连转发节点上，让内网和海外同时可达 —— 员工零配置、零客户端、零感知。**
+终端 → 防火墙（PBR 引流）→ 本设备判定 → 该翻墙的走海外池 / 不该翻墙的原样交回防火墙。
+DNS 同样经本设备处理。零客户端、零终端配置。
 
-[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](go.mod)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Data plane](https://img.shields.io/badge/data%20plane-mihomo-blueviolet)](https://github.com/MetaCubeX/mihomo)
-
-中文 · [English](README.en.md)
-
-<img src="assets/cover.png" alt="Interchange 立交网关" width="640">
-
-</div>
+派生自 [leap-gateway / Interchange](../leap-gateway)（飞连转发节点侧车），
+复用其控制面与 mihomo 数据面，替换入向模型并新增自检降级能力。
 
 ---
 
-## 为什么有这个项目
+## 1. 和上游的本质差异
 
-AI 工具成了日常开发的一部分之后，一个矛盾突然变得很日常：
-
-**员工既要连内网，又要访问海外。** Claude、ChatGPT、Copilot、Cursor、
-GitHub、npm、PyPI —— 这些不再是"翻墙上网"，而是写代码的必要条件。同时
-公司的 GitLab、Jira、内部 API 还在内网里。
-
-传统做法里这两件事互斥：
-
-- 挂着公司 VPN，出不去；
-- 挂着个人代理，进不来内网；
-- 两个都开，路由表打架，员工每天手动切来切去。
-
-于是各种"变通"开始出现 —— 每人自费买机场、装客户端、在群里互相教怎么配
-规则。IT 侧看不见、管不了，成本也散落在几十份个人账单里。
-
-**Interchange 把这两条路合并到一个已有的基础设施上：飞连（火山引擎
-CorpLink）的转发节点。** 员工照常连飞连，什么都不用装、不用配。去往国内的
-流量原样直连，去往海外白名单的流量在节点上被透明分流到机场节点。
-
-名字取"立交桥"之意：两条车道在同一个节点上交汇，分层通行、互不干扰。
-
-## 它做什么
-
-<img src="assets/architecture.png" alt="拓扑示意" width="600">
-
-- **员工侧零改动** —— 不装客户端、不改代理设置、不配规则。飞连本来就装了。
-- **国内流量零损耗** —— `geosite-cn` / `geoip-cn` 最前匹配，命中即直连，
-  延迟与不开代理时一致，也不消耗机场流量。
-- **内网照常可达** —— 内网域名走国内 DoH 解析、直连出站，不受代理影响。
-- **一个终端一个出口** —— 同一台设备的所有海外请求走同一个机场节点，
-  不会因为多个出口 IP 触发 Cloudflare / OpenAI 的风控。
-- **节点自己会挑路** —— 每 5 分钟给所有候选节点打分，慢的、失败的自动
-  剔出；节点挂了 30 秒内自动切备用；池组成变化推送飞书。
-- **可编排** —— 25 个 REST 端点，订阅、白名单、池成员、告警都能程序化操作；
-  自带一个基于 [Arco Design](https://arco.design/) 的 Web 控制台，编进二进制，
-  订阅管理、节点打分、终端出口查询直接在浏览器里完成。
-
-## 和其他方案的取舍
-
-| 方案 | 月成本量级 | 员工侧负担 | 备注 |
-|---|---|---|---|
-| **Interchange + 机场订阅** | 约 100–500 元，上限约 1000 元 | 零 | 复用已有的飞连节点 |
-| 商业 SD-WAN / 跨境专线 | 千元以上 | 通常还要装厂商客户端 | 稳定，但为这个用途偏重 |
-| 自建海外 VPS | 千元以上 | 每人各自配置 | 还要自己扛性能损耗与稳定性 |
-| 员工自费买机场 | 分散在个人账单 | 每人自己折腾 | IT 看不见、管不了 |
-
-**范围是刻意收窄的**：只面向美国节点（`url_test.node_pattern` 默认
-`'美国|🇺🇸|\bUS'`），只做白名单站点的分流。放弃"全球任意落地 + 全量流量
-代理"，换来成本更低、故障面更小、运维更轻。
-
-**实测容量**（单节点，2026-06-07，见 `capacity:` 配置块）：
-
-| 指标 | 数值 |
-|---|---|
-| 稳定承载 | 50 人（p95 ≈ 2s） |
-| 降级承载 | 150 人（p95 ≈ 5s，错误率 ≈ 0） |
-| 瓶颈 | 跨境机场带宽，不是本地数据面 |
-
-150 并发下 mihomo CPU 仍低于 36%。压测 worker 的请求率约等于真实员工的
-5–10 倍，所以真实可承载人数明显高于这两个保守值。用 `scripts/stress.sh`
-在你自己的节点上重测，然后覆盖这两个数字。
-
-## 架构
-
-三个 systemd 单元，职责不重叠：
-
-| 单元 | 角色 | 职责 |
+| 维度 | Interchange（上游） | turnout-gateway（本项目） |
 |---|---|---|
-| `leap-gateway` | 控制面（Go） | 订阅拉取解析 / 白名单展开 / 节点打分 / 渲染 mihomo 配置 / REST API / 飞书告警 |
-| `leap-mihomo` | 数据面 | DNS 服务 + 透明代理 + 流量分类 + 机场出站 |
-| `leap-nft` | 内核规则 | nft 规则 + iptables TPROXY + ip rule/route |
+| 部署位置 | 飞连转发节点，串在 VPN 出口 | 旁挂在防火墙边，靠 PBR 引流 |
+| 入向 | `tun0` + fwmark 策略路由 | 面向防火墙的物理口 + TPROXY |
+| 入向源地址 | 飞连客户端池 `10.8.x.0/24` | 办公网段（如 `10.1.0.0/16`） |
+| 判定后"不需要翻墙"的动作 | 从本机出口网卡直接出 | **交回防火墙**，由防火墙正常转发 |
+| 出向"翻墙" | 机场节点池 | 机场节点池（不变） |
+| 失效处理 | 飞书告警 + 人工 | + 本机 watchdog 主动摘除探活地址，防火墙自动回切 |
 
-### 数据面：一个包的两种命运
+一句话：**控制面几乎原样搬，数据面的"两条腿"要重新定义——一条出墙，一条回防火墙。**
 
-```mermaid
-flowchart LR
-    PC["员工设备<br/>10.8.x.x<br/>零配置"] -->|"飞连 VPN"| TUN["tun0<br/>飞连转发节点"]
+---
 
-    TUN -->|"dport 53<br/>nft accept"| DNS["mihomo DNS :53<br/>redir-host 真实 IP"]
-    TUN -->|"其余 TCP/UDP<br/>iptables TPROXY"| MI["mihomo :7893<br/>保留真实 srcIP"]
-
-    MI --> CLS{"分流判定<br/>geosite / geoip / TLS SNI"}
-
-    CLS -->|"国内 · 内网"| D["DIRECT → 出口网卡<br/>延迟等同直连"]
-    CLS -->|"海外白名单"| FB["fb-&lt;ip&gt; 组<br/>[primary, secondary]"]
-
-    FB --> AIR["机场节点（美国）"] --> WWW["OpenAI / Claude / GitHub"]
-    D --> LAN["内网服务 / 国内站点"]
-```
-
-### 控制面：谁在管谁
-
-```mermaid
-flowchart TB
-    SUB["机场订阅<br/>clash / sing-box / uri / sip008"] -->|"拉取解析<br/>经池出墙"| GW
-
-    subgraph node["飞连转发节点"]
-        GW["leap-gateway<br/>控制面"]
-        MI["leap-mihomo<br/>数据面"]
-        NFT["leap-nft<br/>内核规则"]
-        GW -->|"渲染 config.yaml<br/>clash-api 热重载"| MI
-        NFT -->|"TPROXY 规则<br/>ip rule / route"| MI
-    end
-
-    GW <-->|"每 5 min 打分"| SCORE["NodeScorer<br/>双窗 EWMA · trial · 隔离"]
-    GW -->|"池变更 / 紧急事件"| LARK["飞书告警<br/>HMAC 签名 + JSONL 兜底"]
-    OPS["运维 / 前端"] -->|"REST :18080"| GW
-```
-
-## 前置条件
-
-节点侧（`deploy/node/install.sh` 的 `precheck()` 会逐条卡）：
-
-- 一个**飞连转发节点**，`feilian-tun@tun0.service` 处于 active
-- root / sudo
-- `tun0` 的 IP 与 `gateway.yaml` 里的 `node.tun0_gateway_ip` 一致
-- `net.ipv4.conf.all.rp_filter` ∈ {0, 2}（fwmark 策略路由需要 loose 模式）
-- `net.ipv4.ip_forward = 1`
-- `tun0_gateway_ip:53` 和 API 端口（默认 18080）空闲
-- 内核支持 `xt_TPROXY`
-
-开发侧：
-
-- Go 1.22+、`make`
-- Node.js 20.19+ —— **仅在修改 Web 控制台时需要**；控制台的构建产物已提交在
-  仓库里，`go build` / 部署都不依赖 Node
-- 至少一个机场订阅（支持 clash YAML / sing-box JSON / URI 列表 / SIP008）
-
-节点上会装 mihomo 1.19.26 作为数据面；另外还会装一个 sing-box 1.10.7
-二进制，但它**不作为服务运行** —— 只是因为 mihomo 没有等价命令，白名单
-展开时要 shell 出去调 `sing-box rule-set decompile`。
-
-## 部署
-
-```bash
-git clone https://github.com/czgreg/interchange.git
-cd interchange
-cp configs/gateway.example.yaml gateway.yaml
-```
-
-编辑 `gateway.yaml`，最少要填这几项：
-
-```yaml
-subscriptions:
-  - name: "main"
-    url: "https://your-provider/subscription-url"
-    format: "auto"          # auto | clash | singbox | uri | sip008
-    enabled: true
-
-node:                       # 飞连给这个转发节点分配的值，没有默认值
-  client_subnet:   "10.8.11.0/24"   # 本节点飞连客户端地址池
-  tun0_gateway_ip: "10.8.11.1"      # tun0 上的网关 IP，mihomo DNS 绑这里
-  egress_iface:    "ens18"          # 公网出口网卡
-
-data_plane:
-  tproxy_port: 7893         # 必填且 > 0，TPROXY 是唯一支持的数据通路
-```
-
-然后一次性打通 SSH，再部署：
-
-```bash
-make setup-ssh NODE=<user>@<node-ip>   # 推公钥 + NOPASSWD sudo，只需一次
-make redeploy-full NODE=<user>@<node-ip>
-```
-
-`redeploy-full` 是**先拉节点上的 yaml 再打包**，所以不会用本地的旧配置
-覆盖节点。首次部署时节点上还没有 yaml，用
-`make deploy-full-LOCAL-YAML NODE=...` 推本地的那份。
-
-之后改代码只换二进制（约 10 秒）：
-
-```bash
-make deploy-fast NODE=<user>@<node-ip>
-```
-
-`Makefile` 里的 `deploy-92` / `redeploy-92` 是作者生产节点的快捷方式，
-`NODE` 和 `REMOTE_USER` 都可以覆盖 —— 换成自己的节点用
-`make deploy-fast NODE=ops@<ip>` 或 `make redeploy-full NODE=ops@<ip>`。
-
-配置飞书告警（可选，secret 不落 yaml）：
-
-```bash
-curl -X POST -H "Content-Type: application/json" \
-  -d '{"webhook_url":"https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
-       "secret":"<bot-secret>","signature_required":true}' \
-  http://<node-ip>:18080/api/notifications/lark
-```
-
-## Web 控制台
-
-控制面自带一个网页控制台，部署后直接访问：
+## 2. 拓扑与数据流
 
 ```
-http://<node-ip>:18080/ui/
+                        办公室终端
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │  华为 USG6000E   │
+                    │  PBR: 源=办公网段 │
+                    │  原入接口=LAN    │
+                    └────┬───────▲────┘
+            引流(命中PBR) │       │ 回程(不命中PBR)
+                         ▼       │
+               ┌─────────────────┴──────────────┐
+               │      turnout-gateway (Linux)      │
+               │                                  │
+               │  ens-ly ──┐                      │
+               │           ├─► TPROXY:7893        │
+               │  ens-ly ◄─┘      │               │
+               │                  ▼               │
+               │           mihomo 判定             │
+               │          ╱          ╲            │
+               │    whitelist命中   其余命中       │
+               │        │              │          │
+               │        ▼              ▼          │
+               │   海外池出墙      从 ens-fw 交回   │
+               │   (ens-out)       防火墙          │
+               └──────────────────────────────────┘
+                         │                    │
+                         ▼                    ▼
+                    海外站点            国内站点 / 内网
 ```
 
-<img src="assets/screenshots/overview.png" alt="控制台总览" width="100%">
+**关键路由约束（必读）**
 
-> 本节截图来自 `web/` 自带的 mock 数据（虚构的机场、节点与出口 IP），不是生产节点。
+已定方案 B（TPROXY 全量 + mihomo DIRECT 出站，见 PLAN.md P2）：
 
-五个页面，覆盖日常运维的全部入口：
+1. **默认路由指向防火墙那一侧的 next-hop**（`node.return.gateway_ip`）。
+   这是回程的全部机制：mihomo 判定为 DIRECT 的流量从其出站走本机默认路由，
+   下一跳即防火墙 —— 流量因此交还，由防火墙正常转发。
+2. **回程不会造成环路**，有两个独立原因：
+   - 回程流量是从本机重新发起的（源地址是本机地址），
+     不匹配防火墙 PBR 的 `source-address = 办公网段`；
+   - 你已确认防火墙 PBR 指定了原入接口，与本机回程出口不共用。
 
-| 页面 | 用途 |
+   这正是方案 B 不需要单独回程物理口的原因。
+3. 出墙流量由 mihomo 从 `node.egress_iface` 主动发起，**出站绑定该接口**，
+   因此不经过默认路由（否则会被送进防火墙绕一圈再出去）。
+4. TPROXY 的 `ip rule fwmark 0x44 lookup 101` 只对本机"收到"的包生效；
+   回程是 mihomo 主动发出的包，不打 fwmark。但仍需在 nft 侧确认
+   **FORWARD 链没有挂 TPROXY**。
+5. 入向源 IP 由 TPROXY 保留（这正是上游 `inbounds.go` 弃用 TUN 的原因），
+   所以 per-terminal 成立——"用户身份用源 IP 够用"这条前提满足。
+   注意区分：**入向**源 IP 保留（用于识别终端），**回程**源 IP 会被 NAT
+   （用于交还防火墙），两者不是一回事。
+
+---
+
+## 3. 判定逻辑（沿用上游，不改）
+
+白名单模式，规则的顺序与语义与 Interchange 完全一致（见 `internal/mihomo/rules.go` 上游实现）：
+
+```
+1. IP-CIDR,私网段          → DIRECT   （交回防火墙）
+2. RULE-SET,geosite-cn     → DIRECT
+3. RULE-SET,geoip-cn       → DIRECT,no-resolve
+4. [白名单 geosite 标签]    → out / perterm
+5. [白名单 DOMAIN-SUFFIX]   → out / perterm
+6. [白名单 geoip 标签]      → out,no-resolve
+7. [白名单 IP-CIDR]         → out,no-resolve
+8. MATCH                   → DIRECT   ← 兜底：无法分类的一律交回防火墙
+```
+
+第 8 行的存在，让"纯 IP 目标 / QUIC / 非 HTTP 私有协议"**自动**落到直连，
+不需要任何额外处理。这就是你问的那条：能与现有保持一致，且是天然一致。
+
+**能分类的范围**（嗅探器 `sniffer.go`，同样沿用）：
+- TLS SNI：443 / 8443
+- HTTP Host：80 / 8080-8880
+- QUIC ALPN：443
+- `parse-pure-ip: true`：目标是纯 IP 也照嗅
+- `override-destination: true`：嗅出域名后改写目标，用于 geosite 匹配
+
+**盲区**：端口不在上述列表、且非 TLS/HTTP/QUIC 的私有协议 → 走第 8 行直连。
+对白名单模型这是正确行为。
+
+**DNS 角色**：沿用上游的 `redir-host`（真实 IP，不用 fake-ip）+ SNI 嗅探。
+理由是上游 2026-07-06 从 fake-ip 切回 redir-host 的那两个故障（内网域被假 IP 误伤、
+机场节点域名解析失败）在办公环境只会更严重——办公网里 NAS、打印机、监控、
+内网业务系统大量靠纯 IP 或内网域名直连，fake-ip-filter 会变成一个无底洞。
+
+> 暂不处理 DoH/ECH 场景（按你的要求）。届时终端自带 DoH 会让嗅探失效，
+> 这类流量落到第 8 行直连——**表现为"翻墙不生效"而不是"断网"**，
+> 属于可接受的降级方向。后续如需收紧，再考虑劫持 53 或阻断 853。
+
+---
+
+## 4. 出墙出口（沿用上游）
+
+机场订阅 + NodeScorer 双窗 EWMA 打分 + 池决策 + per-terminal（一个终端一个出口 IP，
+避免 Cloudflare/OpenAI 风控）+ 飞书告警。这部分代码不动。
+
+规模维持现状（少量用户试用，实测 50 稳定 / 150 降级，瓶颈是机场带宽）。
+
+---
+
+## 5. 失效与回切
+
+**手动回切是你的兜底，自动回切靠 IP-Link。** 华为 USG6000E 的约束：
+
+- 能联动 `policy-based-route` 的只有 **IP-Link**；它**只支持 `icmp` 和 `arp`** 两种探测模式，
+  **没有 HTTP/TCP**。
+- 智能选路的 Health Check 支持 ICMP/TCP/HTTP/DNS/UDP，但它属于智能选路的选路池，
+  **不能绑定经典 PBR**。
+
+因此自动回切只能用 ICMP/ARP 探活。而 ICMP 探活有个致命缺口：
+
+> **它探的是内核，不是数据面。** mihomo 崩溃、nft 规则被刷掉、出口池全挂——
+> 这三种情况下机器照样秒回 ICMP，防火墙认为一切正常，继续把整个办公网的
+> 流量灌进黑洞。手动切回的前提是"你知道它挂了"，而这时你不知道。
+
+**解法：把探测信号的准确性做成本机自己的责任。** 本项目新增一个 watchdog：
+
+```
+turnout-watchdog 每 N 秒自检三项：
+  a. mihomo 进程存活 + clash-api /version 可达
+  b. 数据面规则在位（消费 assert.go 的既有状态，不重复实现）
+  c. 出口池里至少一个节点健康（复用 NodeScorer 的状态）
+
+全部通过 → 探活地址在位，应答 ICMP → 防火墙 IP-Link Up   → PBR 生效
+任一失败 → 摘掉探活地址             → 防火墙 IP-Link Down → 回落直连
+```
+
+这样把一个 L3 的哑探针，变成了反映数据面真实健康度的信号。
+`arp` 模式更可靠（同网段直连、不受对端 ICMP 策略影响），旁挂机与防火墙同 VLAN 时优先用；
+注意 ARP 模式要求探活地址绑在**物理口**而非 `lo`（见配置项 `liveness_iface`）。
+
+### 探活地址：部署时必填，无默认值
+
+`liveness_ip` 是刻意不给默认值的。它是本机与防火墙之间**唯一的健康信号通道**，
+配错会静默故障：
+
+- 漏填 → watchdog 摘了个不存在的地址，防火墙毫无感知，继续灌黑洞
+- 填成 `node.ingress_ip` → 摘下地址时 **SSH 和 API 一起失联**，你连上去排查的路都没了
+- 填成网段内别的设备在用的地址 → 冲突
+
+`install.sh` 的 precheck 会拒绝空值，并要求它与 `node.ingress_ip` 不同。
+
+### 降级动作默认关闭（`auto_failover: false`）
+
+配置里区分了"**报信**"和"**动作**"两件事：
+
+| `auto_failover` | 判定不健康时 |
 |---|---|
-| **总览** | 6 个关键指标卡（数据面、在池节点、解析节点、24h 池变更、探针不通、数据通路断言）；`/healthz` 四项 TPROXY 断言明细；当前出口 IP 与归属；在池节点的 url-test 延迟；池规模与 24h 稳定度；三个 systemd 单元状态；容量基准 |
-| **节点状态** | 每个候选节点的 p50 / p95 / 抖动 / 失败率 / 活跃连接（可排序），在池与合格状态，各站点探针结果；顶部汇总观察阈值和每个探针的全局通过率；展开行看评分细节、被动连接统计、每个探针的 HTTP 状态码 / 耗时 / CF 挑战 / 错误 |
-| **订阅管理** | 新增 / 修改 / 删除订阅、立即拉取全部、调周期刷新间隔；所有会重载 mihomo 的操作都先弹确认，并写明耗时 |
-| **终端查询** | 输入员工的飞连地址，直接看到它的 `fb-<ip>` 组、primary / secondary 出口、哪个当前生效，以及两者的延迟、失败率、被动连接与站点探针 |
-| **池变更审计** | 24h 变更 / 回滚 / 移入 / 移出统计，当前隔离名单，按类型筛选的变更历史，展开看变更后的完整池 |
+| `false`（默认） | 只推飞书告警（含失败的具体检查项），探活地址保持应答，防火墙不动作 |
+| `true` | 摘掉探活地址 → IP-Link Down → PBR 失效 → 流量自动回落直连 |
 
-<table>
-  <tr>
-    <td width="50%"><img src="assets/screenshots/nodes.png" alt="节点状态"><br><sub><b>节点状态</b> —— 打分、站点探针、按订阅 / 在池筛选</sub></td>
-    <td width="50%"><img src="assets/screenshots/terminal.png" alt="终端查询"><br><sub><b>终端查询</b> —— 员工报「慢 / 打不开」时的第一入口</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="assets/screenshots/subscriptions.png" alt="订阅管理"><br><sub><b>订阅管理</b> —— URL 中的 token 由接口脱敏</sub></td>
-    <td width="50%"><img src="assets/screenshots/transitions.png" alt="池变更审计"><br><sub><b>池变更审计</b> —— 频繁变更说明打分在抖动</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="assets/screenshots/subscription-masked-guard.png" alt="脱敏 URL 拦截"><br><sub><b>编辑订阅</b> —— 粘贴回脱敏 URL 会被前端拦下</sub></td>
-    <td width="50%"><img src="assets/screenshots/overview-dark.png" alt="深色模式"><br><sub><b>深色模式</b> —— 默认跟随系统，右上角一键切换</sub></td>
-  </tr>
-</table>
+**建议上线初期保持 `false`，只告警不动作，观察一到两周真实故障率。**
+试用期用户少，手动切回足够；自动摘地址在"数据面半死"时会给出假的安全感
+（探针说健康、实际黑洞），反而不如没有。确认故障模式可预期后再置 `true`——
+这是配置项而非代码分支，切换不需要重新部署。
 
-其余细节：
+**配套注意**（防火墙侧，你实现）：
+- IP-Link 探测包从 `local` 区发出，安全策略必须放行，否则永远 Up 不起来。
+- 探测包与回包的路由双向可达。
+- 默认约 3 个周期（15s）判 Down，连续 3 次响应才判 Up；开启 revertive delay 更慢。
+- 观察命令：`display ip-link status` / `display ip-link track`。
 
-- **10 秒自动刷新**，可随时关闭；各接口独立失败 —— 比如 scorer 未启用时
-  `/api/nodes/health` 返回 503，只影响节点页，其余页面照常显示。
-- 顶栏的 `healthz` 标签悬停即可看到每一项数据通路断言；侧栏「节点状态」上的
-  红色角标是当前探针不通的节点数。
-- 每个页面都有独立地址（`/ui/#/nodes`、`/ui/#/terminal` …），可以收藏或发给同事。
+**建议的推进节奏**：先只配 IP-Link 做**告警**（Down 时经现有飞书通路推一条），
+跑一段时间观察真实故障率，再决定是否启用 watchdog 的自动摘地址。少量用户试用阶段，
+手动切回足够；ICMP 自动回切在"数据面半死"时会给出假的安全感，反而不如没有。
 
-### 安全上的几个刻意选择
+---
 
-- **`/ui/` 不鉴权，但它只是静态文件** —— 页面本身不含任何节点数据或凭据，
-  所有真实数据都走 `/api/*`，那些端点仍在 `api.token` 后面。浏览器导航
-  无法带 Bearer 头，硬要给 HTML 鉴权只会把 token 逃到 URL 或 Cookie 里，
-  反而更差。
-- **token 只存在当前标签页内存**，不写入任何浏览器存储。刷新页面需要重新
-  输入 —— 这是有意的：token 能读到带凭据的订阅 URL。`go test` 会检查源码和
-  最终打包产物里都没有 `localStorage` / `sessionStorage`。
-- **严格的 CSP**：`default-src 'none'; script-src 'self'; style-src 'self'`，
-  不加载任何外部资源，不允许内联脚本和内联样式。`npm run preview` 用同一份
-  CSP 伺服构建产物，违规会在合入前暴露出来。
-- **可达范围由 `api.listen` 和 nft 规则控制**。默认 `127.0.0.1:18080` 意味着
-  要用 SSH 端口转发；改成 `0.0.0.0` 才能远程访问，而飞连终端网段被 nft
-  固定拒绝。开启 UI 不会扩大这个面。
+## 6. 配置模型
 
-```bash
-# api.listen 保持默认（仅本机）时，用端口转发访问
-ssh -L 18080:127.0.0.1:18080 <user>@<node-ip>
-# 然后浏览器打开 http://127.0.0.1:18080/ui/
-```
+见 `configs/gateway.example.yaml`。相对上游的 schema 变化：
 
-> 订阅的增删改与“立即拉取”都会重载 mihomo（约 3–5 秒中断），拉取本身可能
-> 要 30 秒以上，UI 会先弹确认并写明耗时。另外 `GET /api/subscriptions`
-> 返回的 URL 是脱敏的（`token=abcd***ef01`），所以编辑时不会回填旧 URL；
-> 要改地址必须粘贴完整的新 URL，含 `***` 的值会被前端拦下。
-
-### 开发控制台
-
-技术栈：React 18 + [Arco Design](https://arco.design/react) + TypeScript + Vite。
-源码在 `web/`，构建产物写入 `internal/api/ui/` 并**提交进仓库**，再由
-`go:embed` 编进二进制 —— 所以部署仍然是“推一个文件”，`go build`、CI 和
-`stage.sh` 都不需要 Node。
-
-```bash
-cd web && npm ci
-
-npm run mock       # 虚构节点的 mock 数据，不需要任何后端 → http://localhost:5173/
-npm run dev        # 代理到真实节点，默认 LEAP_API=http://127.0.0.1:18080（配合上面的 ssh -L）
-LEAP_API=http://<node-ip>:18080 npm run dev
-
-make ui            # 类型检查 + 构建，产物写入 internal/api/ui/
-npm run preview    # 用生产 CSP + mock 数据伺服构建产物，最后一道检查
-```
-
-改完 `web/src` 后跑 `make ui`，把 `web/` 和 `internal/api/ui/` 的改动一起提交。
-**不要手改 `internal/api/ui/` 里的文件**，下次构建会把它们覆盖掉。
-`go test ./internal/api/` 会校验：控制台调用的每个 `/api/*` 路径都已在
-`api.go` 注册、编辑订阅不回填脱敏 URL、不使用浏览器存储。
-
-## 日常运维
-
-```bash
-make status         # /api/status —— 引擎 / 池 / 容量 / 24h 稳定度
-make nodes          # /api/nodes/health —— 打分 + 探针 + 被动统计
-make health         # /api/proxies/active —— 数据面活跃快照
-make logs           # leap-gateway 日志
-make mihomo-logs    # 数据面日志
-make nft            # 查看 nft table inet leap
-make ssh            # 直接登进节点
-```
-
-API 配了 `api.token` 时，给 `make` 传 `LEAP_TOKEN=<token>`。
-完整端点见 [docs/api.md](docs/api.md)。
-
-> **⛔ 一条硬规则：不要跨节点同步 `subscriptions:`。**
-> 每个节点的订阅列表是运维自己拥有的，按地理位置、合同、成本刻意做得不
-> 一样。把它当成"需要拉平的配置漂移"会静默搞坏生产 —— 这条规则是真踩过
-> 才写下来的。`make redeploy-*` 走的是 yaml-first 路径，天然安全。
-> 详见 [CLAUDE.md](CLAUDE.md)。
-
-## 工作原理
-
-### TPROXY，而不是 TUN
-
-`xt_TPROXY` 在 mangle PREROUTING 拦下 `tun0` 上的非 DNS 流量交给
-mihomo:7893，**保留真实客户端 IP**（10.8.x.x）。
-
-这是"一个终端一个出口"的硬前提。两种 TUN stack（`system` 和 `gvisor`）
-都会把所有客户端塌缩成 `198.18.0.0` —— 那样 per-terminal 路由退化成
-所有人共用一个出口。`tun.stack` 只影响 CPU，不影响源 IP。
-
-### `redir-host`，而不是 fake-IP
-
-mihomo 接管 DNS，所有域名都返回**真实 IP**，不做全局劫持。路由不依赖
-DNS 结果 —— sniffer 从 TLS SNI / HTTP Host / QUIC 里取域名（纯 IP 流量
-也能覆盖），`geosite` 规则据此分类。CN 域名走国内 DoH，海外域名走经机场
-出墙的 proxy DoH，绕开 GFW 的 UDP 53 抢答。
-
-**为什么换掉 fake-IP**：fake-IP 是"默认劫持 + 名单豁免"模型，任何漏配的
-域名都会拿到 `198.18.x.x` 假 IP 然后超时。2026-07-06 换订阅商时漏配了
-新机场自己的服务器域名，结果全节点探测 `alive=false` —— 整个池看起来都
-死了。`redir-host` 从根上消除这一类故障：节点域名和内网域名自动拿到真实
-IP，零维护。
-
-### `fb-<ip>`：一个终端，一个出口
-
-开启 `load_balance.per_terminal` 后，每个客户端 IP 在 mihomo 配置里有一个
-专属的 `fallback` 组，命名 `fb-<ip>`，成员是 HRW 算出的 top-2
-`[primary, secondary]`。`SRC-IP-CIDR` 规则把这个 IP 的流量导到该组。
-
-- 主节点活着 → 一直走 primary，出口 IP 稳定；
-- 主节点死了 → mihomo 内置 alive 位在 30 秒内切到 secondary，**控制面
-  不介入**；
-- 一个终端的所有目的地共享同一出口 —— ChatGPT 的
-  `chatgpt.com` / `chat.openai.com` / `cdn.openai.com` 全走同一个 IP，
-  不触发 fan-out 检测。
-
-### NodeScorer：慢决策，抗抖动
-
-分工是刻意分开的：
-
-| 层 | 周期 | 判什么 |
+| 上游字段 | 新字段 | 说明 |
 |---|---|---|
-| mihomo `health_check_interval` | 30s | 二值存活。死节点按流跳过，不重渲染配置 |
-| `node_qualify.scoring_interval` | 5m | 分级质量。持续退化才触发热重载 |
+| `node.client_subnet` | 保留 | 改为办公网段 |
+| `node.tun0_gateway_ip` | `node.ingress_ip` | DNS 监听地址绑在它上面 |
+| （无） | `node.ingress_iface` | 面向防火墙的网卡名 |
+| `node.egress_iface` | 保留 | 出去到机场节点的网卡 |
+| （无） | `node.return.*` | **新增**：回程下一跳（指向防火墙） |
+| `data_plane.tproxy_port` | 保留 | 必需 |
+| `data_plane.tun.enabled` | 保留（`false`） | 上游也是靠 TPROXY，TUN 块只是占位 |
+| （无） | `watchdog.*` | **新增**：自检间隔、检查项、探活地址（必填）、降级开关 |
 
-打分公式 `p95 + 2×jitter + 5000×fail²`，按 24h 半衰期的长窗 EWMA 排名。
-三层防抖：新节点 24h trial 期内不能晋升；回滚后默认隔离 1 小时不被回填；
-非池→池的换血要求绝对分差超过 `swap_threshold_score`（默认 **400**）。
-`fail_rate ≥ 0.9` 是灾难门，直接判不合格，10 分钟内自然剔出。
+`subscriptions:` 块语义不变。
 
-这个 400 是调出来的，不是拍的：最早用 100（“100ms p95 更好”），在 22 节点候选
-集上实测每 24 小时换池 ≈67 次，带来的 IP 漂移刚好是 CF / OpenAI 行为模型在
-抓的东西。需要回到“有任何改善就换”的语义可以设为 0。
+> ⚠️ 上游 `CLAUDE.md` 的硬规则在本项目同样有效：
+> **任何情况下不得增删改重排节点订阅**。从上游同步配置 schema 时，
+> 必须把目标节点的 `subscriptions:` 块原样拼接回去。
 
-站点探针专门挑**能反映出口 IP 信誉**的端点，而不是会给无头客户端弹
-JS 挑战的页面：`api.openai.com/v1/models` 返回 401 说明请求真的到了
-OpenAI 的 API 面、这个出口 IP 被接受；返回 Cloudflare 挑战则一律记为
-失败（请求根本没到源站，不可能算"可达"）。
+---
 
-## 设计取舍与踩过的坑
+## 7. 文档
 
-这一节比上面那些机制更有信息量 —— 它们是**改错之后**的样子。
-
-### "固定 K 个池成员"这个抽象是错的
-
-原设计让池维持一个固定大小 K，由容量公式
-`⌈T_active × surge / cap_per_node⌉` 算出。生产跑出来的结果是每天约 50 次
-池成员变更，49 次 transition 里 15 次是纯周期-2 反转。
-
-五个独立视角各自从零推演后的共识是：**问题不在参数，在抽象本身。**
-
-- K 的三个输入全都没实测过（`t_active=50` vs 实测 19；`cap_per_node=10`
-  从未测量）；
-- 强制固定大小等于一个**没有死区的比较器驱动饱和执行器**，系统在执行器
-  自己的节拍上（恰好 300s）极限环振荡；
-- 信号信噪比只有 0.02–0.05，真实档差 25–80 而 composite 噪声 1400–4500 ——
-  `swap_threshold=100` 在噪声底下 15 到 45 倍，等于没有阈值；
-- K 唯一的实际作用只是"HRW 从哪个集合里选"，它既不是容量预留也不是负载
-  均衡（负载均衡是 HRW 干的，实测每节点最多 6 个终端 vs cap 10）。
-
-改法是删掉固定大小：HRW 直接在"全部合格节点"上跑，可抢的边缘槽从构造上
-消失，乒乓随之消失。反检测上还更优 —— 固定 K 换槽要动 24% 终端的出口
-（因为逼着"删+增"同时发生），资格集方案只付实际发生的那一半。
-
-完整推演见
-[docs/design-eligibility-set-selection.md](docs/design-eligibility-set-selection.md)，
-两个被否掉的前代方案见
-[docs/design-pool-sizing-rejected-v1v2.md](docs/design-pool-sizing-rejected-v1v2.md)。
-`sizing_mode` 默认仍是 `legacy`，切换前可以用 `sizing_shadow: true` 影子
-运行 24 小时对比差异。
-
-### 自动发现的 UA 不回写 yaml
-
-不同机场对 User-Agent 的反应不一样：有的对 sing-box UA 返回 HTTP 500，
-有的用 Clash UA 会返回阉割版的 `proxies: []`。所以有一个自动发现机制，
-在订阅返回 5xx 或 0 个节点时试另一个 UA 家族。
-
-早期版本会把发现到的 UA 写回 yaml —— 结果一次事故：**能用的那个 UA 偶发
-了一次错误，系统永久翻到了坏的那个，而且没有自愈路径。** 现在自动发现只
-救当次拉取，然后打一行日志让运维自己决定要不要固化。`subscriptions[]` 是
-运维拥有的，程序不自动改。
-
-### DoH 并行竞速会让 NXDOMAIN 赢
-
-mihomo 对 `proxy-server-nameserver` 的多个上游是**并行竞速取第一个非
-error 的回答**，而 NXDOMAIN 在这条路径上不算 error（只有 SERVFAIL /
-REFUSED 才算）。所以当某个 DoH 前端对活着的域名间歇返回 NXDOMAIN 时，
-**加一个健康上游救不回来** —— 最快的那个 NXDOMAIN 总会赢。节点实测：
-10 次拨号 10 次全失败。
-
-修法是 `node_resolver_suffixes` —— 只把确认有问题的那个后缀钉到明文 UDP
-上游，10 次 0 失败。为什么必须按后缀限定：明文 UDP 上游（0.04–0.06s）比
-DoH（0.164–0.291s）快 4–5 倍，直接加进竞速列表会让它静默变成**所有**
-节点域名的实际主解析器，把节点解析整体挪到可被投毒的路径上。
-
-### 其他
-
-- **热重载会清空 url-test 历史**，活节点会短暂拿到"benefit of doubt"进池，
-  历史重建后真死节点才掉出。已知瞬态，被 trial 期和池集合恢复限制住了
-  影响面。见 [docs/ops-eligibility-cutover-92.md](docs/ops-eligibility-cutover-92.md)。
-- **`hot_reload_min_interval` 默认 90s**：不节流的话每次池变化都热重载，
-  会打断 ChatGPT 的 SSE 长连接。
-- **`subscribe.refresh_interval` 默认 0（关闭）**：阅后即焚类订阅二刷直接
-  挂；节点列表本来就低频变化；节点健康度由探针在跑，不需要靠重拉订阅"刷
-  新一下"。
-- **默认 `api.listen: 127.0.0.1:18080`**：需要远程访问才改 `0.0.0.0`。
-  节点防火墙固定拒绝飞连终端网段访问 API（否则 VPN 用户能读到带 token 的
-  订阅 URL），但**生产环境仍应配 `api.token`** —— 网络层不是应用层鉴权的
-  替代品。
-
-## 目录结构
-
-```
-cmd/
-  gateway/          控制面进程入口
-  selftest/         订阅拉取 + 渲染的离线验证 CLI
-  render-mihomo/    mihomo 配置渲染 CLI（调试用）
-internal/
-  api/              REST API（25 端点）
-    ui/             Web 控制台构建产物（由 web/ 生成，勿手改）
-  config/           配置 schema + 默认值 + 校验
-  configstore/      yaml 原子读写
-  dataplane/        mihomo 进程控制（systemctl / clash-api / 断言）
-  dnspreload/       预热常用域名的 DNS 缓存
-  leaphttp/         HTTP client（先走代理再直连）
-  mihomo/           配置渲染器（DNS / TPROXY / 规则 / 组 / per-terminal）
-  nodeinfo/         节点自身信息与探针
-  nodescorer/       打分 + EWMA + 池决策 + transition 审计 + 回滚 + 紧急剔除
-  notify/           飞书 webhook + 去重/限速/聚合 + JSONL 兜底
-  rulesets/         geosite / geoip 规则集管理
-  subscribe/        订阅拉取与解析（4 种格式）
-  whitelistexpand/  白名单展开为域名 + CIDR
-web/                Web 控制台源码（React + Arco Design + Vite）
-deploy/node/        systemd 单元 / nft 模板 / iproute.sh / install.sh
-scripts/
-  deploy.sh         构建 + 推送 + 校验 + 重启
-  redeploy-full.sh  yaml-first 全量重装
-  stage.sh          打全量部署 tarball
-  stress.sh         单机容量压测
-  setup-ssh.sh      一次性 SSH key + NOPASSWD sudo
-docs/
-  api.md            REST API 参考（含前端接入变更日志）
-  design-*.md       设计推演与被否方案
-  ops-*.md          生产观察活文档
-```
-
-## 文档
-
-| 文档 | 内容 |
-|---|---|
-| [configs/gateway.example.yaml](configs/gateway.example.yaml) | **配置参考**。329 行逐项注释，每个非显然的默认值都写了为什么 |
-| [docs/api.md](docs/api.md) | 25 个 REST 端点 + 前端接入变更日志 |
-| [docs/design-eligibility-set-selection.md](docs/design-eligibility-set-selection.md) | 资格集选择方案的完整推演 |
-| [docs/design-pool-sizing-rejected-v1v2.md](docs/design-pool-sizing-rejected-v1v2.md) | 两个被否掉的池大小方案及否决理由 |
-| [docs/ops-eligibility-cutover-92.md](docs/ops-eligibility-cutover-92.md) | 生产切换的观察活文档 |
-| [CLAUDE.md](CLAUDE.md) | 给 AI 助手的项目约定（含 `subscriptions` 硬规则） |
-
-## 边界与非目标
-
-说清楚不做什么，比说做什么更省事：
-
-- **不是全局翻墙工具**。默认只分流白名单站点，其余走直连。`route.mode`
-  可以切 `overseas`（所有非 CN 目的地走池），但那不是设计重心。
-- **不做流量审计、不做内容过滤、不做用户行为记录**。只有节点健康度和池
-  变更的运维日志。
-- **不管客户端分发**。接入靠飞连，这个项目只在转发节点上做分流。
-- **不自己造代理协议**。数据面是 mihomo，订阅是标准机场格式。
-- **只面向美国节点**，见上文"范围是刻意收窄的"。
-- **不支持 TUN-only 模式**。`tproxy_port` 为 0 时 `validate` 和
-  `iproute.sh` 都会直接拒绝启动。
-
-## 关于名字
-
-产品名是 **Interchange · 立交网关**，但磁盘上的标识符仍然是 `leap-*`：
-`/etc/leap/`、`leap-gateway.service`、`leap-mihomo.service`、
-`leap-nft.service`、`LEAP_*` 环境变量、以及 Go module 路径
-`github.com/leap-gateway/leap-gateway`。
-
-这是故意不改的。这些名字已经在生产节点上跑着，重命名要在 `install.sh` 里
-做路径迁移再全量重装，收益为零、风险不小。产品名和实现标识符不一致是个
-可以接受的历史包袱，硬要拉平才是坏决策。
-
-## License
-
-[MIT](LICENSE)
+- [`PLAN.md`](PLAN.md) — 基于 Interchange 的修改开发计划（分阶段、可验证）
+- [`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md) — 逐包/逐文件的保留、修改、删除、新增清单
+- `configs/gateway.example.yaml` — 注释版配置模板

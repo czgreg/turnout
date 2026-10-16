@@ -1,13 +1,13 @@
 #!/usr/sbin/nft -f
 #
-# leap-gateway nft rules — table inet leap (independent of FeiLian's table ip nat).
+# turnout-gateway nft rules — table inet turnout (independent of FeiLian's table ip nat).
 # Render-time placeholders are replaced by install.sh.
 
 # Idempotent: nuke and re-add.
-add table inet leap
-flush table inet leap
+add table inet turnout
+flush table inet turnout
 
-table inet leap {
+table inet turnout {
   chain prerouting {
     type filter hook prerouting priority mangle; policy accept;
 
@@ -23,7 +23,7 @@ table inet leap {
     # preserving the original client sourceIP (10.8.x.x).
   }
 
-  # leap-gateway API access — deny FeiLian client addresses, allow the rest.
+  # turnout-gateway API access — deny FeiLian client addresses, allow the rest.
   #
   # This chain's policy is `accept`, so an `accept` rule alone grants
   # nothing: before 2026-08-12 the rule here was `tcp dport @API_PORT@

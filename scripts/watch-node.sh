@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# watch-node.sh — stream a leap-gateway node's journal as filtered events.
+# watch-node.sh — stream a turnout-gateway node's journal as filtered events.
 #
 #   scripts/watch-node.sh [host] [--since <systemd-time>]
 #
@@ -97,7 +97,7 @@ SSH="ssh -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3
 
 if [ -n "$SINCE" ]; then
   $SSH "ops@$HOST" \
-    "sudo journalctl -u leap-gateway --since '$SINCE' --no-pager 2>/dev/null" \
+    "sudo journalctl -u turnout-gateway --since '$SINCE' --no-pager 2>/dev/null" \
     | awk -v MIN_POOL="$MIN_POOL" "$AWK_PROG"
   exit 0
 fi
@@ -177,7 +177,7 @@ VERDICT_OUT=""
 while :; do
   started=$(date +%s)
   $SSH "ops@$HOST" \
-    "sudo journalctl -u leap-gateway -f -n0 --no-pager 2>/dev/null" \
+    "sudo journalctl -u turnout-gateway -f -n0 --no-pager 2>/dev/null" \
     | awk -v MIN_POOL="$MIN_POOL" "$AWK_PROG"
   rc=$?
   now=$(date +%s)

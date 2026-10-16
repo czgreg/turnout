@@ -13,18 +13,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/leap-gateway/leap-gateway/internal/api"
-	"github.com/leap-gateway/leap-gateway/internal/config"
-	"github.com/leap-gateway/leap-gateway/internal/configstore"
-	"github.com/leap-gateway/leap-gateway/internal/dataplane"
-	"github.com/leap-gateway/leap-gateway/internal/dnspreload"
-	"github.com/leap-gateway/leap-gateway/internal/mihomo"
-	"github.com/leap-gateway/leap-gateway/internal/nodescorer"
-	"github.com/leap-gateway/leap-gateway/internal/nodeinfo"
-	"github.com/leap-gateway/leap-gateway/internal/notify"
-	"github.com/leap-gateway/leap-gateway/internal/rulesets"
-	"github.com/leap-gateway/leap-gateway/internal/subscribe"
-	"github.com/leap-gateway/leap-gateway/internal/whitelistexpand"
+	"github.com/turnout-gateway/turnout-gateway/internal/api"
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/configstore"
+	"github.com/turnout-gateway/turnout-gateway/internal/dataplane"
+	"github.com/turnout-gateway/turnout-gateway/internal/dnspreload"
+	"github.com/turnout-gateway/turnout-gateway/internal/mihomo"
+	"github.com/turnout-gateway/turnout-gateway/internal/nodescorer"
+	"github.com/turnout-gateway/turnout-gateway/internal/nodeinfo"
+	"github.com/turnout-gateway/turnout-gateway/internal/notify"
+	"github.com/turnout-gateway/turnout-gateway/internal/rulesets"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
+	"github.com/turnout-gateway/turnout-gateway/internal/whitelistexpand"
 )
 
 // Version is set at build time via -ldflags="-X main.Version=...". Defaults
@@ -32,11 +32,11 @@ import (
 var Version = "dev"
 
 // engineName is the active data-plane name — only "mihomo" is supported as
-// of 2026-06. Surfaced via /api/proxies/active.leap.engine for ops.
+// of 2026-06. Surfaced via /api/proxies/active.turnout.engine for ops.
 const engineName = "mihomo"
 
 func main() {
-	cfgPath := flag.String("config", "/etc/leap/gateway.yaml", "config file path")
+	cfgPath := flag.String("config", "/etc/turnout/gateway.yaml", "config file path")
 	renderOnce := flag.Bool("render-once", false, "render bootstrap mihomo config and exit (used by install.sh to avoid first-boot fail-restart)")
 	validate := flag.Bool("validate", false, "render config, run mihomo -t syntax check, validate constraints, then exit")
 	printEnv := flag.Bool("print-env", false, "print shell-sourceable env vars from gateway.yaml for use by iproute.sh / install.sh, then exit")
@@ -78,7 +78,7 @@ func main() {
 	// host and routes the CONNECT correctly.
 	mgr := subscribe.NewManagerWithFetchAndProxy(
 		cfg.Subscriptions, cfg.Subscribe.HTTPTimeout, cfg.Subscribe.UserAgent,
-		dataplane.LeapInternalProxyURL)
+		dataplane.TurnoutInternalProxyURL)
 
 	mihomoRenderer := mihomo.NewRenderer(cfg.DataPlane).
 		WithNode(cfg.Node).
@@ -95,7 +95,7 @@ func main() {
 	var renderer api.Renderer = mihomoRenderer
 
 	dpCtl := dataplane.NewController(cfg.DataPlane.ClashAPI)
-	dpCtl.SystemdUnit = "leap-mihomo.service"
+	dpCtl.SystemdUnit = "turnout-mihomo.service"
 	store := configstore.New(*cfgPath)
 
 	// UA auto-discovery fires when a subscription returns 5xx or 0 nodes on
@@ -116,23 +116,23 @@ func main() {
 	// whitelistexpand always shells out to sing-box CLI for `rule-set
 	// decompile` (mihomo can't decompile its own .mrs format). The
 	// install tarball ships /usr/local/bin/sing-box specifically for
-	// this — leap-singbox.service does NOT run, sing-box is just a
-	// helper binary on disk.
+	// this — it is a helper binary on disk and has no systemd unit of
+	// its own.
 	//
 	// WithProxy routes the .srs / domain-list fetches through mihomo's
 	// loopback HTTP inbound so they egress past the GFW
-	// (see internal/leaphttp). Direct fallback handles the bootstrap
+	// (see internal/turnouthttp). Direct fallback handles the bootstrap
 	// window before mihomo is ready.
 	const singboxCLI = "/usr/local/bin/sing-box"
 	expander := whitelistexpand.New("").
-		WithProxy(dataplane.LeapInternalProxyURL).
+		WithProxy(dataplane.TurnoutInternalProxyURL).
 		WithRuleSets(cfg.DataPlane.RuleSetsDir, singboxCLI).
-		WithMihomoSrsCache("/var/lib/leap/whitelist-srs-cache")
+		WithMihomoSrsCache("/var/lib/turnout/whitelist-srs-cache")
 	if err := expander.LoadFromDisk(); err != nil {
 		slog.Warn("whitelistexpand: cannot load on-disk cache", "err", err)
 	}
 
-	ruleMgr, err := rulesets.New(cfg.DataPlane.RuleSetsDir, cfg.Subscribe.HTTPTimeout, dataplane.LeapInternalProxyURL)
+	ruleMgr, err := rulesets.New(cfg.DataPlane.RuleSetsDir, cfg.Subscribe.HTTPTimeout, dataplane.TurnoutInternalProxyURL)
 	if err != nil {
 		slog.Error("rulesets: load embedded catalog", "err", err)
 		os.Exit(1)
@@ -335,7 +335,7 @@ func main() {
 	//
 	// Exists because of the 2026-08-12 outage: a systemd-networkd restart
 	// deleted the `fwmark 0x44 lookup 101` policy rule and proxy traffic
-	// was dead for 1h43m with every health signal green. leap-nft.service
+	// was dead for 1h43m with every health signal green. turnout-nft.service
 	// is Type=oneshot + RemainAfterExit=yes, so it cannot re-run its own
 	// ExecStart to repair the loss. See internal/dataplane/assert.go.
 	if asserter != nil {
@@ -390,7 +390,7 @@ func dnsListenAddr(cfg *config.Config) string {
 // gateway.yaml or renderer bug must never reach the live mihomo process.
 func runValidate(cfg *config.Config, r api.Renderer) error {
 	// 1. Render to temp dir (no writes to production).
-	tmpDir, err := os.MkdirTemp("", "leap-validate-*")
+	tmpDir, err := os.MkdirTemp("", "turnout-validate-*")
 	if err != nil {
 		return fmt.Errorf("validate: mktemp: %w", err)
 	}
@@ -408,7 +408,7 @@ func runValidate(cfg *config.Config, r api.Renderer) error {
 
 	// 2. mihomo's SAFE_PATHS check: rule-providers in the rendered YAML are
 	//    absolute paths under cfg.DataPlane.RuleSetsDir (e.g.
-	//    /var/lib/leap/mihomo/rule-sets/geosite-cn.mrs). Without this env var
+	//    /var/lib/turnout/mihomo/rule-sets/geosite-cn.mrs). Without this env var
 	//    `mihomo -t` rejects them because they are outside the temp working
 	//    dir we pass via `-d`. Granting read access to the real rule-sets dir
 	//    via SAFE_PATHS avoids rewriting paths in the rendered bytes.
@@ -431,7 +431,7 @@ func runValidate(cfg *config.Config, r api.Renderer) error {
 	// TPROXY is the production data path. TUN-only mode collapses all
 	// client sourceIPs to 198.18.0.0, which silently breaks per-terminal
 	// routing, /connections metadata, and any future feature that depends
-	// on real srcIP. leap-nft.service / iproute.sh also run unconditionally,
+	// on real srcIP. turnout-nft.service / iproute.sh also run unconditionally,
 	// so a 0/unset tproxy_port would attempt to install an iptables rule
 	// targeting port 0. Refuse to validate it.
 	if cfg.DataPlane.TProxyPort == 0 {
