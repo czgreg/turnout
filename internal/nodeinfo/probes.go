@@ -91,12 +91,88 @@ func listInterfaces() []Interface {
 	return out
 }
 
-// systemdActive: `systemctl is-active --quiet <unit>`. Boolean result.
-func systemdActive(ctx context.Context, unit string) bool {
+// linkUp reports whether the named interface exists and is operationally up.
+//
+// Reads /sys/class/net/<iface>/operstate rather than shelling out to `ip
+// link show`: it is one file read instead of a fork, and this runs on the
+// 5s reporting tick.
+//
+// operstate values: "up" is the one we want. "unknown" is reported by some
+// virtual devices that are in fact usable (it means the driver does not
+// expose carrier state), so it is treated as up — reporting a working
+// interface as down is worse than the reverse here, because this field is
+// read by an operator deciding whether to walk to the datacentre.
+func linkUp(ctx context.Context, iface string) bool {
+	if iface == "" {
+		return false
+	}
+	b, err := os.ReadFile("/sys/class/net/" + iface + "/operstate")
+	if err != nil {
+		return false
+	}
+	switch strings.TrimSpace(string(b)) {
+	case "up", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+// addrPresent reports whether addr is configured on iface.
+//
+// Matches on the exact address, not a substring: "10.255.255.3" appears
+// inside "10.255.255.30", and a false positive here would report the ingress
+// link as healthy while the firewall has no next-hop to send to.
+func addrPresent(ctx context.Context, iface, addr string) bool {
+	if addr == "" {
+		return false
+	}
+	// If iface is unknown, scan all of them rather than guessing — an empty
+	// iface is a config problem, and reporting "address missing" would
+	// obscure it.
+	args := []string{"-4", "-o", "addr", "show"}
+	if iface != "" {
+		args = append(args, "dev", iface)
+	}
 	c, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(c, "systemctl", "is-active", "--quiet", unit)
-	return cmd.Run() == nil
+	out, err := exec.CommandContext(c, "ip", args...).Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		for i, tok := range f {
+			if tok != "inet" || i+1 >= len(f) {
+				continue
+			}
+			if strings.SplitN(f[i+1], "/", 2)[0] == addr {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// defaultRoute returns the current IPv4 default route as a one-line string,
+// or "" when there is none.
+//
+// The bypass role depends on this pointing at the firewall: it is how
+// unproxied traffic gets handed back. A missing or wrong default route is
+// therefore a first-class failure, not a detail — which is why it is
+// surfaced verbatim rather than reduced to a boolean.
+func defaultRoute(ctx context.Context) string {
+	c, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(c, "ip", "route", "show", "default").Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(lines[0])
 }
 
 // systemdState: `systemctl is-active <unit>` — returns the textual state
@@ -106,35 +182,6 @@ func systemdState(ctx context.Context, unit string) string {
 	defer cancel()
 	out, _ := exec.CommandContext(c, "systemctl", "is-active", unit).Output()
 	return strings.TrimSpace(string(out))
-}
-
-// nftFeiLianChains lists chain names in `table ip nat` that start with
-// FEILIAN_. Empty slice if the table doesn't exist or nft fails.
-func nftFeiLianChains(ctx context.Context) []string {
-	c, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(c, "nft", "list", "table", "ip", "nat").Output()
-	if err != nil {
-		return nil
-	}
-	var chains []string
-	sc := bufio.NewScanner(strings.NewReader(string(out)))
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if !strings.HasPrefix(line, "chain ") {
-			continue
-		}
-		// "chain FEILIAN_PROXY {"
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-		name := parts[1]
-		if strings.HasPrefix(name, "FEILIAN_") {
-			chains = append(chains, name)
-		}
-	}
-	return chains
 }
 
 // mihomoVersion: `mihomo -v` — first line, parsed.

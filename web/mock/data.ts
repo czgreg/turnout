@@ -15,7 +15,7 @@ import type {
 } from '../src/types';
 
 const PROBES = ['openai-api', 'anthropic-api', 'accounts.google.com', 'github'];
-const SUBNET = '10.8.11.0/24';
+const SUBNET = '10.1.3.0/24';
 
 const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
 const MIN = 60_000;
@@ -188,7 +188,7 @@ export function healthz(): Healthz {
     checks: [
       { name: 'ip_rule_fwmark', ok: true, detail: 'fwmark 0x44 lookup 101 present' },
       { name: 'route_table_local', ok: true, detail: 'table 101 has local default' },
-      { name: 'prerouting_jump', ok: true, detail: `PREROUTING -i tun0 -s ${SUBNET} -j LEAP_TPROXY present` },
+      { name: 'prerouting_jump', ok: true, detail: `PREROUTING -i ens19 -s ${SUBNET} -j TURNOUT_TPROXY present` },
       { name: 'tproxy_flow', ok: true, detail: '187/189 live connections are TProxy' },
     ],
   };
@@ -204,7 +204,12 @@ export function active(subs: Subscription[]): Active {
       client_subnet: SUBNET,
       egress_iface: 'ens18',
     },
-    feilian: { tun0_active: true, vpn_active: true, proxy_active: true, sentry_active: true },
+    ingress: {
+      ingress_iface_up: true,
+      ingress_ip_present: true,
+      return_route: 'default via 10.255.255.1 dev ens19',
+      liveness_up: true,
+    },
     turnout: {
       gateway_version: '96cfcb5',
       engine: 'mihomo',
@@ -305,7 +310,7 @@ export function transitions() {
 
 // Deterministic stand-in for HRW: same IP → same pair, like the real renderer.
 export function terminal(ip: string): TerminalAssignment {
-  const inSubnet = ip.startsWith('10.8.11.');
+  const inSubnet = ip.startsWith('10.1.3.');
   if (!inSubnet) {
     return {
       ip,

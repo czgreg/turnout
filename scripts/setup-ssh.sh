@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
-# scripts/setup-ssh.sh — one-time PoC node bootstrap.
+# scripts/setup-ssh.sh — one-time node bootstrap.
 #
 # Pushes ~/.ssh/id_ed25519.pub (or id_rsa.pub) to the node's authorized_keys
 # and installs a NOPASSWD sudoers dropin for the deploy commands. After this
-# succeeds, all `make deploy-*` targets work without password prompts.
+# succeeds, all `make deploy` / `make redeploy` targets work without password
+# prompts.
 #
 # Usage:
-#   ./scripts/setup-ssh.sh                        # default: ops@192.168.70.92
-#   ./scripts/setup-ssh.sh user@host
+#   ./scripts/setup-ssh.sh <user@host>
 #
 # Env:
-#   SSH_PASSWORD  required for the initial password-auth ssh (default: ppio2026 for PoC)
+#   SSH_PASSWORD  REQUIRED — the node's current login password. Used once, for
+#                 the initial password-auth ssh. There is deliberately no
+#                 default: a baked-in password in a repo is a credential leak,
+#                 and this script runs against whatever host you name.
 #
 # Idempotent — safe to re-run.
 
 set -euo pipefail
 
-NODE="${1:-ops@192.168.70.92}"
-SUDO_PASS="${SSH_PASSWORD:-ppio2026}"
+NODE="${1:-}"
+[ -n "$NODE" ] || { echo "usage: $0 <user@host>" >&2; exit 2; }
+
+SUDO_PASS="${SSH_PASSWORD:-}"
+[ -n "$SUDO_PASS" ] || {
+  echo "SSH_PASSWORD is required (the node's current login password, used once)." >&2
+  echo "  SSH_PASSWORD='...' $0 $NODE" >&2
+  exit 2
+}
 
 PUB=""
 for k in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub; do

@@ -47,10 +47,10 @@ export default function Login({ onConnected, initialError, dark, onToggleTheme }
       />
       <div className="login-hero">
         <Logo size={56} />
-        <h1>Interchange</h1>
-        <p className="login-cn">立交网关 · 控制台</p>
+        <h1>Turnout</h1>
+        <p className="login-cn">道岔网关 · 控制台</p>
         <p className="login-tag">
-          在飞连转发节点上，让内网和海外同时可达 —— 员工零配置、零客户端、零感知。
+          旁挂在办公网防火墙上，逐条流量判定走哪条道 —— 员工零配置、零客户端、零感知。
         </p>
         <ul className="login-points">
           <li>节点打分与站点探针，实时可见</li>

@@ -135,9 +135,10 @@ func NewRenderer(cfg config.DataPlaneConfig) *Renderer {
 	}
 }
 
-// WithNode attaches the FeiLian forwarding-node info (CIDR, tun0 gw, egress
-// iface). Required for production rendering — without it we omit the TUN
-// inbound and the rendered config is only useful for static validation.
+// WithNode attaches the bypass node's role info (diverted subnet, ingress
+// address, egress iface). Required for production rendering — without it we
+// omit the TUN inbound and the rendered config is only useful for static
+// validation.
 func (r *Renderer) WithNode(n config.NodeConfig) *Renderer {
 	r.node = n
 	return r
@@ -314,7 +315,7 @@ func (r *Renderer) build(outbounds []subscribe.Outbound) map[string]any {
 	doc["sniffer"] = r.buildSniffer()
 	// TPROXY port: when set, mihomo accepts transparent-proxy connections that
 	// the kernel routes via iptables TPROXY + fwmark. This preserves the
-	// real client sourceIP (10.8.x.x) unlike TUN mode, enabling per-terminal
+	// real client sourceIP, unlike TUN mode, enabling per-terminal
 	// source-IP-based routing. TUN is kept for DNS hijacking (any:53).
 	if r.cfg.TProxyPort > 0 {
 		doc["tproxy-port"] = r.cfg.TProxyPort

@@ -90,11 +90,18 @@ export interface Active {
     client_subnet?: string;
     egress_iface?: string;
   };
-  feilian?: {
-    tun0_active?: boolean;
-    vpn_active?: boolean;
-    proxy_active?: boolean;
-    sentry_active?: boolean;
+  /**
+   * Ingress describes the bypass role's link to the firewall — the things to
+   * look at when the firewall reports this node down, or when diverted
+   * traffic stops arriving. Mirrors nodeinfo.IngressInfo.
+   */
+  ingress?: {
+    ingress_iface_up?: boolean;
+    ingress_ip_present?: boolean;
+    /** Current default route as a one-line string; empty when there is none. */
+    return_route?: string;
+    /** Whether the watchdog currently holds the address IP-Link probes. */
+    liveness_up?: boolean;
   };
   turnout?: {
     gateway_version?: string;
@@ -215,4 +222,52 @@ export interface TerminalAssignment {
   group_name?: string;
   pool_mode: string;
   hint?: string;
+}
+
+/* ── Watchdog (GET /api/watchdog/status) ─────────────────────────────────
+ *
+ * The bypass role's health reporter. Mirrors internal/watchdog.Status.
+ *
+ * Two states matter to the operator and they are NOT the same:
+ *   state === 'unhealthy'   the data path is broken
+ *   state === 'unknown'     no round has completed yet (startup)
+ * 'unknown' must not be rendered as a fault — it resolves on its own within
+ * one interval, and showing it red trains the operator to ignore the card.
+ *
+ * enabled === false means the watchdog is not running at all (config opted
+ * out, or liveness_ip is unset). In that case the node cannot signal the
+ * firewall anything about its health, which is worth surfacing rather than
+ * hiding behind an empty card.
+ */
+export interface WatchdogCheck {
+  name: 'engine_alive' | 'dataplane_rules' | 'pool_healthy' | 'egress_probe';
+  ok: boolean;
+  skipped?: boolean;
+  detail?: string;
+}
+
+export interface WatchdogStatus {
+  enabled: boolean;
+  detail?: string;
+
+  state?: 'healthy' | 'unhealthy' | 'unknown';
+  at?: string;
+  checks?: WatchdogCheck[];
+  failing?: WatchdogCheck['name'][];
+
+  fail_streak?: number;
+  ok_streak?: number;
+  fail_threshold?: number;
+  recover_threshold?: number;
+
+  liveness_ip?: string;
+  liveness_up?: boolean;
+  /* auto_failover=false means an unhealthy verdict is reported but the
+   * liveness address stays up, so the firewall keeps diverting and the
+   * operator has to cut over by hand. The card says so explicitly — a red
+   * "unhealthy" with no cutover is otherwise easy to misread. */
+  auto_failover?: boolean;
+
+  last_transition?: string;
+  last_error?: string;
 }

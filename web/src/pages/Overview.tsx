@@ -26,6 +26,114 @@ import { ago, fmtMs, fmtRate, fmtTime, fmtUptime, splitNode } from '../format';
 
 const { Row, Col } = Grid;
 
+/**
+ * WatchdogCard renders the bypass role's health reporter — the thing that
+ * decides whether the firewall's IP-Link probe should see this node as up.
+ *
+ * Three states with deliberately different treatments:
+ *   unknown   — no check round has completed yet (startup). Neutral, not red:
+ *               it resolves within one interval, and showing it as a fault
+ *               trains the operator to ignore the card.
+ *   healthy   — green.
+ *   unhealthy — red, and if auto_failover is off, says so explicitly, because
+ *               a red verdict with the firewall still diverting is a manual
+ *               cutover the operator has to perform.
+ *
+ * `enabled: false` is surfaced rather than hidden: it means the node cannot
+ * signal the firewall anything about its own health, which is worth knowing.
+ */
+function WatchdogCard({ snap }: { snap: Snapshot }) {
+  const wd = snap.watchdog?.body;
+
+  if (!snap.watchdog) {
+    return (
+      <Card title="旁挂健康 / watchdog" extra={<span className="dim">GET /api/watchdog/status</span>} bordered={false} className="mb">
+        <Empty description="/api/watchdog/status 不可达" />
+      </Card>
+    );
+  }
+  if (!wd?.enabled) {
+    return (
+      <Card title="旁挂健康 / watchdog" extra={<span className="dim">未启用</span>} bordered={false} className="mb">
+        <Alert
+          type="warning"
+          content={
+            wd?.detail ||
+            'watchdog 未运行 —— 需要在 gateway.yaml 配置 watchdog.enabled 与 watchdog.liveness_ip。'
+          }
+        />
+      </Card>
+    );
+  }
+
+  const state = wd.state || 'unknown';
+  const tone = state === 'healthy' ? 'is-ok' : state === 'unhealthy' ? 'is-bad' : 'is-unknown';
+  const label = state === 'healthy' ? '健康' : state === 'unhealthy' ? '不健康' : '尚未判定';
+  const Icon = state === 'healthy' ? IconCheckCircleFill : state === 'unhealthy' ? IconCloseCircleFill : IconExclamationCircle;
+
+  return (
+    <Card
+      title="旁挂健康 / watchdog"
+      extra={
+        <span className="dim">
+          {wd.liveness_ip || '—'} · {wd.liveness_up ? '探活地址在位' : '探活地址已摘除'}
+        </span>
+      }
+      bordered={false}
+      className="mb"
+    >
+      <div className={'check ' + tone} style={{ marginBottom: 12 }}>
+        <Icon className="check-icon" />
+        <div>
+          <div className="check-name">
+            {label}
+            {wd.last_transition && <span className="dim"> · 最近变更 {ago(wd.last_transition) || '—'}</span>}
+          </div>
+          <div className="dim">
+            连续失败 {wd.fail_streak ?? 0}/{wd.fail_threshold ?? '—'} · 连续通过 {wd.ok_streak ?? 0}/
+            {wd.recover_threshold ?? '—'}
+          </div>
+        </div>
+      </div>
+
+      {/* A red verdict without a cutover is easy to misread as "already
+       * handled" — say plainly that the firewall is still diverting. */}
+      {state === 'unhealthy' && !wd.auto_failover && (
+        <Alert
+          type="warning"
+          style={{ marginBottom: 12 }}
+          content="auto_failover 已关闭：仅告警，防火墙仍在引流。如需回切请在防火墙上手动操作。"
+        />
+      )}
+
+      {wd.checks?.length ? (
+        <div className="checks">
+          {wd.checks.map((c) => (
+            <div key={c.name} className={'check ' + (c.skipped ? 'is-unknown' : c.ok ? 'is-ok' : 'is-bad')}>
+              {c.skipped ? (
+                <IconExclamationCircle className="check-icon" />
+              ) : c.ok ? (
+                <IconCheckCircleFill className="check-icon" />
+              ) : (
+                <IconCloseCircleFill className="check-icon" />
+              )}
+              <div>
+                <div className="mono check-name">
+                  {c.name}
+                  {c.skipped && <span className="dim"> · 跳过</span>}
+                </div>
+                <div className="dim">{c.detail}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Empty description="尚未产生自检结果" />
+      )}
+    </Card>
+  );
+}
+
 function StatCard(props: {
   icon: ReactNode;
   tone: 'blue' | 'green' | 'red' | 'orange' | 'purple' | 'cyan';
@@ -148,6 +256,8 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
               <Empty description={hz?.detail || (snap.healthz === null ? '/healthz 不可达' : '无断言数据')} />
             )}
           </Card>
+
+          <WatchdogCard snap={snap} />
 
           <Card
             title="在池节点"
@@ -291,11 +401,42 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
                   { label: '运行时长', value: fmtUptime(ac.node?.uptime_seconds) },
                   { label: '控制面版本', value: <span className="mono">{ac.turnout?.gateway_version || '—'}</span> },
                   { label: '数据面', value: `${ac.turnout?.engine || '—'} ${ac.turnout?.engine_version || ''}` },
-                  { label: '客户端网段', value: <span className="mono">{ac.node?.client_subnet || '—'}</span> },
+                  { label: '引流网段', value: <span className="mono">{ac.node?.client_subnet || '—'}</span> },
                   { label: '出口网卡', value: <span className="mono">{ac.node?.egress_iface || '—'}</span> },
                   {
-                    label: '飞连 tun0',
-                    value: <Badge status={ac.feilian?.tun0_active ? 'success' : 'error'} text={ac.feilian?.tun0_active ? 'active' : 'inactive'} />,
+                    label: '引流口',
+                    value: (
+                      <Badge
+                        status={ac.ingress?.ingress_iface_up ? 'success' : 'error'}
+                        text={ac.ingress?.ingress_iface_up ? 'up' : 'down'}
+                      />
+                    ),
+                  },
+                  {
+                    label: '引流地址',
+                    value: (
+                      <Badge
+                        status={ac.ingress?.ingress_ip_present ? 'success' : 'error'}
+                        text={ac.ingress?.ingress_ip_present ? 'present' : 'missing'}
+                      />
+                    ),
+                  },
+                  {
+                    // The return route is what hands unproxied traffic back to
+                    // the firewall. A missing or wrong one is a first-class
+                    // failure, so it is shown verbatim rather than reduced to
+                    // a badge.
+                    label: '回程路由',
+                    value: <span className="mono">{ac.ingress?.return_route || '（无默认路由）'}</span>,
+                  },
+                  {
+                    label: '探活地址',
+                    value: (
+                      <Badge
+                        status={ac.ingress?.liveness_up ? 'success' : 'default'}
+                        text={ac.ingress?.liveness_up ? '在位' : '已摘除'}
+                      />
+                    ),
                   },
                   ...Object.entries(ac.turnout?.services || {}).map(([name, state]) => ({
                     label: name,

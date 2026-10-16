@@ -24,7 +24,7 @@ import (
 	"github.com/turnout-gateway/turnout-gateway/internal/notify"
 	"github.com/turnout-gateway/turnout-gateway/internal/rulesets"
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
-	"github.com/turnout-gateway/turnout-gateway/internal/whitelistexpand"
+	"github.com/turnout-gateway/turnout-gateway/internal/watchdog"
 )
 
 // Version is set at build time via -ldflags="-X main.Version=...". Defaults
@@ -61,14 +61,17 @@ func main() {
 				if apiPort[i] == ':' { apiPort = apiPort[i+1:]; break }
 			}
 		}
-		fmt.Printf("export LEAP_CLIENT_SUBNET=%q\n", cfg.Node.ClientSubnet)
-		fmt.Printf("export LEAP_TPROXY_PORT=%d\n", cfg.DataPlane.TProxyPort)
-		fmt.Printf("export LEAP_TUN0_IFACE=tun0\n")
-		fmt.Printf("export LEAP_API_PORT=%q\n", apiPort)
+		fmt.Printf("export TURNOUT_CLIENT_SUBNET=%q\n", cfg.Node.ClientSubnet)
+		fmt.Printf("export TURNOUT_TPROXY_PORT=%d\n", cfg.DataPlane.TProxyPort)
+		fmt.Printf("export TURNOUT_INGRESS_IFACE=%q\n", cfg.Node.IngressIface)
+		fmt.Printf("export TURNOUT_INGRESS_IP=%q\n", cfg.Node.IngressIP)
+		fmt.Printf("export TURNOUT_EGRESS_IFACE=%q\n", cfg.Node.EgressIface)
+		fmt.Printf("export TURNOUT_RETURN_GATEWAY=%q\n", cfg.Node.Return.GatewayIP)
+		fmt.Printf("export TURNOUT_API_PORT=%q\n", apiPort)
 		// Space-separated source CIDRs allowed to reach the API port, for
 		// nft.conf's input chain. Empty → loopback only (install.sh emits
 		// no saddr accept rule, so only the `iif lo` rule matches).
-		fmt.Printf("export LEAP_API_ALLOW_FROM=%q\n", strings.Join(cfg.API.AllowFrom, " "))
+		fmt.Printf("export TURNOUT_API_ALLOW_FROM=%q\n", strings.Join(cfg.API.AllowFrom, " "))
 		return
 	}
 
@@ -112,25 +115,6 @@ func main() {
 	})
 
 	ni := nodeinfo.New(cfg.Node, Version, engineName)
-
-	// whitelistexpand always shells out to sing-box CLI for `rule-set
-	// decompile` (mihomo can't decompile its own .mrs format). The
-	// install tarball ships /usr/local/bin/sing-box specifically for
-	// this — it is a helper binary on disk and has no systemd unit of
-	// its own.
-	//
-	// WithProxy routes the .srs / domain-list fetches through mihomo's
-	// loopback HTTP inbound so they egress past the GFW
-	// (see internal/turnouthttp). Direct fallback handles the bootstrap
-	// window before mihomo is ready.
-	const singboxCLI = "/usr/local/bin/sing-box"
-	expander := whitelistexpand.New("").
-		WithProxy(dataplane.TurnoutInternalProxyURL).
-		WithRuleSets(cfg.DataPlane.RuleSetsDir, singboxCLI).
-		WithMihomoSrsCache("/var/lib/turnout/whitelist-srs-cache")
-	if err := expander.LoadFromDisk(); err != nil {
-		slog.Warn("whitelistexpand: cannot load on-disk cache", "err", err)
-	}
 
 	ruleMgr, err := rulesets.New(cfg.DataPlane.RuleSetsDir, cfg.Subscribe.HTTPTimeout, dataplane.TurnoutInternalProxyURL)
 	if err != nil {
@@ -241,6 +225,79 @@ func main() {
 		}
 	}
 
+	// Watchdog: the bypass role's health reporter. It decides whether the
+	// liveness address the firewall's IP-Link probe watches should be up, so
+	// that "machine alive" and "data path works" stop being the same signal.
+	// See internal/watchdog's package doc for why the firewall cannot tell
+	// those apart on its own.
+	//
+	// Built after the asserter because it consumes the asserter's verdict
+	// rather than re-running the rule checks — the division of labour is
+	// "assert repairs, watchdog reports".
+	watchdogIface := cfg.Watchdog.LivenessIface
+	if watchdogIface == "" {
+		watchdogIface = "lo"
+	}
+	var checkers []watchdog.Checker
+	if cfg.Watchdog.Checks.CheckEngineAlive() {
+		checkers = append(checkers, watchdog.NewEngineChecker(cfg.DataPlane.ClashAPI))
+	}
+	if cfg.Watchdog.Checks.CheckDataplaneRules() {
+		// Asserter may be nil (no TPROXY path declared); the checker treats
+		// a nil source as "skipped", not "failed".
+		if asserter != nil {
+			checkers = append(checkers, watchdog.NewRulesChecker(asserter))
+		} else {
+			checkers = append(checkers, watchdog.NewRulesChecker(nil))
+		}
+	}
+	if min := cfg.Watchdog.Checks.EffectivePoolHealthyMin(); min > 0 {
+		if nodeScorer != nil {
+			checkers = append(checkers, watchdog.NewPoolChecker(scorerPoolAdapter{nodeScorer}, min))
+		} else {
+			checkers = append(checkers, watchdog.NewPoolChecker(nil, min))
+		}
+	}
+	if cfg.Watchdog.Checks.EgressProbe {
+		checkers = append(checkers, watchdog.NewEgressChecker(
+			dataplane.TurnoutInternalProxyURL,
+			cfg.Watchdog.Checks.EgressProbeURL,
+			cfg.Watchdog.Checks.EgressProbeTimeout))
+	}
+	wd := watchdog.New(
+		cfg.Watchdog,
+		checkers,
+		watchdog.NewIPAddrManager(cfg.Watchdog.LivenessIP, watchdogIface),
+		func(subject, body string, urgent bool) {
+			sev := notify.SeverityInfo
+			if urgent {
+				sev = notify.SeverityUrgent
+			}
+			notifier.Emit(notify.Event{
+				Time:     time.Now(),
+				Severity: sev,
+				Type:     "watchdog",
+				Subject:  subject,
+				Body:     body,
+			})
+		},
+	)
+
+	// Wire the liveness address state into /api/proxies/active.
+	//
+	// This must come AFTER wd exists (it closes over wd), and BEFORE the API
+	// server starts serving, or the first few reads would report
+	// liveness_up=false while the address is in fact held.
+	//
+	// Why a closure rather than nodeinfo importing internal/watchdog: the
+	// reporting package should not depend on the health machinery (nor drag
+	// its subprocess-touching tests into every nodeinfo build). When the
+	// watchdog is disabled the source stays nil and the field reports false,
+	// which is truthful — nothing is holding the address.
+	if wd != nil {
+		ni.WithLivenessSource(func() bool { return wd.Status().LivenessUp })
+	}
+
 	srv := api.NewServer(api.Deps{
 		Subscribe:  mgr,
 		Scheduler:  sched,
@@ -249,11 +306,11 @@ func main() {
 		Cfg:        cfg,
 		Store:      store,
 		NodeInfo:   ni,
-		Expander:   expander,
 		RuleSets:   ruleMgr,
 		NodeScorer: nodeScorer,
 		Notifier:   notifier,
 		Asserter:   asserter,
+		Watchdog:   wd,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -265,6 +322,10 @@ func main() {
 	// begins.
 	if nodeScorer != nil {
 		go nodeScorer.Run(ctx)
+	}
+
+	if wd != nil {
+		go wd.Run(ctx)
 	}
 
 	go func() {
@@ -288,7 +349,7 @@ func main() {
 	go ni.Run(ctx)
 
 	// DNS preloader: keeps overseas-bound DNS records warm in mihomo's
-	// DNS cache so the first FeiLian client to access claude.ai (or any
+	// DNS cache so the first office client to access claude.ai (or any
 	// configured domain) doesn't pay the ~400ms cross-border DoH cold-
 	// resolve cost. Disabled when preload_domains is empty.
 	if dnsAddr := dnsListenAddr(cfg); dnsAddr != "" {
@@ -312,22 +373,6 @@ func main() {
 		}
 		if err := ruleMgr.EnsureInstalledFromURL(warmCtx, "geoip-cn", cfg.DataPlane.Route.GeoIPURL); err != nil {
 			slog.Warn("rulesets: geoip-cn warm-up failed", "err", err)
-		}
-	}()
-
-	// Warm the resolved-snapshot cache (geosite domain expansion + geoip
-	// .srs decompile + literal merge) at startup. Doing it async means
-	// /api/whitelist/resolved can serve the previous on-disk cache
-	// immediately; the refresh just makes it current. Wait a couple
-	// seconds first to avoid contending with the initial subscription
-	// refresh + mihomo reload.
-	go func() {
-		waitFor(ctx, 8*time.Second)
-		warmCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		wl := cfg.DataPlane.Route.Whitelist
-		if _, err := expander.Refresh(warmCtx, wl.Geosites, wl.Geoips, wl.DomainSuffix, wl.IPCIDR); err != nil {
-			slog.Warn("whitelistexpand: startup warm failed", "err", err)
 		}
 	}()
 
@@ -360,14 +405,14 @@ func waitFor(ctx context.Context, d time.Duration) {
 
 // dnsListenAddr returns the host:port that mihomo's DNS server is bound
 // to. Honors an explicit DNS.Listen override; otherwise falls back to
-// "<tun0_gateway_ip>:53" — the default the renderer wires up. Empty
-// return means we have no idea where DNS is listening (no Tun0GatewayIP,
-// no override) — caller should skip the preloader.
+// "<ingress_ip>:53" — the default the renderer wires up. Empty return
+// means we have no idea where DNS is listening (no IngressIP, no
+// override) — caller should skip the preloader.
 func dnsListenAddr(cfg *config.Config) string {
 	if v := cfg.DataPlane.DNS.Listen; v != "" {
 		return v
 	}
-	if ip := cfg.Node.Tun0GatewayIP; ip != "" {
+	if ip := cfg.Node.IngressIP; ip != "" {
 		return ip + ":53"
 	}
 	return ""
@@ -476,6 +521,39 @@ func bytesTrim(b []byte) []byte {
 		break
 	}
 	return b[:end]
+}
+
+// scorerPoolAdapter exposes nodescorer.Scorer's pool state in the minimal
+// shape internal/watchdog needs (PoolStateSource).
+//
+// The indirection exists so the watchdog package does not import nodescorer:
+// it would drag the whole scoring machinery (EWMA, HRW, probe history) into
+// the watchdog's dependency graph and its tests, for three integers.
+//
+// Alive is counted over the routing pool when one has been computed, and over
+// every scored node otherwise. The routing pool is the right denominator for
+// a health signal: a node that is up but excluded from routing cannot carry
+// proxied traffic, so counting it would report health the node does not have.
+type scorerPoolAdapter struct{ s *nodescorer.Scorer }
+
+func (a scorerPoolAdapter) GetSnapshot() watchdog.PoolSnapshot {
+	snap := a.s.GetSnapshot()
+	routing := make(map[string]bool, len(snap.RoutingPool))
+	for _, tag := range snap.RoutingPool {
+		routing[tag] = true
+	}
+	out := watchdog.PoolSnapshot{Qualified: snap.Qualified, Total: snap.Total}
+	for _, n := range snap.Nodes {
+		if snap.RoutingPool != nil && !routing[n.Name] {
+			continue
+		}
+		if n.Alive {
+			out.Alive++
+		}
+	}
+	// Before the first scoring round RoutingPool is empty and Total is 0;
+	// the watchdog treats that as skipped, so leave the zeroes as they are.
+	return out
 }
 
 // emergencyToNotifyEvent maps a scorer EmergencyEvent into the user-facing

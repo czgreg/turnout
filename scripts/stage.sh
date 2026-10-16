@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# scripts/stage.sh — produce a deployable tarball for a FeiLian forwarding
-# node sidecar install.
+# scripts/stage.sh — produce a deployable tarball for a bypass-role node.
 #
 # Outputs $OUT_DIR/turnout-stage.tgz containing:
 #   turnout-gateway          (linux/amd64, built from this checkout, version-stamped)
 #   mihomo                (1.19.x linux/amd64, the data plane)
-#   sing-box              (1.10.x linux/amd64, CLI-only — used by
-#                          whitelistexpand for `rule-set decompile`,
-#                          NOT run as a service)
 #   geoip.metadb          (mihomo's MaxMind DB; required by geoip routing rules)
 #   gateway.yaml          (operator-supplied; defaults to ./gateway.yaml)
 #   <deploy/node/* files> (install.sh, *.service, nft.conf.tmpl,
@@ -15,10 +11,9 @@
 #   rule-sets/*.mrs       (cn infra + tags referenced by gateway.yaml's
 #                          whitelist, fetched from MetaCubeX /meta/ branch)
 #
-# Engine is always mihomo; the sing-box-based renderer was removed
-# in 2026-06. /usr/local/bin/sing-box is still shipped because the
-# gateway shells out to it for `.srs` decompile (mihomo lacks an
-# equivalent of `rule-set decompile`).
+# Engine is always mihomo. No sing-box binary is shipped: the only thing that
+# needed it was whitelistexpand's geoip decompile, and that whole chain went
+# away with the upstream console integration. mihomo reads .mrs directly.
 #
 # Usage on operator workstation:
 #   cp configs/gateway.example.yaml gateway.yaml   # then edit subscription URL + node values
@@ -87,7 +82,7 @@ GOOS=linux GOARCH="$GOARCH" CGO_ENABLED=0 go build \
 ls -lh "$STAGE_DIR/turnout-gateway" | awk '{print "[stage] turnout-gateway", $5}'
 
 # 2. mihomo data-plane binary. Use the "compatible" build (non-AMD64-v3)
-# so it runs on FeiLian forwarding-node hardware classes that lack AVX2.
+# so it runs on older forwarding-node hardware classes that lack AVX2.
 M_PKG="mihomo-linux-${GOARCH}-compatible-v${MIHOMO_VERSION}"
 M_GZ="$STAGE_CACHE/${M_PKG}.gz"
 if [ ! -f "$M_GZ" ]; then
@@ -110,24 +105,7 @@ fi
 cp "$METADB_FILE" "$STAGE_DIR/geoip.metadb"
 ls -lh "$STAGE_DIR/geoip.metadb" | awk '{print "[stage] geoip.metadb", $5}'
 
-# 3. sing-box CLI binary (helper, not a service). Required because
-# whitelistexpand shells out to `sing-box rule-set decompile` for geoip
-# expansion — mihomo doesn't have an equivalent decompile command.
-SB_PKG="sing-box-${SINGBOX_VERSION}-linux-${GOARCH}"
-SB_TGZ="$STAGE_CACHE/${SB_PKG}.tar.gz"
-if [ ! -f "$SB_TGZ" ]; then
-  url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${SB_PKG}.tar.gz"
-  log "downloading $url"
-  curl -fsSL "$url" -o "$SB_TGZ" || fail "could not download sing-box CLI"
-fi
-tmp=$(mktemp -d)
-tar -xzf "$SB_TGZ" -C "$tmp"
-cp "$tmp/$SB_PKG/sing-box" "$STAGE_DIR/sing-box"
-chmod 0755 "$STAGE_DIR/sing-box"
-rm -rf "$tmp"
-ls -lh "$STAGE_DIR/sing-box" | awk '{print "[stage] sing-box (CLI)", $5}'
-
-# 4. Operator gateway.yaml.
+# 3. Operator gateway.yaml.
 # ⛔ subscriptions[] in this yaml is operator-owned and per-node-specific.
 # If this stage came from `redeploy-full.sh` (yaml pulled from a node),
 # the subscriptions block is going right back to that node — DO NOT edit

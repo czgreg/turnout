@@ -27,7 +27,7 @@ import (
 // Loopback HTTP-proxy ports the renderer always emits for turnout-gateway's
 // own outbound use:
 //
-//   - TurnoutInternalProxyPort: rulesets.Manager / whitelistexpand / etc. dial
+//   - TurnoutInternalProxyPort: rulesets.Manager / subscribe / etc. dial
 //     through this so .srs / domain-list fetches transit the airport
 //     (raw.githubusercontent and friends are GFW-blocked from inside CN).
 //     Behind mihomo's "out" selector → us-pool by default.

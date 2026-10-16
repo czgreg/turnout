@@ -52,6 +52,24 @@ func (r *Renderer) buildProxies(outbounds []subscribe.Outbound) []map[string]any
 	out := make([]map[string]any, 0, len(outbounds))
 	for _, o := range outbounds {
 		if p := outboundToProxy(o); p != nil {
+			// Bind each proxy's dials to the egress NIC.
+			//
+			// In the bypass role the host's default route points at the
+			// FIREWALL (that is how unproxied traffic gets handed back — see
+			// config.ReturnConfig). A proxy dial that follows the default
+			// route would therefore leave for the firewall, which would send
+			// it back to us, defeating the tunnel and burning a round trip on
+			// every proxied flow. Pinning the outbound interface sends these
+			// dials straight out to the internet instead.
+			//
+			// Applied here rather than inside outboundToProxy so that
+			// function stays a pure protocol encoder — it is covered
+			// field-by-field by proxies_golden_test.go, and giving it a
+			// config dependency would make those fixtures carry routing
+			// concerns that have nothing to do with protocol conversion.
+			if r.node.EgressIface != "" {
+				p["interface-name"] = r.node.EgressIface
+			}
 			out = append(out, p)
 		}
 	}

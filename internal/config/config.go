@@ -57,6 +57,12 @@ type Config struct {
 	// through this layer: pool composition changes, emergency evictions,
 	// node degradation crossings, webhook health.
 	Notifications NotificationsConfig `yaml:"notifications"`
+
+	// Watchdog is the bypass-role health reporter. It self-checks the data
+	// path and, when unhealthy, withdraws the liveness address so the
+	// upstream firewall's IP-Link probe goes Down and traffic falls back to
+	// direct routing. See the type doc for why this exists at all.
+	Watchdog WatchdogConfig `yaml:"watchdog"`
 }
 
 // NotificationsConfig is the user-facing notification settings. Webhook
@@ -155,10 +161,10 @@ type APIConfig struct {
 	Token  string `yaml:"token"`
 	// AllowFrom is a legacy/additive source-CIDR accept list rendered into
 	// nft.conf by install.sh (NOT enforced in Go; the process still binds
-	// Listen as given). The nft policy denies 10.8.0.0/16 and accepts other
+	// Listen as given). The nft policy denies the diverted subnet and accepts other
 	// sources by default, so this list is normally redundant.
 	//
-	// The fixed 10.8.0.0/16 deny is independent of this list. Token remains
+	// The fixed the diverted subnet deny is independent of this list. Token remains
 	// the application-layer protection and should be configured when Listen
 	// is exposed beyond loopback.
 	// NEVER include the tun0 client_subnet here; those are untrusted
@@ -184,19 +190,204 @@ type SubscriptionEntry struct {
 	UserAgent string `yaml:"user_agent,omitempty"`
 }
 
-// NodeConfig describes the FeiLian forwarding node that turnout is sidecared on.
-// All three fields are assigned by FeiLian SaaS when the node is added to the
-// control plane. They cannot be guessed — the deploy operator fills them in.
+// NodeConfig describes this bypass node's role in the office network: the
+// segment whose traffic the firewall diverts to us, the interface that
+// diversion arrives on, and how we hand unproxied traffic back.
+//
+// Bypass deployment differs from upstream's sidecar role in one essential
+// way: upstream's node was the network's egress, so "DIRECT" meant "leave
+// through our own NIC". Here we are a detour beside the firewall, so
+// DIRECT means "hand the packet back to the firewall" — and that requires
+// a default route pointing at the firewall rather than at the internet.
+// See ReturnConfig.
 type NodeConfig struct {
-	// ClientSubnet is the CIDR of the client pool (e.g. "10.8.11.0/24").
+	// ClientSubnet is the CIDR of the office segment whose traffic the
+	// firewall's PBR diverts to us (e.g. "10.1.0.0/16"). Must match the
+	// source-address in the firewall's policy-based-route rule.
 	ClientSubnet string `yaml:"client_subnet"`
-	// Tun0GatewayIP is the IP address mihomo's DNS server binds to
-	// (e.g. "10.8.11.1"). It must be the gateway of tun0 — the address that
-	// the FeiLian client sees as the gateway of its tunnel.
-	Tun0GatewayIP string `yaml:"tun0_gateway_ip"`
-	// EgressIface is the interface that the node uses to reach the public
-	// internet (e.g. "ens18"). Used for diagnostic reporting.
+
+	// IngressIP is the address on IngressIface that mihomo's DNS server
+	// binds to (see data_plane.dns.listen), and the address the firewall's
+	// PBR rule points at as next-hop. Typically a /30 or /29 alongside the
+	// firewall.
+	//
+	// Renamed from upstream's Tun0GatewayIP: there is no tun0 here.
+	IngressIP string `yaml:"ingress_ip"`
+
+	// IngressIface is the NIC that carries diverted traffic from the
+	// firewall. Replaces upstream's tun0.
+	IngressIface string `yaml:"ingress_iface"`
+
+	// EgressIface is the NIC used to reach airport nodes on the public
+	// internet. mihomo binds its proxy outbounds here so proxied traffic
+	// does NOT follow the default route into the firewall (which would
+	// bounce it back to us).
 	EgressIface string `yaml:"egress_iface"`
+
+	// Return describes how unproxied traffic gets back to the firewall.
+	Return ReturnConfig `yaml:"return"`
+}
+
+// ReturnConfig pins the return path for traffic that the classifier sends
+// DIRECT. Under the chosen design (see PLAN.md P2, "方案 B") this is the
+// whole mechanism: mihomo re-originates a DIRECT flow from this host, and
+// the default route sends it to the firewall's address rather than to the
+// internet. install.sh installs exactly that route.
+//
+// Why this does not loop: the return flow originates from this host, so its
+// source address is not in ClientSubnet and the firewall's PBR rule (which
+// matches on source-address AND original ingress interface) does not
+// re-capture it.
+type ReturnConfig struct {
+	// GatewayIP is the firewall's address on the ingress segment. install.sh
+	// runs `ip route replace default via <GatewayIP>` so all non-proxied
+	// egress lands on the firewall.
+	GatewayIP string `yaml:"gateway_ip"`
+
+	// Iface optionally pins the return device. Empty = let the kernel pick
+	// from the route. Under the chosen design this can stay empty because
+	// return traffic never shares an ingress decision with the firewall's
+	// PBR rule; set it only if the host has multiple paths to GatewayIP and
+	// you need to force one.
+	Iface string `yaml:"iface,omitempty"`
+}
+
+// A note on the bool fields in this block: yaml.v3 decodes an absent key as
+// the zero value, so a plain `bool` cannot express "default true" — omitting
+// the line silently means false. Every field whose safe default is ON is
+// therefore a *bool, where nil means "use the default". Fields whose default
+// is OFF (AutoFailover, EgressProbe) stay plain bools, because there the zero
+// value is already correct.
+//
+// This matters more here than elsewhere: a hand-written config that forgets
+// `checks.engine_alive` would report healthy forever, which is precisely the
+// failure this component exists to prevent.
+type WatchdogConfig struct {
+	// Enabled gates the whole subsystem. nil/true = on (and then
+	// LivenessIP decides whether it can actually run); false = off.
+	Enabled *bool `yaml:"enabled"`
+
+	// Interval is the self-check period. Too short flaps; too long widens
+	// the black-hole window. Default 10s.
+	Interval time.Duration `yaml:"interval"`
+
+	// FailThreshold is how many consecutive failing rounds mark the node
+	// unhealthy. Guards against acting on a single transient error.
+	// Default 3.
+	FailThreshold int `yaml:"fail_threshold"`
+
+	// RecoverThreshold is how many consecutive passing rounds mark it
+	// healthy again. Mirrors the firewall's own revertive semantics, which
+	// also require N consecutive responses before declaring Up. Default 3.
+	RecoverThreshold int `yaml:"recover_threshold"`
+
+	// Checks selects and parameterizes the individual self-checks.
+	Checks WatchdogChecks `yaml:"checks"`
+
+	// LivenessIP is the address the firewall's IP-Link probe targets.
+	//
+	// REQUIRED at deploy time — there is deliberately no default. It is the
+	// only health signal path between this host and the firewall, and every
+	// way of getting it wrong fails silently:
+	//   - left empty        → nothing is withdrawn, the firewall never learns
+	//   - set to IngressIP  → withdrawing it also drops SSH and the API,
+	//                         removing your ability to log in and diagnose
+	//   - set to an address another host already uses → an address conflict
+	// so install.sh's precheck rejects an empty value and one equal to
+	// IngressIP. Pick a spare address in the ingress segment and bind it to
+	// lo (the default for LivenessIface).
+	LivenessIP string `yaml:"liveness_ip"`
+
+	// LivenessIface is the device LivenessIP is bound to. Default "lo".
+	// Set it to the physical ingress NIC when the firewall probes with
+	// `mode arp` — ARP does not cross layer 3, so a loopback-bound address
+	// is unreachable to an ARP probe.
+	LivenessIface string `yaml:"liveness_iface"`
+
+	// AutoFailover decides whether an unhealthy verdict is merely reported
+	// or acted on:
+	//
+	//	false (default) — alert only; LivenessIP stays up and the firewall
+	//	                  keeps diverting. You cut over manually.
+	//	true            — withdraw LivenessIP, so the firewall's IP-Link
+	//	                  goes Down and traffic returns to direct routing
+	//	                  on its own.
+	//
+	// Default false on purpose. During the trial period there are few users
+	// and a manual cutover is enough, while an automatic withdrawal during a
+	// half-dead state (probe says healthy, forwarding is black-holing) gives
+	// false confidence. Flip to true once the failure modes have been
+	// observed for a week or two — it is a config change, not a code change.
+	AutoFailover bool `yaml:"auto_failover"`
+
+	// NotifyOnStateChange sends a Lark message on each health transition,
+	// naming the check that failed. nil/true = on.
+	NotifyOnStateChange *bool `yaml:"notify_on_state_change"`
+}
+
+// IsEnabled reports whether the watchdog should run.
+func (w WatchdogConfig) IsEnabled() bool { return w.Enabled == nil || *w.Enabled }
+
+// ShouldNotify reports whether health transitions should be pushed.
+func (w WatchdogConfig) ShouldNotify() bool {
+	return w.NotifyOnStateChange == nil || *w.NotifyOnStateChange
+}
+
+// WatchdogChecks selects the individual self-checks. All enabled checks must
+// pass for the node to be considered healthy. As with WatchdogConfig, every
+// check that defaults ON is a *bool so that omitting it does not disable it.
+type WatchdogChecks struct {
+	// EngineAlive verifies the mihomo process is up and its clash-api
+	// answers /version. nil/true = on.
+	EngineAlive *bool `yaml:"engine_alive"`
+
+	// DataplaneRules verifies the TPROXY rules are in place.
+	//
+	// This does NOT re-implement the check: it reads the snapshot of
+	// internal/dataplane/assert.go, which already asserts these every 30s
+	// and performs targeted self-repair (see its package doc for the
+	// 2026-08-12 outage that motivated it). Re-implementing it here would
+	// put repair and withdrawal in a fight — rules get flushed, watchdog
+	// withdraws, firewall cuts over, assert repairs, address returns,
+	// firewall cuts back — so the split is: assert repairs, watchdog
+	// reports. nil/true = on.
+	DataplaneRules *bool `yaml:"dataplane_rules"`
+
+	// PoolHealthyMin is how many egress nodes must be currently healthy for
+	// this check to pass (read from NodeScorer's state). nil = default 1:
+	// with none healthy, every proxied flow is dead even though the host and
+	// its rules are fine. An explicit 0 disables the check.
+	PoolHealthyMin *int `yaml:"pool_healthy_min"`
+
+	// EgressProbe enables an end-to-end check: fetch EgressProbeURL through
+	// the proxy. This is the only check that proves the entire chain works,
+	// but it generates real traffic on every round. Default false.
+	EgressProbe bool `yaml:"egress_probe"`
+
+	// EgressProbeURL is the URL fetched by EgressProbe. Default
+	// http://cp.cloudflare.com/generate_204 — small, no TLS handshake, and
+	// purpose-built for connectivity checks.
+	EgressProbeURL string `yaml:"egress_probe_url"`
+
+	// EgressProbeTimeout caps each end-to-end probe. Default 5s.
+	EgressProbeTimeout time.Duration `yaml:"egress_probe_timeout"`
+}
+
+// CheckEngineAlive reports whether the engine check is enabled (default true).
+func (c WatchdogChecks) CheckEngineAlive() bool { return c.EngineAlive == nil || *c.EngineAlive }
+
+// CheckDataplaneRules reports whether the rule check is enabled (default true).
+func (c WatchdogChecks) CheckDataplaneRules() bool {
+	return c.DataplaneRules == nil || *c.DataplaneRules
+}
+
+// EffectivePoolHealthyMin returns the pool health floor, defaulting to 1.
+// An explicit 0 disables the check.
+func (c WatchdogChecks) EffectivePoolHealthyMin() int {
+	if c.PoolHealthyMin == nil {
+		return 1
+	}
+	return *c.PoolHealthyMin
 }
 
 // DataPlaneConfig describes the proxy data plane (mihomo) the control plane
@@ -233,9 +424,9 @@ type DataPlaneConfig struct {
 
 	// TProxyPort is the port mihomo listens on for transparent-proxy
 	// (TPROXY) inbound traffic. When non-zero, iproute.sh redirects
-	// non-DNS TCP/UDP from the FeiLian client subnet to this port using
+	// non-DNS TCP/UDP from the diverted office subnet to this port using
 	// the kernel's TPROXY target, which preserves the original client
-	// source IP (10.8.x.x) in mihomo's connection metadata.
+	// source IP in mihomo's connection metadata.
 	//
 	// This is the ONLY mechanism that preserves real source IPs. TUN mode
 	// (system OR gvisor) always reports 198.18.0.0 for all clients because
@@ -284,7 +475,7 @@ type LoadBalanceConfig struct {
 	// same IP) that trips OpenAI/Cloudflare anomaly detection.
 	//
 	// REQUIRES data_plane.tproxy_port to be set. TPROXY preserves the real
-	// client sourceIP (10.8.x.x) so SRC-IP-CIDR slicing works. TUN mode
+	// client sourceIP so SRC-IP-CIDR slicing works. TUN mode
 	// (tproxy_port=0) always collapses all clients to 198.18.0.0 regardless
 	// of TUN stack (confirmed on production node 89, 2026-06-06).
 	//
@@ -695,8 +886,9 @@ type NodeQualifyConfig struct {
 // PoolSizingConfig controls dynamic K computation. See NodeQualifyConfig.PoolSizing.
 type PoolSizingConfig struct {
 	// TActive is the operator-supplied 7-day distinct active terminal
-	// count. Used to compute K (pool target size). Set this from FeiLian's
-	// accounting / DHCP data; recompute weekly, ignore daily fluctuations.
+	// count. Used to compute K (pool target size). Set this from your own
+	// DHCP lease or accounting data; recompute weekly, ignore daily
+	// fluctuations.
 	// Default 50. Previously, TActive=0 triggered legacy "all qualified
 	// nodes in pool" behavior — that mode is removed; K-gating is always on.
 	TActive int `yaml:"t_active"`
@@ -805,8 +997,9 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) applyDefaults() {
 	if c.API.Listen == "" {
-		// 18080 (not 8080) — feilian-sentry on the forwarding node already
-		// owns 127.0.0.1:8080.
+		// 18080 (not 8080) — inherited from upstream, where another agent
+		// owned 127.0.0.1:8080. Any free port works; this one is kept so the
+		// docs and deploy scripts stay consistent.
 		c.API.Listen = "127.0.0.1:18080"
 	}
 	if c.Subscribe.HTTPTimeout == 0 {
@@ -818,6 +1011,35 @@ func (c *Config) applyDefaults() {
 	c.DataPlane.ApplyDefaults()
 	c.NodeQualify.applyDefaults()
 	c.Notifications.applyDefaults()
+	c.Watchdog.applyDefaults()
+}
+
+// applyDefaults fills WatchdogConfig defaults.
+//
+// LivenessIP deliberately gets NO default — see its field doc. The bool
+// fields are pointers so that "absent" and "explicitly false" stay
+// distinguishable; nothing needs defaulting for them here, because the
+// accessors (IsEnabled, ShouldNotify, CheckEngineAlive, ...) already read
+// nil as "on".
+func (w *WatchdogConfig) applyDefaults() {
+	if w.Interval == 0 {
+		w.Interval = 10 * time.Second
+	}
+	if w.FailThreshold == 0 {
+		w.FailThreshold = 3
+	}
+	if w.RecoverThreshold == 0 {
+		w.RecoverThreshold = 3
+	}
+	if w.LivenessIface == "" {
+		w.LivenessIface = "lo"
+	}
+	if w.Checks.EgressProbeURL == "" {
+		w.Checks.EgressProbeURL = "http://cp.cloudflare.com/generate_204"
+	}
+	if w.Checks.EgressProbeTimeout == 0 {
+		w.Checks.EgressProbeTimeout = 5 * time.Second
+	}
 }
 
 // applyDefaults fills NotificationsConfig defaults. Disabled by default —

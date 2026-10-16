@@ -25,6 +25,7 @@ import type {
   Subscription,
   TerminalAssignment,
   Transitions,
+  WatchdogStatus,
 } from './types';
 
 let base = '';
@@ -81,6 +82,28 @@ const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
 export async function getHealthz(): Promise<{ httpStatus: number; body: Healthz | null }> {
   const res = await fetch(base + '/healthz');
   let body: Healthz | null = null;
+  try {
+    body = await res.json();
+  } catch {
+    /* non-JSON: older binary */
+  }
+  return { httpStatus: res.status, body };
+}
+
+/**
+ * /api/watchdog/status answers 503 WITH a body when the verdict is
+ * unhealthy, and 200 with body.state='unknown' before the first check round.
+ *
+ * So this must not go through request(): that throws on non-2xx and the body
+ * with it, which would blank the health card at exactly the moment it has
+ * something important to say. Mirrors getHealthz — status and body are
+ * returned together and the caller decides.
+ */
+export async function getWatchdogStatus(): Promise<{ httpStatus: number; body: WatchdogStatus | null }> {
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = 'Bearer ' + token;
+  const res = await fetch(base + '/api/watchdog/status', { headers });
+  let body: WatchdogStatus | null = null;
   try {
     body = await res.json();
   } catch {

@@ -1,14 +1,20 @@
 [Unit]
 Description=mihomo (turnout-gateway data plane)
 Documentation=https://wiki.metacubex.one/
-After=network-online.target feilian-tun@tun0.service
-BindsTo=feilian-tun@tun0.service
+# No BindsTo= on any tunnel/VPN unit: the bypass role has no tun0. Its inputs
+# are the ingress NIC (from the firewall) and the egress NIC (to the airport
+# nodes), and systemd has no generic "interface is up" dependency to express
+# that without networkd. iproute.sh verifies the ingress interface exists
+# before installing TPROXY rules, which surfaces a missing NIC at start time
+# with a clearer message than a failed unit dependency would.
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 # Working dir = /var/lib/turnout/mihomo.
-# turnout-gateway renders config.yaml here (matches cfg.SingBox.ConfigPath).
+# turnout-gateway renders config.yaml here (matches
+# data_plane.config_path in gateway.yaml).
 # mihomo reads <workdir>/config.yaml automatically when no -f is given.
 # rule-sets live under <workdir>/rule-sets/ (subpath, always accepted).
 # SAFE_PATHS is not needed when everything is under the working dir.

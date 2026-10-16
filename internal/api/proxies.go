@@ -20,8 +20,8 @@ import (
 // stable.
 type activeDTO struct {
 	Node        nodeinfo.NodeInfo    `json:"node"`
-	FeiLian     nodeinfo.FeiLianInfo `json:"feilian"`
-	Turnout        turnoutDTO              `json:"turnout"`
+	Ingress     nodeinfo.IngressInfo `json:"ingress"`
+	Turnout     turnoutDTO           `json:"turnout"`
 	ActiveProxy activeProxyDTO       `json:"active_proxy"`
 }
 
@@ -101,8 +101,8 @@ func (s *Server) handleProxiesActive(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, activeDTO{
 		Node:        ni.Node,
-		FeiLian:     ni.FeiLian,
-		Turnout:        turnout,
+		Ingress:     ni.Ingress,
+		Turnout:     turnout,
 		ActiveProxy: ap,
 	})
 }

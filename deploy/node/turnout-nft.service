@@ -1,19 +1,19 @@
 [Unit]
-Description=Inject turnout nft rules + TPROXY iptables rules for FeiLian forwarding
+Description=Inject turnout nft rules + TPROXY iptables rules for the bypass role
 # turnout-nft manages two independent things:
-#   1. nft table inet turnout — DNS pass-through rule on tun0 (dport 53 accept)
-#   2. iptables TPROXY rules — intercept non-DNS TCP/UDP on tun0, route to
-#      mihomo's tproxy-port (preserving real client sourceIP 10.8.x.x)
+#   1. nft table inet turnout — DNS pass-through rule on the ingress NIC
+#      (dport 53 accept, so mihomo's DNS server answers directly)
+#   2. iptables TPROXY rules — intercept non-DNS TCP/UDP arriving on the
+#      ingress NIC from the diverted office segment, route to mihomo's
+#      tproxy-port (preserving real client sourceIP for per-terminal routing)
 #
-# With TPROXY as the primary data path, we no longer depend on utun-turnout.
-# The old TUN-based design needed utun-turnout because traffic was routed
-# fwmark→utun-turnout; TPROXY intercepts on tun0 (FeiLian's interface) and
-# hands packets directly to mihomo, so utun-turnout is irrelevant here.
+# No BindsTo= on a tunnel unit: the bypass role has no tun0. What must exist
+# instead is the ingress NIC itself, and iproute.sh checks for it before
+# touching iptables — see its header.
 #
 # PartOf=turnout-mihomo.service: when mihomo restarts, re-run iproute.sh up
 # so the iptables TPROXY chain and ip rule are cleanly re-applied.
-After=feilian-tun@tun0.service turnout-mihomo.service
-BindsTo=feilian-tun@tun0.service
+After=network-online.target turnout-mihomo.service
 PartOf=turnout-mihomo.service
 StartLimitIntervalSec=0
 

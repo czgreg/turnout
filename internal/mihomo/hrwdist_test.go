@@ -34,7 +34,7 @@ var liveRoutingPool = []string{
 func firstMemberCounts(members []string, depth int) map[string]int {
 	out := map[string]int{}
 	for n := 1; n <= 254; n++ {
-		ranked := hrwTopN(fmt.Sprintf("10.8.12.%d", n), members, depth)
+		ranked := hrwTopN(fmt.Sprintf("10.1.1.%d", n), members, depth)
 		if len(ranked) > 0 {
 			out[ranked[0]]++
 		}
@@ -144,7 +144,7 @@ func TestHRWTopN_RemovingMemberOnlyMovesItsOwnTerminals(t *testing.T) {
 	}
 	moved, movedWrongly := 0, 0
 	for n := 1; n <= 254; n++ {
-		ip := fmt.Sprintf("10.8.12.%d", n)
+		ip := fmt.Sprintf("10.1.1.%d", n)
 		before := hrwTopN(ip, full, 1)[0]
 		after := hrwTopN(ip, reduced, 1)[0]
 		if before == after {
@@ -168,7 +168,7 @@ func TestHRWTopN_RemovingMemberOnlyMovesItsOwnTerminals(t *testing.T) {
 // stickiness design rests on this.
 func TestHRWTopN_IsDeterministic(t *testing.T) {
 	for n := 1; n <= 254; n += 37 {
-		ip := fmt.Sprintf("10.8.12.%d", n)
+		ip := fmt.Sprintf("10.1.1.%d", n)
 		first := hrwTopN(ip, liveRoutingPool, 3)
 		for i := 0; i < 5; i++ {
 			again := hrwTopN(ip, liveRoutingPool, 3)
@@ -191,7 +191,7 @@ func TestHRWTopN_IndependentOfInputOrder(t *testing.T) {
 	shuffled := append([]string(nil), liveRoutingPool...)
 	sort.Sort(sort.Reverse(sort.StringSlice(shuffled)))
 	for n := 1; n <= 254; n++ {
-		ip := fmt.Sprintf("10.8.12.%d", n)
+		ip := fmt.Sprintf("10.1.1.%d", n)
 		a := hrwTopN(ip, liveRoutingPool, 2)
 		b := hrwTopN(ip, shuffled, 2)
 		for x := range a {

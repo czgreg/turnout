@@ -1,6 +1,6 @@
 // Package turnouthttp is the canonical HTTP-client factory for any turnout-gateway
 // outbound that talks to an OVERSEAS host (anything not on 127.0.0.0/8, the
-// 10.8.x.x FeiLian client subnet, or other LAN ranges).
+// office client subnet, or other LAN ranges).
 //
 // # Why this package exists
 //
@@ -9,8 +9,7 @@
 // through the host's main interface — straight into the GFW, where the
 // connection is reset or blackholed. Result: indefinite timeout. This was
 // the root cause of the subscribe-fetcher outage memo'd as
-// feilian-forwarding-node-quirks pitfall #6, and again of the
-// whitelistexpand 6-domain bug caught 2026-06-06.
+// the upstream forwarding-node quirks memo (pitfall #6).
 //
 // (Under the former fake-ip DNS mode this bit harder: the host resolver
 // handed back 198.18.x.x for overseas names and the direct dial went
@@ -86,7 +85,7 @@ import (
 // 30-60s, ruleset fetches use 60s, telemetry probes can be 5-10s.
 //
 // label is interpolated into fallback-warning slog lines (e.g. "subscribe",
-// "whitelistexpand-domain", "whitelistexpand-srs", "rulesets") so journal
+// "rulesets") so journal
 // scrapes can attribute failures back to the originating module without
 // reading goroutine stacks.
 func NewClient(proxyURL string, timeout time.Duration, label string) *http.Client {

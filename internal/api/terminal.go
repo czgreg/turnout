@@ -18,7 +18,7 @@ type TerminalAssignment struct {
 	Primary    *terminalNodeView      `json:"primary,omitempty"`    // current default egress for this terminal
 	Secondary  *terminalNodeView      `json:"secondary,omitempty"`  // mihomo fallback target when primary is alive=false
 	ActiveNode string                 `json:"active_node,omitempty"` // which one is actually carrying traffic right now ("primary" | "secondary" | "")
-	GroupName  string                 `json:"group_name,omitempty"` // e.g. fb-10.8.13.42 — present when InSubnet
+	GroupName  string                 `json:"group_name,omitempty"` // e.g. fb-10.1.2.42 — present when InSubnet
 	PoolMode   string                 `json:"pool_mode"`            // "manual" | "auto" | other
 	Hint       string                 `json:"hint,omitempty"`       // operator-facing diagnostic note
 }
@@ -33,7 +33,7 @@ type terminalNodeView struct {
 	Health *nodescorer.NodeHealth `json:"health,omitempty"` // omitted when scorer hasn't seen this node yet
 }
 
-// handlePoolTerminal answers GET /api/pool/terminal?ip=10.8.13.42
+// handlePoolTerminal answers GET /api/pool/terminal?ip=10.1.2.42
 //
 // Resolves: terminal IP → fb-<ip> group → [primary, secondary] HRW
 // assignment → each node's NodeHealth + alive bit. Decides "active_node"

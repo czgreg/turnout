@@ -48,7 +48,7 @@
 | `internal/mihomo/dns.go` | DNS `listen` 改绑 `IngressIP` |
 | `internal/mihomo/inbounds.go` | TUN 块判定条件从 `Tun0GatewayIP` 改为 `IngressIP`（保持 `enabled: false`） |
 | `deploy/node/iproute.sh` | `LEAP_TUN0_IFACE` → `BYPASS_INGRESS_IFACE`；PREROUTING 匹配 `-i $INGRESS_IFACE -s $CLIENT_SUBNET` |
-| `deploy/node/nft.conf.tmpl` | 入向网卡名、源网段、API 防护规则里的 `10.8.0.0/16` 硬编码 |
+| `deploy/node/nft.conf.tmpl` | 入向网卡名、源网段、API 防护规则里的 `the diverted subnet` 硬编码 |
 | `deploy/node/install.sh` | `precheck()` 里的 feilian-tun / tun0 检查项全部删除，换成旁挂机检查项 |
 | `cmd/render-mihomo/main.go` | 渲染参数同步 |
 

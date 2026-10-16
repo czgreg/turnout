@@ -18,7 +18,7 @@ const (
 )
 
 func (r *Renderer) buildTUN() map[string]any {
-	if !r.cfg.TUN.Enabled || r.node.Tun0GatewayIP == "" {
+	if !r.cfg.TUN.Enabled || r.node.IngressIP == "" {
 		return map[string]any{"enable": false}
 	}
 	device := r.cfg.TUN.InterfaceName

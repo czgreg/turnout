@@ -1,4 +1,4 @@
-// Brand mark: two lanes crossing at different levels — the "立交" in the name.
+// Brand mark: a track splitting into two — one in, two out. The "道岔" in the name.
 export default function Logo({ size = 32 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden="true" className="logo">

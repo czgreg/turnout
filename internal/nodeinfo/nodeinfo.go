@@ -1,9 +1,9 @@
-// Package nodeinfo collects shell-out-y node + FeiLian + turnout-services status
-// in a background goroutine and exposes a cached snapshot so the API can
-// answer /api/proxies/active without forking systemctl/nft per request.
+// Package nodeinfo collects shell-out-y node + ingress-link + turnout-services
+// status in a background goroutine and exposes a cached snapshot so the API
+// can answer /api/proxies/active without forking systemctl/ip per request.
 //
 // Cache TTL is intentionally short (5s) because operators poll this endpoint
-// in tight loops while debugging, and "is turnout-singbox up?" must reflect
+// in tight loops while debugging, and "is the ingress link up?" must reflect
 // reality within a few seconds of an event.
 package nodeinfo
 
@@ -22,8 +22,8 @@ import (
 // distinguishable from false.
 type Snapshot struct {
 	Node    NodeInfo    `json:"node"`
-	FeiLian FeiLianInfo `json:"feilian"`
-	Turnout    TurnoutInfo    `json:"turnout"`
+	Ingress IngressInfo `json:"ingress"`
+	Turnout TurnoutInfo `json:"turnout"`
 }
 
 type NodeInfo struct {
@@ -41,12 +41,30 @@ type Interface struct {
 	IPv4 string `json:"ipv4,omitempty"`
 }
 
-type FeiLianInfo struct {
-	Tun0Active       bool     `json:"tun0_active"`
-	VPNActive        bool     `json:"vpn_active"`
-	ProxyActive      bool     `json:"proxy_active"`
-	SentryActive     bool     `json:"sentry_active"`
-	NftChainsPresent []string `json:"nft_chains_present"`
+// IngressInfo describes the bypass role's link to the firewall — the things
+// an operator needs when the firewall reports the node down, or when traffic
+// stops being diverted.
+//
+// Upstream reported the VPN's own services here (tun0, vpn, proxy,
+// sentry). None of those exist in a bypass deployment, so the fields are
+// replaced rather than renamed: reporting four permanently-inactive services
+// would be noise that trains the operator to ignore the panel.
+type IngressInfo struct {
+	// IngressIfaceUp is whether the NIC carrying diverted traffic is up.
+	// If this is down, nothing arrives and the classifier sees no traffic
+	// at all — a failure that looks like "no users" rather than "broken".
+	IngressIfaceUp bool `json:"ingress_iface_up"`
+	// IngressIPPresent is whether node.ingress_ip is actually configured.
+	// A missing address means the firewall's PBR next-hop is dead.
+	IngressIPPresent bool `json:"ingress_ip_present"`
+	// ReturnRoute is the current default route, which must point at the
+	// firewall. Empty means there is no default route — in that case
+	// unproxied traffic has nowhere to go.
+	ReturnRoute string `json:"return_route,omitempty"`
+	// LivenessUp is whether the watchdog is currently holding the address
+	// the firewall's IP-Link probe targets. False while the node considers
+	// itself unhealthy is expected, not a fault.
+	LivenessUp bool `json:"liveness_up"`
 }
 
 type TurnoutInfo struct {
@@ -67,19 +85,33 @@ type Reporter struct {
 	gatewayV string
 	engine   string // active data-plane: "mihomo" or "sing-box"
 
+	// livenessFn reports whether the watchdog is currently holding the
+	// liveness address. Injected rather than importing internal/watchdog so
+	// this reporting package stays free of the health machinery (and its
+	// tests stay fast). nil = not wired; LivenessUp reports false.
+	livenessFn func() bool
+
 	mu   sync.RWMutex
 	snap Snapshot
 }
 
 func New(node config.NodeConfig, gatewayVersion, engine string) *Reporter {
 	if engine == "" {
-		engine = "sing-box"
+		engine = "mihomo"
 	}
 	return &Reporter{
 		node:     node,
 		gatewayV: gatewayVersion,
 		engine:   engine,
 	}
+}
+
+// WithLivenessSource wires the function used to report the liveness address
+// state in IngressInfo. Optional; without it the field reports false, which
+// would be misleading, so main.go always supplies it.
+func (r *Reporter) WithLivenessSource(fn func() bool) *Reporter {
+	r.livenessFn = fn
+	return r
 }
 
 // Run starts a 5s ticker that refreshes the cached snapshot. Returns
@@ -111,8 +143,8 @@ func (r *Reporter) Snapshot() Snapshot {
 func (r *Reporter) refresh(ctx context.Context) {
 	s := Snapshot{
 		Node:    r.collectNode(),
-		FeiLian: r.collectFeiLian(ctx),
-		Turnout:    r.collectTurnout(ctx),
+		Ingress: r.collectIngress(ctx),
+		Turnout: r.collectTurnout(ctx),
 	}
 	r.mu.Lock()
 	r.snap = s
@@ -132,14 +164,26 @@ func (r *Reporter) collectNode() NodeInfo {
 	}
 }
 
-func (r *Reporter) collectFeiLian(ctx context.Context) FeiLianInfo {
-	return FeiLianInfo{
-		Tun0Active:       systemdActive(ctx, "feilian-tun@tun0.service"),
-		VPNActive:        systemdActive(ctx, "feilian-vpn.service"),
-		ProxyActive:      systemdActive(ctx, "feilian-vpn-proxy.service"),
-		SentryActive:     systemdActive(ctx, "feilian-vpn-sentry.service"),
-		NftChainsPresent: nftFeiLianChains(ctx),
+// collectIngress reports the bypass role's link to the firewall.
+//
+// Each field answers a distinct question an operator asks when traffic
+// mysteriously stops: is the diverted traffic arriving at all (iface up,
+// our address present), and can unproxied traffic leave (default route set).
+// The liveness flag comes from the watchdog's status, which is injected so
+// this package does not depend on the watchdog package.
+func (r *Reporter) collectIngress(ctx context.Context) IngressInfo {
+	info := IngressInfo{}
+	if r.node.IngressIface != "" {
+		info.IngressIfaceUp = linkUp(ctx, r.node.IngressIface)
 	}
+	if r.node.IngressIP != "" {
+		info.IngressIPPresent = addrPresent(ctx, r.node.IngressIface, r.node.IngressIP)
+	}
+	info.ReturnRoute = defaultRoute(ctx)
+	if r.livenessFn != nil {
+		info.LivenessUp = r.livenessFn()
+	}
+	return info
 }
 
 func (r *Reporter) collectTurnout(ctx context.Context) TurnoutInfo {

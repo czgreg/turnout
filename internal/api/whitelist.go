@@ -25,8 +25,8 @@ import (
 // DNS side:
 //   - FakeIPSkip: intranet domain suffixes routed to CN DoH via
 //     nameserver-policy. Required for internal services whose hostnames
-//     resolve to CN/LAN IPs but aren't on geosite-cn (paigod.work,
-//     feilian.cn, …) — the default nameserver is proxyDoH (overseas),
+//     resolve to CN/LAN IPs but aren't on geosite-cn (corp.example.com,
+//     internal.example.com, …) — the default nameserver is proxyDoH (overseas),
 //     which has no records for them. Accepted formats: "+.example.com" /
 //     ".example.com" / "example.com" — all normalised to "+." prefix.
 //     Synced to cfg.DataPlane.DNS.FakeIPSkipSuffixes on every successful PUT.
@@ -192,15 +192,6 @@ func (s *Server) handleWhitelistPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Async refresh of the resolved snapshot (domains + ip_cidrs). Don't
-	// block the PUT response on it — the upstream fetch can take several
-	// seconds, and the caller already has confirmation that the WL itself
-	// was applied. Stale /api/whitelist/resolved snapshots are explicitly
-	// marked stale=true.
-	if s.deps.Expander != nil {
-		go s.refreshExpander()
-	}
-
 	s.handleWhitelistGet(w, r)
 }
 
@@ -267,48 +258,6 @@ func normalizeCIDRs(in []string) ([]string, error) {
 		out = append(out, canonical)
 	}
 	return out, nil
-}
-
-// refreshExpander runs the v2fly expansion against the current cfg in a
-// fresh context so it survives the request that triggered it.
-func (s *Server) refreshExpander() {
-	if s.deps.Expander == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	wl := s.deps.Cfg.DataPlane.Route.Whitelist
-	if _, err := s.deps.Expander.Refresh(ctx, wl.Geosites, wl.Geoips, wl.DomainSuffix, wl.IPCIDR); err != nil {
-		// Already logged inside Refresh; nothing else to do here — old
-		// snapshot is preserved and marked stale.
-		_ = err
-	}
-}
-
-// handleWhitelistResolved returns the resolved snapshot — geosites/geoips
-// expanded into flat domain + IP CIDR lists, merged with the literal
-// domain_suffix / ip_cidr entries. Used by FeiLian's "极速模式" which only
-// accepts concrete domain + CIDR values (not rule-set tags).
-func (s *Server) handleWhitelistResolved(w http.ResponseWriter, r *http.Request) {
-	if s.deps.Expander == nil {
-		http.Error(w, "expander not configured", http.StatusServiceUnavailable)
-		return
-	}
-	snap := s.deps.Expander.Snapshot()
-	if snap == nil {
-		// First-boot: no cache yet. Trigger one inline (best-effort) so the
-		// caller doesn't have to poll. Still bound by request timeout.
-		wl := s.deps.Cfg.DataPlane.Route.Whitelist
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		built, err := s.deps.Expander.Refresh(ctx, wl.Geosites, wl.Geoips, wl.DomainSuffix, wl.IPCIDR)
-		if err != nil || built == nil {
-			http.Error(w, "expansion not yet available — try again in a few seconds", http.StatusServiceUnavailable)
-			return
-		}
-		snap = built
-	}
-	writeJSON(w, http.StatusOK, snap)
 }
 
 // rerenderAndReload re-renders the data-plane config from the cached subscription

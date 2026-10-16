@@ -20,7 +20,7 @@
 //       (not fake-ip back-mapping) is what actually carries routing.
 //   Its recurring cost was real: any hostname not in fake-ip-filter got a
 //   198.18.x.x and then timed out on DIRECT/probe dial. Bit intranet
-//   services (ai.paigod.work, 2026-06-05) and, when a subscription
+//   services (ai.corp.example.com, 2026-06-05) and, when a subscription
 //   provider's node domain was missed, silently killed node health probes
 //   — every node alive=False because mihomo dialed the fake IP
 //   (11us.quandao.com, 2026-07-06). redir-host removes that failure mode
@@ -58,7 +58,7 @@
 //   resolution.
 //
 // FakeIPSkipSuffixes (cfg.DNS) is retained but now feeds ONLY
-// nameserver-policy: intranet suffixes (paigod.work, feilian.cn, ...)
+// nameserver-policy: intranet suffixes (corp.example.com, internal.example.com, ...)
 // must resolve via CN DoH, because the default nameserver is proxyDoH
 // (overseas) which has no records for intranet domains. Under fake-ip
 // these suffixes also had to be listed in fake-ip-filter; under
@@ -103,8 +103,8 @@ func (r *Renderer) buildDNS() map[string]any {
 
 	if l := r.cfg.DNS.Listen; l != "" {
 		dns["listen"] = l
-	} else if r.node.Tun0GatewayIP != "" {
-		dns["listen"] = r.node.Tun0GatewayIP + ":53"
+	} else if r.node.IngressIP != "" {
+		dns["listen"] = r.node.IngressIP + ":53"
 	}
 
 	return dns
@@ -177,7 +177,7 @@ func buildProxyServerNameserverPolicy(suffixes, nodeResolver []string) map[strin
 
 // buildNameserverPolicy maps domain-class keys to CN DoH so that:
 //   - CN domains (rule-set:geosite-cn) resolve direct (no parallel proxy hit)
-//   - operator-supplied fake-ip-skip suffixes (paigod.work, feilian.cn etc.)
+//   - operator-supplied fake-ip-skip suffixes (corp.example.com, internal.example.com etc.)
 //     resolve via CN DoH so DIRECT outbound gets a usable IP
 //
 // Keys mihomo accepts here: domain wildcards (`+.<suffix>`),
@@ -201,8 +201,8 @@ func buildNameserverPolicy(cnDoH, fakeIPSkip []string) map[string]any {
 	return policy
 }
 
-// normalizePolicySuffix accepts ".paigod.work", "paigod.work", or
-// "+.paigod.work" and returns "+.paigod.work" — the wildcard form
+// normalizePolicySuffix accepts ".corp.example.com", "corp.example.com", or
+// "+.corp.example.com" and returns "+.corp.example.com" — the wildcard form
 // mihomo's nameserver-policy keys expect.
 func normalizePolicySuffix(s string) string {
 	if len(s) == 0 {

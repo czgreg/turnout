@@ -52,7 +52,7 @@ func (f *fakeRunner) called(substr string) bool {
 
 func testAsserter(t *testing.T, fr *fakeRunner) *Asserter {
 	t.Helper()
-	a := NewAsserter("10.8.12.0/24", "tun0", 7893, config.ClashAPIConfig{})
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893, config.ClashAPIConfig{})
 	if a == nil {
 		t.Fatal("NewAsserter returned nil for a valid TPROXY config")
 	}
@@ -167,7 +167,7 @@ func TestCheckRouteLocal_PresentPasses(t *testing.T) {
 func TestCheckPreroutingJump_PresentPasses(t *testing.T) {
 	fr := newFakeRunner()
 	fr.out["iptables -t mangle -S PREROUTING"] =
-		"-P PREROUTING ACCEPT\n-A PREROUTING -s 10.8.12.0/24 -i tun0 -j LEAP_TPROXY\n"
+		"-P PREROUTING ACCEPT\n-A PREROUTING -s 10.1.0.0/16 -i ens19 -j TURNOUT_TPROXY\n"
 	a := testAsserter(t, fr)
 
 	res := a.checkPreroutingJump(context.Background())
@@ -183,8 +183,8 @@ func TestCheckPreroutingJump_PresentPasses(t *testing.T) {
 // prints -s before -i, while iproute.sh adds -i before -s.
 func TestCheckPreroutingJump_MatchesRegardlessOfArgOrder(t *testing.T) {
 	for _, line := range []string{
-		"-A PREROUTING -s 10.8.12.0/24 -i tun0 -j LEAP_TPROXY",
-		"-A PREROUTING -i tun0 -s 10.8.12.0/24 -j LEAP_TPROXY",
+		"-A PREROUTING -s 10.1.0.0/16 -i ens19 -j TURNOUT_TPROXY",
+		"-A PREROUTING -i ens19 -s 10.1.0.0/16 -j TURNOUT_TPROXY",
 	} {
 		fr := newFakeRunner()
 		fr.out["iptables -t mangle -S PREROUTING"] = line + "\n"
@@ -198,7 +198,7 @@ func TestCheckPreroutingJump_MatchesRegardlessOfArgOrder(t *testing.T) {
 func TestCheckPreroutingJump_WrongSubnetIsNotAMatch(t *testing.T) {
 	fr := newFakeRunner()
 	fr.out["iptables -t mangle -S PREROUTING"] =
-		"-A PREROUTING -s 10.8.13.0/24 -i tun0 -j LEAP_TPROXY\n"
+		"-A PREROUTING -s 10.2.0.0/16 -i ens19 -j TURNOUT_TPROXY\n"
 	a := testAsserter(t, fr)
 
 	if res := a.checkPreroutingJump(context.Background()); res.OK {
@@ -220,7 +220,7 @@ func connStub(t *testing.T, types ...string) *httptest.Server {
 		Connections []conn `json:"connections"`
 	}{}
 	for _, ty := range types {
-		body.Connections = append(body.Connections, conn{Metadata: meta{Type: ty, SourceIP: "10.8.12.9"}})
+		body.Connections = append(body.Connections, conn{Metadata: meta{Type: ty, SourceIP: "10.1.1.9"}})
 	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/connections") {
@@ -234,7 +234,7 @@ func connStub(t *testing.T, types ...string) *httptest.Server {
 func flowAsserter(t *testing.T, srv *httptest.Server) *Asserter {
 	t.Helper()
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	a := NewAsserter("10.8.12.0/24", "tun0", 7893, config.ClashAPIConfig{ExternalController: addr})
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893, config.ClashAPIConfig{ExternalController: addr})
 	if a == nil {
 		t.Fatal("NewAsserter returned nil")
 	}
@@ -288,8 +288,8 @@ func TestOnce_SkippedFlowDoesNotBreakHealth(t *testing.T) {
 	fr.out["ip rule show"] = liveRuleOutput
 	fr.out["ip route show table 101"] = "local default dev lo scope host\n"
 	fr.out["iptables -t mangle -S PREROUTING"] =
-		"-A PREROUTING -i tun0 -s 10.8.12.0/24 -j LEAP_TPROXY\n"
-	a := NewAsserter("10.8.12.0/24", "tun0", 7893, config.ClashAPIConfig{ExternalController: addr})
+		"-A PREROUTING -i ens19 -s 10.1.0.0/16 -j TURNOUT_TPROXY\n"
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893, config.ClashAPIConfig{ExternalController: addr})
 	a.runner = fr.run
 
 	a.once(context.Background())
@@ -313,8 +313,8 @@ func TestOnce_AlertsOnTransitionOnly(t *testing.T) {
 	fr.out["ip rule show"] = outageRuleOutput // broken
 	fr.out["ip route show table 101"] = "local default dev lo scope host\n"
 	fr.out["iptables -t mangle -S PREROUTING"] =
-		"-A PREROUTING -i tun0 -s 10.8.12.0/24 -j LEAP_TPROXY\n"
-	a := NewAsserter("10.8.12.0/24", "tun0", 7893, config.ClashAPIConfig{ExternalController: addr})
+		"-A PREROUTING -i ens19 -s 10.1.0.0/16 -j TURNOUT_TPROXY\n"
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893, config.ClashAPIConfig{ExternalController: addr})
 	a.runner = fr.run
 
 	var mu sync.Mutex
@@ -353,10 +353,10 @@ func TestOnce_AlertsOnTransitionOnly(t *testing.T) {
 // A config with no TPROXY path must yield no asserter, so /healthz falls
 // back to liveness-only instead of repairing objects toward port 0.
 func TestNewAsserter_DisabledWithoutDataPath(t *testing.T) {
-	if a := NewAsserter("", "tun0", 7893, config.ClashAPIConfig{}); a != nil {
+	if a := NewAsserter("", "ens19", 7893, config.ClashAPIConfig{}); a != nil {
 		t.Error("empty client_subnet must disable the asserter")
 	}
-	if a := NewAsserter("10.8.12.0/24", "tun0", 0, config.ClashAPIConfig{}); a != nil {
+	if a := NewAsserter("10.1.0.0/16", "ens19", 0, config.ClashAPIConfig{}); a != nil {
 		t.Error("tproxy_port 0 must disable the asserter")
 	}
 }

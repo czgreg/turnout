@@ -20,7 +20,7 @@ export default function Terminal({ snap }: { snap: Snapshot }) {
   const lookup = async (raw: string) => {
     const v = raw.trim();
     if (!IP_RE.test(v)) {
-      setErr('请输入 IPv4 地址，例如 10.8.11.42');
+      setErr('请输入 IPv4 地址，例如 10.1.3.42');
       return;
     }
     setBusy(true);
@@ -42,7 +42,7 @@ export default function Terminal({ snap }: { snap: Snapshot }) {
           <div>
             <h3>按终端 IP 查出口</h3>
             <p className="dim">
-              输入员工设备的飞连地址，直接看到它的 primary / secondary 出口及其健康数据，判断问题出在机场端还是终端端。
+              输入终端 IP，直接看到它的 primary / secondary 出口及其健康数据，判断问题出在机场端还是终端端。
               {subnet && (
                 <>
                   {' '}本节点客户端网段 <span className="mono">{subnet}</span>。
@@ -54,7 +54,7 @@ export default function Terminal({ snap }: { snap: Snapshot }) {
             size="large"
             searchButton="查询"
             prefix={<IconSearch />}
-            placeholder={subnet ? subnet.replace(/\.0\/\d+$/, '.42') : '10.8.11.42'}
+            placeholder={subnet ? subnet.replace(/\.0\/\d+$/, '.42') : '10.1.3.42'}
             value={ip}
             onChange={setIp}
             onSearch={lookup}

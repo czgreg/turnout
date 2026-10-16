@@ -3,7 +3,7 @@
 #
 # Usage:
 #   scripts/deploy.sh <host> [<host> ...]          # deploy to given nodes
-#   scripts/deploy.sh 192.168.70.92                # deploy to 92 (production)
+#   scripts/deploy.sh <host>                      # deploy to <host>
 #
 # Prerequisites:
 #   - SSH key auth set up (ssh-copy-id ops@<host>) — no password prompts.
@@ -19,7 +19,7 @@
 #
 # Environment:
 #   GOARCH=arm64      cross-compile for ARM nodes (default amd64)
-#   REMOTE_USER       SSH user (default ops)
+#   REMOTE_USER       SSH user (REQUIRED — no default)
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 GOARCH="${GOARCH:-amd64}"
-REMOTE_USER="${REMOTE_USER:-ops}"
+REMOTE_USER="${REMOTE_USER:?set REMOTE_USER (e.g. REMOTE_USER=ops)}"
 CONFIG_FILE=""
 SKIP_BUILD=0
 DRY_RUN=0
@@ -124,7 +124,7 @@ for HOST in "${HOSTS[@]}"; do
   # Verify
   log "  verifying ..."
   sleep 3
-  # LEAP_TOKEN, when exported, authenticates against api.token. Unset →
+  # TURNOUT_TOKEN, when exported, authenticates against api.token. Unset →
   # no header, correct for nodes that leave api.token empty.
   #
   # Auth header as a single optional arg rather than an array: under `set -u`,
@@ -135,7 +135,7 @@ for HOST in "${HOSTS[@]}"; do
   # as scripts/redeploy-full.sh:88-92; this copy was missed then, and bit on
   # 2026-09-09 deploying 557ba03 to 92.
   AUTHOPT=""
-  [ -n "${LEAP_TOKEN:-}" ] && AUTHOPT="Authorization: Bearer $LEAP_TOKEN"
+  [ -n "${TURNOUT_TOKEN:-}" ] && AUTHOPT="Authorization: Bearer $TURNOUT_TOKEN"
   if [ -n "$AUTHOPT" ]; then
     DEPLOYED_VER=$(curl -s -m6 -H "$AUTHOPT" "http://$HOST:18080/api/proxies/active" \
       | python3 -c "import sys,json;print(json.load(sys.stdin)['turnout']['gateway_version'])" 2>/dev/null || echo "API_UNREACHABLE")

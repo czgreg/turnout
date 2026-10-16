@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # watch-node.sh — stream a turnout-gateway node's journal as filtered events.
 #
-#   scripts/watch-node.sh [host] [--since <systemd-time>]
+#   scripts/watch-node.sh <host> [--since <systemd-time>]
 #
-# Default host 192.168.70.92 (production). With --since it replays history
+# The host is required — there is no default, so this can never silently watch
+# whichever node the author happened to target. With --since it replays history
 # and exits; without it, follows live and never exits (Ctrl-C to stop).
 #
 # Filter design rule: SILENCE MUST MEAN "nothing changed and nothing broke",
@@ -36,7 +37,7 @@
 # it the redundancy floor is breached, which is a real incident.
 set -uo pipefail
 
-HOST="192.168.70.92"
+HOST=""
 SINCE=""
 # Mirrors node_qualify.pool_sizing.min_pool_size on the node. Kept as a plain
 # constant rather than read from the API: the watch must alert on the floor
@@ -49,6 +50,7 @@ while [ $# -gt 0 ]; do
     *) HOST="$1"; shift ;;
   esac
 done
+[ -n "$HOST" ] || { echo "usage: $0 <host> [--since <systemd-time>]" >&2; exit 2; }
 
 AWK_PROG='
 BEGIN { seen = 0 }
@@ -96,7 +98,7 @@ BEGIN { seen = 0 }
 SSH="ssh -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no"
 
 if [ -n "$SINCE" ]; then
-  $SSH "ops@$HOST" \
+  $SSH "$HOST" \
     "sudo journalctl -u turnout-gateway --since '$SINCE' --no-pager 2>/dev/null" \
     | awk -v MIN_POOL="$MIN_POOL" "$AWK_PROG"
   exit 0
@@ -118,7 +120,7 @@ fi
 # plumbing. Root cause is the network path, not the node: 92's sshd runs
 # clientaliveinterval=0 so it never probes the client, the path crosses at
 # least one router (Mac gw 192.168.0.1, seen at the node as 192.168.1.117,
-# node on 192.168.70.0/24), and `journalctl -f` is silent between 5-minute
+# node on 10.1.0.0/24), and `journalctl -f` is silent between 5-minute
 # scoring rounds, so an intermediate NAT/firewall reaps the idle flow. sshd
 # logs `session opened` for each redial with no matching `session closed` for
 # the dead one, which is the signature of a network-layer drop rather than a
@@ -176,7 +178,7 @@ DROPS_OUT=""         # set by drop_verdict; defined here so `set -u` holds
 VERDICT_OUT=""
 while :; do
   started=$(date +%s)
-  $SSH "ops@$HOST" \
+  $SSH "$HOST" \
     "sudo journalctl -u turnout-gateway -f -n0 --no-pager 2>/dev/null" \
     | awk -v MIN_POOL="$MIN_POOL" "$AWK_PROG"
   rc=$?

@@ -18,7 +18,7 @@ import (
 	"github.com/turnout-gateway/turnout-gateway/internal/notify"
 	"github.com/turnout-gateway/turnout-gateway/internal/rulesets"
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
-	"github.com/turnout-gateway/turnout-gateway/internal/whitelistexpand"
+	"github.com/turnout-gateway/turnout-gateway/internal/watchdog"
 )
 
 type Deps struct {
@@ -29,7 +29,6 @@ type Deps struct {
 	Cfg        *config.Config
 	Store      *configstore.Store
 	NodeInfo   *nodeinfo.Reporter
-	Expander   *whitelistexpand.Expander
 	RuleSets   *rulesets.Manager
 	// NodeScorer is non-nil only when NodeQualify.Enabled=true (the
 	// default under mihomo). Powers /api/nodes/health and the pool-
@@ -44,6 +43,11 @@ type Deps struct {
 	// tproxy_port 0), in which case /healthz reports liveness only and
 	// says so, rather than claiming a path it never checked.
 	Asserter *dataplane.Asserter
+	// Watchdog is the bypass-role health reporter that drives the firewall's
+	// IP-Link signal. Nil when disabled or when watchdog.liveness_ip is
+	// unset — /api/watchdog/status then says so explicitly rather than
+	// returning a null the console has to interpret.
+	Watchdog *watchdog.Watchdog
 }
 
 // Renderer is the interface internal/mihomo.Renderer satisfies. Kept as
@@ -95,6 +99,7 @@ func NewServer(deps Deps) *Server {
 	mux := http.NewServeMux()
 	s := &Server{deps: deps, egress: newEgressCache()}
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /api/watchdog/status", s.auth(s.handleWatchdogStatus))
 	mux.HandleFunc("GET /api/status", s.auth(s.handleStatus))
 	mux.HandleFunc("GET /api/nodes", s.auth(s.handleNodes))
 	mux.HandleFunc("POST /api/subscribe/refresh", s.auth(s.handleRefresh))
@@ -106,7 +111,6 @@ func NewServer(deps Deps) *Server {
 
 	mux.HandleFunc("GET /api/whitelist", s.auth(s.handleWhitelistGet))
 	mux.HandleFunc("PUT /api/whitelist", s.auth(s.handleWhitelistPut))
-	mux.HandleFunc("GET /api/whitelist/resolved", s.auth(s.handleWhitelistResolved))
 
 	mux.HandleFunc("GET /api/rule-sets", s.auth(s.handleRuleSetsGet))
 
@@ -221,6 +225,36 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"asserted": snap.At,
 		"checks":   snap.Checks,
 	})
+}
+
+// handleWatchdogStatus reports the bypass-role health reporter's view: the
+// verdict, which checks are failing, and whether the liveness address is
+// currently held.
+//
+// This is the endpoint an operator checks when the firewall reports the
+// IP-Link as Down — it distinguishes "the node is genuinely unhealthy" from
+// "the node thinks it is fine but the signal never got through", which have
+// different fixes.
+func (s *Server) handleWatchdogStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.deps.Watchdog == nil {
+		// Not a failure: the watchdog is optional (enabled=false, or
+		// liveness_ip unset). Say which, so the console does not render an
+		// empty card.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled": false,
+			"detail": "watchdog not running — set watchdog.enabled and watchdog.liveness_ip in gateway.yaml",
+		})
+		return
+	}
+	st := s.deps.Watchdog.Status()
+	// 503 only when the verdict is a definitive unhealthy. unknown (before the
+	// first round) is reported as 200 with state=unknown: it is a transient
+	// startup condition, not a fault.
+	code := http.StatusOK
+	if st.State == watchdog.StateUnhealthy {
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, st)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

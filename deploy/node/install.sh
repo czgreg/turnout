@@ -1,14 +1,12 @@
 #!/bin/bash
-# turnout-gateway sidecar installer for FeiLian forwarding nodes.
+# turnout-gateway sidecar installer for a bypass-role node.
 #
-# Run as root on the FeiLian forwarding node (e.g. ops@192.168.70.92 with sudo).
+# Run as root on the bypass node. Idempotent.
 # Idempotent — safe to re-run after edits.
 #
 # Inputs (must be present in working directory or fetched):
 #   - turnout-gateway       Linux binary (built with `GOOS=linux go build ./cmd/gateway`)
 #   - mihomo             1.19.x binary (the data plane)
-#   - sing-box           1.10.x binary (CLI helper for whitelistexpand
-#                        rule-set decompile — NOT run as a service)
 #   - geoip.metadb       MaxMind DB for mihomo's geoip routing rules (geoip-cn etc.)
 #   - gateway.yaml       Filled-in config (subscription URL + node values)
 #
@@ -16,16 +14,14 @@
 #   turnout-mihomo.service / turnout-gateway.service / turnout-nft.service /
 #   nft.conf.tmpl / iproute.sh / logrotate-turnout.conf
 #
-# Engine is mihomo. The legacy sing-box-as-data-plane path was removed
-# in 2026-06; sing-box is still installed as a CLI helper because
-# whitelistexpand shells out to `sing-box rule-set decompile` for geoip
-# expansion (mihomo lacks an equivalent command).
+# Engine is mihomo, and it is the only binary installed. Upstream also shipped
+# a sing-box CLI as a helper for whitelistexpand; that package is gone, so no
+# second engine lands on the node.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MIHOMO_VERSION="${MIHOMO_VERSION:-1.19.26}"
-SINGBOX_VERSION="${SINGBOX_VERSION:-1.10.7}"
 SKIP_PRECHECK="${SKIP_PRECHECK:-0}"
 
 log()  { printf '[install] %s\n' "$*"; }
@@ -36,73 +32,151 @@ fail() { printf '[install][FAIL] %s\n' "$*" >&2; exit 1; }
 [ "$EUID" -eq 0 ] || fail "must run as root (sudo)"
 
 # ---------------------------------------------------------------------------
-# 1. Pre-flight checks (Stage 0 verified these on ops@192.168.70.92, but
+# 1. Pre-flight checks (Stage 0 verified these on ops@node.example.com, but
 #    re-check on every install in case node state drifted)
 
 precheck() {
   log "preflight: kernel $(uname -r)"
   log "preflight: $(. /etc/os-release && echo "$PRETTY_NAME")"
 
-  # FeiLian must be running.
-  systemctl is-active --quiet feilian-tun@tun0.service \
-    || fail "feilian-tun@tun0 not active — is this a FeiLian forwarding node?"
-  log "preflight: feilian-tun@tun0 active"
+  # gateway.yaml values we need below. precheck runs BEFORE turnout-gateway
+  # is installed, so we can't use --print-env here; the sed extractors accept
+  # both quoted ("10.255.255.2") and unquoted values, and trim trailing
+  # comments.
+  local yaml="$SCRIPT_DIR/gateway.yaml"
+  local ingress_ip ingress_iface egress_iface client_subnet return_gw liveness_ip
+  if [ -f "$yaml" ]; then
+    read_yaml() { sed -nE "s/^[[:space:]]*$1:[[:space:]]*\"?([^\"#[:space:]]+)\"?.*/\1/p" "$yaml" | head -1; }
+    ingress_ip=$(read_yaml ingress_ip)
+    ingress_iface=$(read_yaml ingress_iface)
+    egress_iface=$(read_yaml egress_iface)
+    client_subnet=$(read_yaml client_subnet)
+    return_gw=$(read_yaml gateway_ip)
+    liveness_ip=$(read_yaml liveness_ip)
 
-  # tun0 must exist with the IP that matches gateway.yaml.
-  # Note: precheck runs BEFORE turnout-gateway is installed, so we can't use
-  # --print-env here. The sed extractor accepts both quoted ("10.8.13.1")
-  # and unquoted (10.8.13.1) yaml values; trims trailing comments.
-  if [ -f "$SCRIPT_DIR/gateway.yaml" ]; then
-    expected_gw=$(sed -nE 's/^[[:space:]]*tun0_gateway_ip:[[:space:]]*"?([^"#[:space:]]+)"?.*/\1/p' "$SCRIPT_DIR/gateway.yaml")
-    actual_gw=$(ip -4 -o addr show tun0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
-    [ -z "$expected_gw" ] && fail "gateway.yaml missing node.tun0_gateway_ip"
-    [ "$expected_gw" = "$actual_gw" ] \
-      || fail "node.tun0_gateway_ip=$expected_gw but tun0 has $actual_gw"
-    log "preflight: tun0=$actual_gw matches gateway.yaml"
+    [ -n "$ingress_ip" ]     || fail "gateway.yaml missing node.ingress_ip"
+    [ -n "$ingress_iface" ]  || fail "gateway.yaml missing node.ingress_iface"
+    [ -n "$egress_iface" ]   || fail "gateway.yaml missing node.egress_iface"
+    [ -n "$client_subnet" ]  || fail "gateway.yaml missing node.client_subnet"
+    [ -n "$return_gw" ]      || fail "gateway.yaml missing node.return.gateway_ip"
+  else
+    fail "gateway.yaml not found in $SCRIPT_DIR — it is required for preflight"
   fi
 
-  # rp_filter must be loose for fwmark policy routing.
+  # ── The bypass role's two interfaces ────────────────────────────────────
+  #
+  # ingress_iface carries traffic the firewall's PBR diverts to us, and is
+  # the only interface whose packets are TPROXY-steered into mihomo.
+  # egress_iface reaches the airport nodes and must NOT be the return path.
+  ip link show "$ingress_iface" >/dev/null 2>&1 \
+    || fail "ingress_iface=$ingress_iface does not exist"
+  ip link show "$egress_iface" >/dev/null 2>&1 \
+    || fail "egress_iface=$egress_iface does not exist"
+  [ "$ingress_iface" != "$egress_iface" ] \
+    || fail "ingress_iface and egress_iface are both $ingress_iface — the bypass role needs two"
+  log "preflight: ingress_iface=$ingress_iface egress_iface=$egress_iface"
+
+  # ingress_ip must already be configured on ingress_iface. Unlike upstream
+  # (where the tunnel interface was created by the VPN agent and its address
+  # was given to us), here the operator configures the address before running
+  # this installer — we deliberately do not assign it, because guessing
+  # addressing on the segment facing the firewall is how you create an outage.
+  actual_ingress=$(ip -4 -o addr show "$ingress_iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+  echo "$actual_ingress" | grep -qx "$ingress_ip" \
+    || fail "node.ingress_ip=$ingress_ip is not configured on $ingress_iface (found: ${actual_ingress:-none})"
+  log "preflight: $ingress_ip is on $ingress_iface"
+
+  # ── Liveness address: required, distinct, and free ──────────────────────
+  #
+  # This is the only health signal path to the firewall's IP-Link probe, so
+  # every way of getting it wrong fails silently. Three checks, each for a
+  # distinct failure mode — see WatchdogConfig.LivenessIP for the reasoning.
+  [ -n "$liveness_ip" ] \
+    || fail "gateway.yaml missing watchdog.liveness_ip — it is required (no default) because it is the only health signal the firewall's IP-Link probe can see"
+
+  case " ${liveness_ip} " in
+    *" ${ingress_ip} "*)
+      fail "watchdog.liveness_ip=$liveness_ip equals node.ingress_ip — withdrawing it would also drop SSH and the API, leaving no way to diagnose the node" ;;
+    *" ${return_gw} "*)
+      fail "watchdog.liveness_ip=$liveness_ip equals node.return.gateway_ip — that is the firewall's address" ;;
+  esac
+
+  # A conflicting owner is a real risk: the address is picked by hand from
+  # the ingress segment, and the firewall cannot tell our reply from the
+  # other host's. Cheap to check.
+  if command -v arping >/dev/null 2>&1 && [ "$ingress_iface" != "lo" ]; then
+    if arping -D -c 2 -I "$ingress_iface" "$liveness_ip" >/dev/null 2>&1; then
+      log "preflight: liveness_ip=$liveness_ip appears unused"
+    else
+      log "preflight: WARNING — liveness_ip=$liveness_ip answered an ARP probe; it may already be in use"
+    fi
+  fi
+  ip -4 -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -qx "$liveness_ip" \
+    && log "preflight: liveness_ip=$liveness_ip already configured (watchdog will manage it)"
+  log "preflight: liveness_ip=$liveness_ip (distinct from ingress_ip)"
+
+  # ── Kernel prerequisites ────────────────────────────────────────────────
+  #
+  # rp_filter loose: fwmark policy routing needs it (strict mode drops the
+  # TPROXY-marked packets as martians).
   rp=$(sysctl -n net.ipv4.conf.all.rp_filter)
   case "$rp" in
     0|2) log "preflight: rp_filter=$rp (loose, OK)" ;;
     *)   fail "rp_filter=$rp; need 0 or 2 for fwmark routing. Adjust /etc/sysctl.d/" ;;
   esac
 
-  # IP forwarding must be on (FeiLian needs it anyway, but verify).
+  # We FORWARD diverted traffic, so forwarding must be on. (Under the chosen
+  # design the DIRECT path is re-originated by mihomo rather than forwarded,
+  # but the firewall's diverted packets still arrive here as routed traffic.)
   fwd=$(sysctl -n net.ipv4.ip_forward)
   [ "$fwd" = "1" ] || fail "ip_forward=$fwd, need 1"
   log "preflight: ip_forward=1"
 
-  # The DNS port we want to bind must be free.
-  if [ -n "${expected_gw:-}" ]; then
-    if ss -tulnp 2>/dev/null | grep -E "(${expected_gw}|0\.0\.0\.0):53\b" \
-                              | grep -v -E 'mihomo' >/dev/null; then
-      ss -tulnp 'sport = :53' >&2
-      fail "$expected_gw:53 already bound by something other than mihomo"
+  # TPROXY is the whole data path — without the module there is no way to
+  # preserve client source IPs (and per-terminal routing depends on them).
+  if ! modprobe -n xt_TPROXY >/dev/null 2>&1; then
+    fail "xt_TPROXY is not available in this kernel — the TPROXY data path cannot work"
+  fi
+  log "preflight: xt_TPROXY available"
+
+  # ── Ports ───────────────────────────────────────────────────────────────
+  # The DNS address we intend to bind must be free.
+  if ss -tulnp 2>/dev/null | grep -E "(${ingress_ip}|0\.0\.0\.0):53\b" \
+                            | grep -v -E 'mihomo' >/dev/null; then
+    ss -tulnp 'sport = :53' >&2
+    fail "$ingress_ip:53 already bound by something other than mihomo"
+  fi
+  log "preflight: $ingress_ip:53 free"
+
+  # api.listen must be free. Defaults to loopback:18080; verify whatever the
+  # operator picked. Same sed pattern as above — accepts quoted or unquoted.
+  api_addr=$(sed -nE 's/^[[:space:]]*listen:[[:space:]]*"?([^"#[:space:]]+)"?.*/\1/p' "$yaml" | head -1)
+  if [ -n "$api_addr" ]; then
+    api_port=${api_addr##*:}
+    if ss -tulnp 2>/dev/null | grep -E ":${api_port}\b" | grep -v turnout-gateway >/dev/null; then
+      ss -tulnp "sport = :${api_port}" >&2
+      fail "api.listen ${api_addr} already bound by another process — pick a free port in gateway.yaml"
     fi
-    log "preflight: $expected_gw:53 free"
+    log "preflight: api.listen $api_addr free"
   fi
 
-  # api.listen must be free. FeiLian's feilian-sentry typically owns
-  # 127.0.0.1:8080, so configs default to 18080; double-check whatever the
-  # operator picked. Same sed pattern as tun0_gateway_ip — accepts quoted
-  # or unquoted yaml.
-  if [ -f "$SCRIPT_DIR/gateway.yaml" ]; then
-    api_addr=$(sed -nE 's/^[[:space:]]*listen:[[:space:]]*"?([^"#[:space:]]+)"?.*/\1/p' "$SCRIPT_DIR/gateway.yaml" | head -1)
-    if [ -n "$api_addr" ]; then
-      api_port=${api_addr##*:}
-      if ss -tulnp 2>/dev/null | grep -E ":${api_port}\b" | grep -v turnout-gateway >/dev/null; then
-        ss -tulnp "sport = :${api_port}" >&2
-        fail "api.listen ${api_addr} already bound by another process — pick a free port in gateway.yaml"
-      fi
-      log "preflight: api.listen $api_addr free"
-    fi
+  # ── Return path ─────────────────────────────────────────────────────────
+  #
+  # The firewall's address must be reachable on the ingress segment before we
+  # install a default route through it. Getting this wrong takes the node off
+  # the network entirely (default route to nowhere), so verify first.
+  if ping -c 1 -W 2 -I "$ingress_iface" "$return_gw" >/dev/null 2>&1; then
+    log "preflight: return gateway $return_gw reachable on $ingress_iface"
+  else
+    log "preflight: WARNING — return gateway $return_gw did not answer ICMP on $ingress_iface."
+    log "preflight:           That is not fatal (many firewalls drop ICMP), but confirm it is the"
+    log "preflight:           right address: the default route will point at it."
   fi
 
-  # Cannot collide with FeiLian's table ip nat.
+  # Do not collide with upstream's table ip nat if both are present.
   if nft list table ip nat >/dev/null 2>&1 \
      && ! nft list table ip nat | grep -q FEILIAN_; then
-    log "preflight: WARNING — table ip nat exists without FEILIAN_ chains. Is this really a FeiLian node?"
+    log "preflight: note — table ip nat exists without FEILIAN_ chains (another NAT ruleset is present)"
   fi
 
   log "preflight: all good"
@@ -126,7 +200,7 @@ install_mihomo() {
       *) fail "unsupported arch: $arch" ;;
     esac
     # Use the "compatible" variant — works on CPUs without AMD64-v3 (avx2),
-    # which several FeiLian forwarding-node hardware classes lack.
+    # which several older forwarding-node hardware classes lack.
     pkg="mihomo-linux-${go_arch}-compatible-v${MIHOMO_VERSION}"
     url="https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO_VERSION}/${pkg}.gz"
     tmp=$(mktemp -d)
@@ -147,41 +221,13 @@ install_mihomo() {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Install sing-box CLI binary (helper, NOT a service).
-# Required because whitelistexpand shells out to `sing-box rule-set
-# decompile` for geoip expansion — mihomo doesn't have an equivalent
-# decompile command.
-
-install_singbox_cli() {
-  if [ -x "$SCRIPT_DIR/sing-box" ]; then
-    install -m 0755 "$SCRIPT_DIR/sing-box" /usr/local/bin/sing-box
-    log "sing-box CLI installed from $SCRIPT_DIR/sing-box"
-  elif [ -x /usr/local/bin/sing-box ]; then
-    log "sing-box CLI already installed at /usr/local/bin/sing-box"
-  else
-    log "downloading sing-box CLI ${SINGBOX_VERSION}"
-    arch=$(uname -m)
-    case "$arch" in
-      x86_64)  go_arch=amd64 ;;
-      aarch64) go_arch=arm64 ;;
-      *) fail "unsupported arch: $arch" ;;
-    esac
-    tmp=$(mktemp -d)
-    pkg="sing-box-${SINGBOX_VERSION}-linux-${go_arch}"
-    url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${pkg}.tar.gz"
-    log "fetching $url"
-    curl -fsSL "$url" -o "$tmp/sb.tgz" \
-      || fail "could not download sing-box CLI; place a binary at $SCRIPT_DIR/sing-box and rerun"
-    tar -xzf "$tmp/sb.tgz" -C "$tmp"
-    install -m 0755 "$tmp/$pkg/sing-box" /usr/local/bin/sing-box
-    rm -rf "$tmp"
-  fi
-  # Same SIGPIPE-safe pattern as mihomo above (sing-box version also
-  # emits multiple lines).
-  v=$(/usr/local/bin/sing-box version 2>&1)
-  v=${v%%$'\n'*}
-  log "sing-box CLI: $v"
-}
+# 3. (removed) sing-box CLI install.
+#
+# Upstream installed /usr/local/bin/sing-box purely as a helper for
+# whitelistexpand's `rule-set decompile` step. That package was deleted along
+# with the upstream console integration, so nothing on this node shells out to
+# sing-box and no second binary is shipped. mihomo reads .mrs rule-sets
+# directly (see internal/mihomo/rules.go).
 
 # ---------------------------------------------------------------------------
 # 4. Install turnout-gateway binary + config
@@ -231,7 +277,7 @@ install_turnout() {
   chmod 0644 /etc/turnout/env
   # shellcheck disable=SC1091
   source /etc/turnout/env
-  log "env file written: subnet=${LEAP_CLIENT_SUBNET:-?} tproxy_port=${LEAP_TPROXY_PORT:-0}"
+  log "env file written: subnet=${TURNOUT_CLIENT_SUBNET:-?} tproxy_port=${TURNOUT_TPROXY_PORT:-0} ingress=${TURNOUT_INGRESS_IFACE:-?}"
 
   # rule-sets — baked into the tarball by stage.sh as .mrs files.
   if [ -d "$SCRIPT_DIR/rule-sets" ] && compgen -G "$SCRIPT_DIR/rule-sets/*.mrs" >/dev/null; then
@@ -260,33 +306,33 @@ install_turnout() {
 # 5. Render nft + install policy-routing helper
 
 install_nft() {
-  # Source the env file written by install_turnout (line 205, via --print-env).
   # YAML-aware values from the binary's own parser; never grep YAML again
   # for the same fields — install_turnout's env and install_nft's nft.conf
   # MUST agree, and re-parsing risks divergence on indent/quote edge cases.
   # shellcheck disable=SC1091
   source /etc/turnout/env
-  [ -n "${LEAP_CLIENT_SUBNET:-}" ] || fail "LEAP_CLIENT_SUBNET missing in /etc/turnout/env (re-run install_turnout)"
-  [ -n "${LEAP_API_PORT:-}" ]      || fail "LEAP_API_PORT missing in /etc/turnout/env (re-run install_turnout)"
+  [ -n "${TURNOUT_CLIENT_SUBNET:-}" ] || fail "TURNOUT_CLIENT_SUBNET missing in /etc/turnout/env (re-run install_turnout)"
+  [ -n "${TURNOUT_API_PORT:-}" ]      || fail "TURNOUT_API_PORT missing in /etc/turnout/env (re-run install_turnout)"
+  [ -n "${TURNOUT_INGRESS_IFACE:-}" ] || fail "TURNOUT_INGRESS_IFACE missing in /etc/turnout/env (re-run install_turnout)"
 
   # Render one `ip saddr <cidr> ... accept` line per api.allow_from entry.
-  # The nft template now has a fixed deny for 10.8.0.0/16 followed by a
-  # default accept for other sources. These entries remain for compatibility
-  # with existing configs and are redundant unless the template is customized.
-  # Refuse the exact tun0 client subnet because those are untrusted end-user
+  # The template ends with a default accept for other sources, so these
+  # entries are additive and normally redundant.
+  # Refuse the exact diverted client subnet: those are untrusted end-user
   # terminals and must never reach the control plane.
   api_allow_rules=""
-  for cidr in ${LEAP_API_ALLOW_FROM:-}; do
-    if [ "$cidr" = "$LEAP_CLIENT_SUBNET" ]; then
-      fail "api.allow_from must not contain the tun0 client_subnet ($cidr) — VPN clients are untrusted"
+  for cidr in ${TURNOUT_API_ALLOW_FROM:-}; do
+    if [ "$cidr" = "$TURNOUT_CLIENT_SUBNET" ]; then
+      fail "api.allow_from must not contain the client_subnet ($cidr) — diverted office terminals are untrusted"
     fi
-    api_allow_rules="${api_allow_rules}    ip saddr $cidr tcp dport $LEAP_API_PORT accept"$'\n'
+    api_allow_rules="${api_allow_rules}    ip saddr $cidr tcp dport $TURNOUT_API_PORT accept"$'\n'
   done
   # Strip the trailing newline so the template's own line break is not doubled.
   api_allow_rules="${api_allow_rules%$'\n'}"
 
-  sed -e "s|@CLIENT_SUBNET@|$LEAP_CLIENT_SUBNET|g" \
-      -e "s|@API_PORT@|$LEAP_API_PORT|g" \
+  sed -e "s|@CLIENT_SUBNET@|$TURNOUT_CLIENT_SUBNET|g" \
+      -e "s|@INGRESS_IFACE@|$TURNOUT_INGRESS_IFACE|g" \
+      -e "s|@API_PORT@|$TURNOUT_API_PORT|g" \
       "$SCRIPT_DIR/nft.conf.tmpl" \
     > /etc/turnout/nft.conf.stage
   # Substitute the multi-line allowlist separately: sed's `s` can't carry
@@ -296,10 +342,105 @@ install_nft() {
     { print }
   ' /etc/turnout/nft.conf.stage > /etc/turnout/nft.conf
   rm -f /etc/turnout/nft.conf.stage
-  log "nft.conf rendered (client_subnet=$LEAP_CLIENT_SUBNET, api_port=$LEAP_API_PORT, api_allow_from='${LEAP_API_ALLOW_FROM:-<loopback only>}')"
+  log "nft.conf rendered (ingress_iface=$TURNOUT_INGRESS_IFACE, client_subnet=$TURNOUT_CLIENT_SUBNET, api_port=$TURNOUT_API_PORT, api_allow_from='${TURNOUT_API_ALLOW_FROM:-<loopback only>}')"
 
   install -m 0755 "$SCRIPT_DIR/iproute.sh" /etc/turnout/iproute.sh
   log "iproute.sh installed"
+}
+
+# ---------------------------------------------------------------------------
+# 5b. Install the return route through the firewall.
+#
+# This is the entire "hand unproxied traffic back" mechanism (PLAN.md P2,
+# 方案 B). The classifier re-originates DIRECT flows from this host; without
+# a default route pointing at the firewall they would leave through the
+# egress NIC instead, defeating the bypass design and bypassing whatever
+# policy the firewall applies to normal office egress.
+#
+# Idempotency: `ip route replace` overwrites an existing default route.
+# We deliberately do NOT delete the old default route first — a gap between
+# delete and add would black-hole the node's own management traffic.
+#
+# Persistence: this writes a systemd-networkd drop-in if networkd manages
+# the ingress link, and a distro-agnostic ip-route.service as a backstop.
+# The route is re-asserted on every install run regardless.
+install_return_route() {
+  # shellcheck disable=SC1091
+  source /etc/turnout/env
+  [ -n "${TURNOUT_RETURN_GATEWAY:-}" ] \
+    || fail "TURNOUT_RETURN_GATEWAY missing in /etc/turnout/env (set node.return.gateway_ip and re-run)"
+
+  # Refuse to point the default route at ourselves — that is an immediate
+  # loop, and it is an easy typo (return.gateway_ip vs node.ingress_ip).
+  if [ "${TURNOUT_RETURN_GATEWAY}" = "${TURNOUT_INGRESS_IP:-}" ]; then
+    fail "node.return.gateway_ip == node.ingress_ip ($TURNOUT_RETURN_GATEWAY) — the default route must point at the FIREWALL, not at this host"
+  fi
+
+  # Gateway must be on-link for the ingress interface, or the route is
+  # unusable. Check without altering anything.
+  if ! ip route get "$TURNOUT_RETURN_GATEWAY" >/dev/null 2>&1; then
+    fail "return gateway $TURNOUT_RETURN_GATEWAY is unreachable per the routing table — check node.return.gateway_ip"
+  fi
+
+  local dev_arg=""
+  if [ -n "${TURNOUT_RETURN_IFACE:-}" ]; then
+    dev_arg="dev ${TURNOUT_RETURN_IFACE}"
+  fi
+
+  log "installing default route: via $TURNOUT_RETURN_GATEWAY ${dev_arg:-dev auto}"
+  # shellcheck disable=SC2086
+  ip route replace default via "$TURNOUT_RETURN_GATEWAY" $dev_arg \
+    || fail "failed to install default route via $TURNOUT_RETURN_GATEWAY"
+
+  # Verify it actually took effect and points where we think.
+  local now
+  now=$(ip route show default | head -1)
+  log "default route now: ${now:-<none>}"
+
+  # Persist across reboots. Prefer networkd when it owns the link (it will
+  # otherwise flush foreign routes — the same class of problem assert.go was
+  # written for); fall back to a small oneshot unit.
+  if systemctl is-enabled systemd-networkd.service >/dev/null 2>&1; then
+    install -d -m 0755 /etc/systemd/network
+    cat > /etc/systemd/network/10-turnout-return.network <<EOF
+# Written by turnout-gateway install.sh — DO NOT EDIT BY HAND.
+#
+# Pins the default route at the firewall. The bypass role depends on this:
+# traffic the classifier sends DIRECT is re-originated from this host and
+# must land on the firewall rather than the internet.
+[Match]
+Name=${TURNOUT_INGRESS_IFACE}
+
+[Network]
+DHCP=no
+
+[Route]
+Gateway=${TURNOUT_RETURN_GATEWAY}
+Destination=0.0.0.0/0
+Metric=100
+EOF
+    log "persisted return route via /etc/systemd/network/10-turnout-return.network"
+    systemctl reload-or-restart systemd-networkd.service 2>/dev/null || true
+  else
+    cat > /etc/systemd/system/turnout-return-route.service <<EOF
+# Written by turnout-gateway install.sh — DO NOT EDIT BY HAND.
+[Unit]
+Description=turnout-gateway return default route (via firewall)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'ip route replace default via ${TURNOUT_RETURN_GATEWAY} ${dev_arg:+dev ${TURNOUT_RETURN_IFACE}}'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable turnout-return-route.service >/dev/null 2>&1 || true
+    log "persisted return route via turnout-return-route.service"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -307,7 +448,7 @@ install_nft() {
 
 install_units() {
   # turnout-mihomo / turnout-gateway / turnout-nft. This is a greenfield
-  # deployment target, so upstream's legacy sing-box cleanup block is
+  # deployment target, so upstream's legacy engine cleanup block is
   # dropped — no node here ever carried that unit.
   for unit in turnout-mihomo.service turnout-gateway.service turnout-nft.service; do
     [ -f "$SCRIPT_DIR/$unit" ] || continue
@@ -364,9 +505,9 @@ main() {
     log "SKIP_PRECHECK=1 — skipping preflight"
   fi
   install_mihomo
-  install_singbox_cli
   install_turnout
   install_nft
+  install_return_route
   install_units
   prerender_config
   start_services

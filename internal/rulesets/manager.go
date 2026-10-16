@@ -70,7 +70,7 @@ type Manager struct {
 //
 // The HTTP client falls back to direct dial when the proxy is unreachable
 // (data plane crash-looping or mid-restart) — matches the turnouthttp
-// pattern used by subscribe + whitelistexpand. Without fallback, a single
+// pattern used by subscribe. Without fallback, a single
 // data-plane outage would block all on-demand .srs fetches indefinitely.
 //
 // Engine defaults to "sing-box". Use WithEngine to switch to mihomo, which

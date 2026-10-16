@@ -89,7 +89,7 @@ export default function App() {
     const slot = <T,>(p: Promise<T>) =>
       p.then((data) => ({ data }), (e: Error) => ({ err: e.message, status: (e as ApiError).status }));
 
-    const [healthz, status, active, health, subs, interval, trans] = await Promise.all([
+    const [healthz, status, active, health, subs, interval, trans, watchdog] = await Promise.all([
       api.getHealthz().catch(() => null),
       slot(api.getStatus()),
       slot(api.getActive()),
@@ -97,6 +97,10 @@ export default function App() {
       slot(api.getSubscriptions()),
       slot(api.getRefreshInterval()),
       slot(api.getTransitions()),
+      // Not wrapped in slot(): the endpoint answers 503 WITH a body when the
+      // verdict is unhealthy, and slot()'s reject path would discard it.
+      // See getWatchdogStatus in api.ts.
+      api.getWatchdogStatus().catch(() => null),
     ]);
 
     busy.current = false;
@@ -108,7 +112,7 @@ export default function App() {
       setAuthError(status.err);
       return;
     }
-    setSnap({ healthz, status, active, health, subs, interval, trans, updatedAt: new Date() });
+    setSnap({ healthz, status, active, health, subs, interval, trans, watchdog, updatedAt: new Date() });
   }, []);
 
   useEffect(() => {
@@ -158,8 +162,8 @@ export default function App() {
           <Logo size={30} />
           {!collapsed && (
             <div className="brand-text">
-              <div className="brand-name">Interchange</div>
-              <div className="brand-cn">立交网关 · 控制台</div>
+              <div className="brand-name">Turnout</div>
+              <div className="brand-cn">道岔网关 · 控制台</div>
             </div>
           )}
         </div>

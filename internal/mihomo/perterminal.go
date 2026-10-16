@@ -33,7 +33,7 @@ import (
 const (
 	// maxPerTerminalHosts caps host enumeration so a misconfigured huge
 	// subnet (e.g. /16 = 65k rules) can't blow up the config. /24 = 254 is
-	// the normal FeiLian client-pool size; anything bigger than this many
+	// the normal client-pool size; anything bigger than this many
 	// hosts falls back to no per-terminal slicing.
 	maxPerTerminalHosts = 1024
 

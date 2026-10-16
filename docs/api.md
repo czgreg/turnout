@@ -36,7 +36,6 @@ token 为空时不鉴权。
 | PUT | `/api/subscribe/refresh-interval` | 修改刷新间隔 | ✓ |
 | GET | `/api/whitelist` | 白名单配置 | ✓ |
 | PUT | `/api/whitelist` | 整体替换白名单 | ✓ |
-| GET | `/api/whitelist/resolved` | 展开为域名 + CIDR 列表 | ✓ |
 | GET | `/api/rule-sets` | 可用 geosite/geoip catalog | ✓ |
 | GET | `/api/pool/terminal?ip=X` | 查询某 terminal IP 的出口节点 + 健康 | ✓ |
 | GET | `/api/pool/transitions?limit=N` | 池组成变更审计日志 + 当前隔离名单 | ✓ |
@@ -74,7 +73,7 @@ token 为空时不鉴权。
 凭据，所有真实数据由浏览器带 `Authorization: Bearer` 去请下面的 `/api/*`。
 浏览器导航无法携带自定义请求头，给 HTML 本身鉴权只会把 token 逃到 query
 或 cookie（即日志与浏览历史），所以这里不包 `s.auth`。可达范围仍由
-`api.listen` 与节点 nft 规则控制（飞连终端网段固定拒绕）。
+`api.listen` 与节点 nft 规则控制（被引流终端网段固定拒绕）。
 
 前端对接注意：
 - `GET /api/subscriptions` 的 `url` 是脱敏值，**不能**回填给 `PUT`（会把
@@ -189,7 +188,12 @@ post Plan-A 语义注意：
 ```json
 {
   "node": {"hostname": "turnout-node-a", "kernel": "...", "os": "Ubuntu 22.04", "uptime_seconds": 86400},
-  "feilian": {"tun0_active": true, "vpn_active": true},
+  "ingress": {
+    "ingress_iface_up": true,
+    "ingress_ip_present": true,
+    "return_route": "default via 10.255.255.1 dev ens19",
+    "liveness_up": true
+  },
   "turnout": {
     "gateway_version": "0d7432d",
     "engine": "mihomo",
@@ -341,7 +345,7 @@ override 不 sticky：NodeScorer 只管 us-pool 成员，不回写 selector 指�
   "geoips": ["geoip-telegram"],
   "domain_suffix": ["ipinfo.io"],
   "ip_cidr": ["149.154.0.0/16"],
-  "fake_ip_skip": ["+.paigod.work"]
+  "fake_ip_skip": ["+.corp.example.com"]
 }
 ```
 
@@ -351,7 +355,7 @@ override 不 sticky：NodeScorer 只管 us-pool 成员，不回写 selector 指�
 
 整体替换（PUT 语义，不是 PATCH）。body 同 GET 结构。
 
-`fake_ip_skip` 写法：`paigod.work` / `.paigod.work` / `+.paigod.work` 均可，统一规范化为 `+.` 前缀。列出的内网域名后缀会走国内 DoH 解析。
+`fake_ip_skip` 写法：`corp.example.com` / `.corp.example.com` / `+.corp.example.com` 均可，统一规范化为 `+.` 前缀。列出的内网域名后缀会走国内 DoH 解析。
 
 `geosites` / `geoips` 中每个 tag 必须在 `/api/rule-sets` catalog 中；不在磁盘则按需从 MetaCubeX 拉取（.mrs），失败 502。
 
@@ -363,22 +367,6 @@ curl -s http://127.0.0.1:18080/api/whitelist \
   | jq '.domain_suffix += ["new-tool.com"]' \
   | curl -s -X PUT -H 'Content-Type: application/json' \
       http://127.0.0.1:18080/api/whitelist -d @-
-```
-
-## GET /api/whitelist/resolved
-
-展开为扁平域名 + IP CIDR 列表，供飞连"极速模式"消费。
-
-```json
-{
-  "input": {"geosites": [...], "geoips": [...], "domain_suffix": [...], "ip_cidr": []},
-  "domains": ["0emm.com", "1e100.net", "..."],
-  "ip_cidrs": ["149.154.0.0/16", "..."],
-  "domains_count": 2460,
-  "ip_cidrs_count": 6694,
-  "last_built_at": "2026-06-06T12:00:00Z",
-  "source": "https://cdn.jsdelivr.net/gh/v2fly/domain-list-community@master/data/"
-}
 ```
 
 ---
@@ -412,15 +400,15 @@ curl -s http://127.0.0.1:18080/api/whitelist \
 
 ```bash
 curl -H "Authorization: Bearer ..." \
-  "http://<node-ip>:18080/api/pool/terminal?ip=10.8.13.42"
+  "http://<node-ip>:18080/api/pool/terminal?ip=10.1.2.42"
 ```
 
 ```json
 {
-  "ip": "10.8.13.42",
-  "subnet": "10.8.13.0/24",
+  "ip": "10.1.2.42",
+  "subnet": "10.1.2.0/24",
   "in_subnet": true,
-  "group_name": "fb-10.8.13.42",
+  "group_name": "fb-10.1.2.42",
   "pool_mode": "auto",
   "active_node": "primary",
   "primary": {
@@ -459,7 +447,7 @@ curl -H "Authorization: Bearer ..." \
 
 字段：
 - `ip` — 入参 IP。回显方便日志。
-- `subnet` — 节点配置的 `client_subnet`（如 `10.8.13.0/24`）。
+- `subnet` — 节点配置的 `client_subnet`（如 `10.1.2.0/24`）。
 - `in_subnet` — `false` 表示该 IP 不在 client_subnet，会走 `MATCH,us-pool` 兜底，**没有**专属的 fb-<ip> 组。下面的 primary/secondary 字段缺省。
 - `group_name` — mihomo 中对应的 fallback 组名（`fb-<ip>` 形式）。可以直接用于 mihomo clash-api 调试。
 - `pool_mode` — 当前 `node_qualify.pool_mode`。
@@ -764,9 +752,6 @@ curl -s -X POST $BASE/api/subscribe/refresh | jq .
 curl -s $BASE/api/whitelist \
   | jq '.fake_ip_skip += ["+.corp.example.com"]' \
   | curl -s -X PUT -H 'Content-Type: application/json' $BASE/api/whitelist -d @-
-
-# 极速模式域名列表
-curl -s $BASE/api/whitelist/resolved | jq -r '.domains[]' | head -20
 ```
 
 ---

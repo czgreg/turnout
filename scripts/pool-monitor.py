@@ -56,7 +56,7 @@ def composite(node):
 
 def get_json(api, path, timeout=8):
     req = urllib.request.Request(api.rstrip("/") + path)
-    tok = os.environ.get("LEAP_TOKEN", "")
+    tok = os.environ.get("TURNOUT_TOKEN", "")
     if tok:
         req.add_header("Authorization", "Bearer " + tok)
     with urllib.request.urlopen(req, timeout=timeout) as r:

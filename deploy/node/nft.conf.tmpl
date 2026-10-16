@@ -1,6 +1,11 @@
 #!/usr/sbin/nft -f
 #
-# turnout-gateway nft rules — table inet turnout (independent of FeiLian's table ip nat).
+# turnout-gateway nft rules — table inet turnout.
+#
+# Bypass-role note: this table coexists with whatever NAT ruleset the host
+# already runs. Upstream assumed the host ran a VPN's `table ip nat`; here
+# there is no such assumption — we own `inet turnout` and touch nothing else.
+#
 # Render-time placeholders are replaced by install.sh.
 
 # Idempotent: nuke and re-add.
@@ -11,39 +16,38 @@ table inet turnout {
   chain prerouting {
     type filter hook prerouting priority mangle; policy accept;
 
-    # DNS UDP/TCP from FeiLian clients goes to mihomo's DNS server
-    # (which listens on tun0_gateway_ip:53 — set by data_plane.dns.listen).
+    # DNS UDP/TCP from the diverted office segment goes to mihomo's DNS
+    # server, which listens on node.ingress_ip:53 (see data_plane.dns.listen).
     # No mark needed — the kernel delivers these locally via normal routing.
-    iifname "tun0" ip saddr @CLIENT_SUBNET@ udp dport 53 accept
-    iifname "tun0" ip saddr @CLIENT_SUBNET@ tcp dport 53 accept
+    #
+    # iifname pins the source interface: only traffic that arrived FROM the
+    # firewall on the ingress NIC is eligible. Traffic we originate ourselves
+    # (the proxied flows mihomo dials out) never matches here, which is what
+    # keeps the DIRECT path from being re-captured.
+    iifname "@INGRESS_IFACE@" ip saddr @CLIENT_SUBNET@ udp dport 53 accept
+    iifname "@INGRESS_IFACE@" ip saddr @CLIENT_SUBNET@ tcp dport 53 accept
 
     # Non-DNS TCP/UDP is handled by iptables TPROXY rules in iproute.sh.
     # No fwmark here — TPROXY intercepts on the mangle table PREROUTING
     # hook at the same priority and routes packets to mihomo's tproxy-port,
-    # preserving the original client sourceIP (10.8.x.x).
+    # preserving the original client sourceIP so per-terminal routing works.
   }
 
-  # turnout-gateway API access — deny FeiLian client addresses, allow the rest.
+  # turnout-gateway API access — deny the diverted office segment, allow the
+  # rest. This chain's policy is `accept`, so an `accept` rule alone grants
+  # nothing; a deny is what actually protects the control plane.
   #
-  # This chain's policy is `accept`, so an `accept` rule alone grants
-  # nothing: before 2026-08-12 the rule here was `tcp dport @API_PORT@
-  # accept`, which was purely decorative. With listen=0.0.0.0 and an
-  # empty token that left the whole control plane open to every source
-  # that could route to the node — including tun0 VPN clients, which
-  # could read subscription URLs (with tokens) via GET /api/subscriptions
-  # and mutate them via POST/DELETE.
+  # The office-segment deny is enforced at the application layer (api.listen
+  # defaults to loopback) and in iproute.sh before TPROXY, where the original
+  # destination can still be distinguished as node-local. Do NOT repeat that
+  # deny in this input chain: TPROXY makes remote destinations look locally
+  # delivered here, so a port-only source deny would also block remote
+  # servers' TCP/18080 connections.
   #
-  # The client-source deny is enforced in iproute.sh before TPROXY, where
-  # the original destination can still be distinguished as node-local. Do
-  # not repeat that deny in this input chain: TPROXY makes remote destinations
-  # look locally delivered here, so a port-only source deny would also block
-  # remote servers' TCP/18080 connections.
   # The final accept makes 18080 reachable from other routed networks by
-  # default. api.allow_from remains an additive, backward-compatible accept
-  # list, but is no longer required for access.
-  # The placeholder line for that list is directly below this comment block.
-  # install.sh substitutes it with an awk substring match (sed can't splice
-  # embedded newlines portably).
+  # default. api.allow_from remains an additive accept list.
+  # install.sh substitutes @API_ALLOW_RULES@ with an awk substring match
+  # (sed can't splice embedded newlines portably).
   chain input {
     type filter hook input priority filter; policy accept;
     iif "lo" tcp dport @API_PORT@ accept

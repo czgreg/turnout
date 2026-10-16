@@ -1,9 +1,9 @@
 // Package dnspreload keeps overseas-bound DNS records warm in the local
-// sing-box DNS cache so the first FeiLian client to access a popular
+// mihomo DNS cache so the first office client to access a popular
 // domain doesn't pay the ~400ms cross-border DoH cold-resolve cost.
 //
 // Mechanism: on a fixed cadence, send a no-op A query for every preload
-// domain straight to the engine's DNS listener (tun0_gateway_ip:53). The
+// domain straight to the engine's DNS listener (the ingress IP on :53). The
 // query path matches what real client traffic would trigger — a remote
 // DoH lookup routed through the overseas pool — so the cached real IP
 // that lands is exactly the one the first real client would otherwise
@@ -21,7 +21,7 @@ import (
 )
 
 // Preloader periodically dispatches DNS A queries against the local
-// sing-box DNS server to keep its cache populated for a curated list of
+// mihomo DNS server to keep its cache populated for a curated list of
 // overseas domains.
 type Preloader struct {
 	dnsAddr  string
@@ -29,27 +29,27 @@ type Preloader struct {
 	interval time.Duration
 }
 
-// New builds a Preloader that targets singboxDNSAddr (host:port — typically
-// "<tun0_gateway_ip>:53") and refreshes each domain every interval. Empty
+// New builds a Preloader that targets dnsAddr (host:port — typically
+// "<ingress_ip>:53") and refreshes each domain every interval. Empty
 // domains or interval<=0 returns nil so the caller can `if p != nil` guard.
-func New(singboxDNSAddr string, domains []string, interval time.Duration) *Preloader {
+func New(dnsAddr string, domains []string, interval time.Duration) *Preloader {
 	if len(domains) == 0 || interval <= 0 {
 		return nil
 	}
-	if singboxDNSAddr == "" {
+	if dnsAddr == "" {
 		return nil
 	}
 	cp := make([]string, len(domains))
 	copy(cp, domains)
 	return &Preloader{
-		dnsAddr:  singboxDNSAddr,
+		dnsAddr:  dnsAddr,
 		domains:  cp,
 		interval: interval,
 	}
 }
 
 // Run blocks until ctx is cancelled. Designed to be launched in its own
-// goroutine. First sweep happens 3s after start so sing-box's DNS server
+// goroutine. First sweep happens 3s after start so mihomo's DNS server
 // has time to come up; subsequent sweeps fire every Preloader.interval.
 func (p *Preloader) Run(ctx context.Context) {
 	if p == nil {
@@ -58,7 +58,7 @@ func (p *Preloader) Run(ctx context.Context) {
 	slog.Info("dnspreload: starting",
 		"target", p.dnsAddr, "domains", len(p.domains), "interval", p.interval)
 
-	// Wait briefly so sing-box DNS is listening before the first sweep.
+	// Wait briefly so mihomo's DNS is listening before the first sweep.
 	select {
 	case <-ctx.Done():
 		return
@@ -115,9 +115,9 @@ func (p *Preloader) sweep(ctx context.Context) {
 	slog.Info("dnspreload: sweep done", "ok", ok, "fail", fail, "total", len(p.domains))
 }
 
-// resolver builds a net.Resolver pinned at sing-box's DNS server. We
+// resolver builds a net.Resolver pinned at mihomo's DNS server. We
 // override Dial because the system /etc/resolv.conf may point elsewhere —
-// the whole point is to query OUR sing-box, not whatever DNS the host
+// the whole point is to query OUR mihomo, not whatever DNS the host
 // uses for itself.
 func (p *Preloader) resolver() *net.Resolver {
 	addr := p.dnsAddr

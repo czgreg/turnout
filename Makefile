@@ -2,35 +2,32 @@
 #
 # Quick reference:
 #   make help              # list targets
-#   make setup-ssh         # 一次性：推公钥 + NOPASSWD sudo（先跑这个！）
+#   make setup-ssh NODE=ops@<host>   # 一次性：推公钥 + NOPASSWD sudo（先跑这个！）
 #   make test              # go vet + go test
 #   make ui                # 构建 Web 控制台（web/ → internal/api/ui/）
-#   make deploy-92         # binary-only deploy to 92 (~10s)
-#   make deploy-yaml       # 仅推 gateway.yaml（不换二进制）
-#   make redeploy-92       # ★ 全量重装到 92（先拉 92 的 yaml + stage + install）
-#   make redeploy-full NODE=ops@<ip>  # 同上，自定义节点
-#   make status            # /api/status
-#   make health            # /api/proxies/active
-#   make nodes             # /api/nodes/health
-#   make logs              # tail turnout-gateway 日志
-#   make ssh               # ssh 进节点
+#   make deploy NODE=ops@<host>      # binary-only deploy (~10s)
+#   make deploy-yaml NODE=ops@<host> # 仅推 gateway.yaml（不换二进制）
+#   make redeploy NODE=ops@<host>    # ★ 全量重装（先拉节点 yaml + stage + install）
+#   make status NODE=ops@<host>      # /api/status
+#   make health NODE=ops@<host>      # /api/proxies/active
+#   make nodes  NODE=ops@<host>      # /api/nodes/health
+#   make logs   NODE=ops@<host>      # tail turnout-gateway 日志
+#   make ssh    NODE=ops@<host>      # ssh 进节点
 #
-# 首次使用：
-#   make setup-ssh NODE=ops@192.168.70.92
+# NODE has NO default, on purpose. This repository serves whatever node the
+# operator names, and a baked-in default is how you push to production while
+# believing you are targeting a lab box. Every target that talks to a host
+# depends on check-node and refuses to run without it.
 
-# 92 is the only live node — 89 was decommissioned 2026-08-31. A bare
-# `make deploy-fast` / `make status` therefore targets production; override
-# with NODE=ops@<ip> for any other host.
-NODE        ?= ops@192.168.70.92
-NODE_92     := ops@192.168.70.92
+NODE        ?=
 NODE_HOST   := $(word 2,$(subst @, ,$(NODE)))
-LEAP_API    ?= http://$(NODE_HOST):18080
+TURNOUT_API    ?= http://$(NODE_HOST):18080
 # Bearer token for the control-plane API (api.token in gateway.yaml).
 # Empty → no Authorization header, which is correct only when the node
-# also leaves api.token empty. Export LEAP_TOKEN in your shell or pass
-# `make LEAP_TOKEN=... status`.
-LEAP_TOKEN  ?=
-LEAP_AUTH   := $(if $(LEAP_TOKEN),-H "Authorization: Bearer $(LEAP_TOKEN)",)
+# also leaves api.token empty. Export TURNOUT_TOKEN in your shell or pass
+# `make TURNOUT_TOKEN=... status`.
+TURNOUT_TOKEN  ?=
+TURNOUT_AUTH   := $(if $(TURNOUT_TOKEN),-H "Authorization: Bearer $(TURNOUT_TOKEN)",)
 GATEWAY_YAML?= ./gateway.yaml
 GOOS        ?= linux
 GOARCH      ?= amd64
@@ -46,6 +43,16 @@ SCP         := scp $(SSH_OPTS)
 .PHONY: help
 help:  ## 列出所有 target
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# Guard for every host-touching target. Fails loudly rather than silently
+# running ssh with an empty destination (which would either hang or hit the
+# local machine).
+.PHONY: check-node
+check-node:
+	@test -n "$(NODE)" || { \
+	  echo "✗ NODE is required — it has no default on purpose."; \
+	  echo "  Usage: make $@ NODE=ops@<host>"; \
+	  exit 1; }
 
 # ---------------------------------------------------------------------------
 # Build
@@ -84,32 +91,24 @@ stage:  ## 打全量部署 tarball (build/turnout-stage.tgz)
 # Deploy
 # ---------------------------------------------------------------------------
 
-.PHONY: deploy-fast
-deploy-fast: build-linux  ## ⚡ 热替换二进制 + 重启 (~10s)  NODE=ops@<ip>
+.PHONY: deploy
+deploy: check-node build-linux  ## ⚡ 热替换二进制 + 重启 (~10s)  NODE=ops@<host>
 	scripts/deploy.sh --skip-build $(NODE_HOST)
 
-.PHONY: deploy-92
-deploy-92: build-linux  ## deploy to production 92
-	scripts/deploy.sh --skip-build 192.168.70.92
-
 .PHONY: deploy-yaml
-deploy-yaml:  ## 仅推 gateway.yaml + 重启  GATEWAY_YAML=./path/to/yaml
+deploy-yaml: check-node  ## 仅推 gateway.yaml + 重启  NODE=ops@<host> GATEWAY_YAML=./path/to/yaml
 	@test -f $(GATEWAY_YAML) || (echo "GATEWAY_YAML not found: $(GATEWAY_YAML)" && exit 1)
 	$(SCP) $(GATEWAY_YAML) $(NODE):/tmp/gateway.yaml.new
 	$(SSH) 'sudo install -m0640 /tmp/gateway.yaml.new /etc/turnout/gateway.yaml && \
 	  sudo systemctl restart turnout-gateway && rm -f /tmp/gateway.yaml.new && \
 	  sleep 1 && sudo journalctl -u turnout-gateway -n 5 --no-pager'
 
-.PHONY: redeploy-full
-redeploy-full:  ## ★ 安全全量重装：先拉节点 yaml，再 stage+install+verify  NODE=ops@<ip>
+.PHONY: redeploy
+redeploy: check-node  ## ★ 安全全量重装：先拉节点 yaml，再 stage+install+verify  NODE=ops@<host>
 	./scripts/redeploy-full.sh $(NODE_HOST)
 
-.PHONY: redeploy-92
-redeploy-92:  ## redeploy-full 到 92（pulls 92's yaml first）
-	./scripts/redeploy-full.sh 192.168.70.92
-
 .PHONY: deploy-full-LOCAL-YAML
-deploy-full-LOCAL-YAML: stage  ## ⚠️ 全量重装，使用本地 ./gateway.yaml（容易踩雷；优先用 redeploy-full）
+deploy-full-LOCAL-YAML: check-node stage  ## ⚠️ 全量重装，使用本地 ./gateway.yaml（容易踩雷；优先用 redeploy）
 	$(SCP) build/turnout-stage.tgz $(NODE):/tmp/
 	$(SSH) 'cd /tmp && rm -rf turnout-stage && tar --no-same-owner -xzf turnout-stage.tgz && \
 	  sudo bash turnout-stage/install.sh'
@@ -119,31 +118,35 @@ deploy-full-LOCAL-YAML: stage  ## ⚠️ 全量重装，使用本地 ./gateway.y
 # ---------------------------------------------------------------------------
 
 .PHONY: status
-status:  ## GET /api/status
-	@curl -s --max-time 5 $(LEAP_AUTH) $(LEAP_API)/api/status | python3 -m json.tool
+status: check-node  ## GET /api/status
+	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/status | python3 -m json.tool
 
 .PHONY: health
-health:  ## GET /api/proxies/active
-	@curl -s --max-time 5 $(LEAP_AUTH) $(LEAP_API)/api/proxies/active | python3 -m json.tool
+health: check-node  ## GET /api/proxies/active
+	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/proxies/active | python3 -m json.tool
+
+.PHONY: watchdog
+watchdog: check-node  ## GET /api/watchdog/status（旁挂健康；不健康时 HTTP 503 但仍带 body）
+	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/watchdog/status | python3 -m json.tool
 
 .PHONY: nodes
-nodes:  ## GET /api/nodes/health (probe + passive stats)
-	@curl -s --max-time 5 $(LEAP_AUTH) $(LEAP_API)/api/nodes/health | python3 -m json.tool
+nodes: check-node  ## GET /api/nodes/health (probe + passive stats)
+	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/nodes/health | python3 -m json.tool
 
 .PHONY: logs
-logs:  ## tail turnout-gateway 日志
+logs: check-node  ## tail turnout-gateway 日志
 	$(SSH) 'sudo journalctl -fu turnout-gateway --no-pager'
 
 .PHONY: mihomo-logs
-mihomo-logs:  ## tail turnout-mihomo 日志
+mihomo-logs: check-node  ## tail turnout-mihomo 日志
 	$(SSH) 'sudo journalctl -fu turnout-mihomo --no-pager'
 
 .PHONY: ssh
-ssh:  ## 直接 ssh 进节点  NODE=ops@<ip>
+ssh: check-node  ## 直接 ssh 进节点  NODE=ops@<host>
 	@ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 $(NODE)
 
 .PHONY: nft
-nft:  ## 查看 turnout nft table
+nft: check-node  ## 查看 turnout nft table
 	$(SSH) 'sudo nft list table inet turnout'
 
 # ---------------------------------------------------------------------------
@@ -151,7 +154,7 @@ nft:  ## 查看 turnout nft table
 # ---------------------------------------------------------------------------
 
 .PHONY: setup-ssh
-setup-ssh:  ## ★ 一次性推公钥 + NOPASSWD sudo（先跑！）  NODE=ops@<ip>
+setup-ssh: check-node  ## ★ 一次性推公钥 + NOPASSWD sudo（先跑！）  NODE=ops@<host>
 	./scripts/setup-ssh.sh $(NODE)
 
 .PHONY: clean

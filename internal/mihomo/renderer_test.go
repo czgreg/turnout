@@ -20,8 +20,8 @@ func newTestRenderer(t *testing.T) *Renderer {
 	}
 	cfg.ApplyDefaults()
 	r := NewRenderer(cfg).WithNode(config.NodeConfig{
-		ClientSubnet:  "10.8.13.0/24",
-		Tun0GatewayIP: "10.8.13.1",
+		ClientSubnet:  "10.1.2.0/24",
+		IngressIP: "10.1.2.1",
 		EgressIface:   "ens18",
 	})
 	r.cfg.TUN.Enabled = true
@@ -309,7 +309,7 @@ func TestRenderer_EmptyPoolFallsBackToDirect(t *testing.T) {
 // the whole default-hijack machinery must be gone: no enhanced-mode fake-ip,
 // no fake-ip-range, no fake-ip-filter. This is the fix for the recurring
 // failure where a hostname missing from fake-ip-filter got a 198.18.x.x and
-// then timed out on DIRECT/probe dial — intranet services (ai.paigod.work,
+// then timed out on DIRECT/probe dial — intranet services (ai.corp.example.com,
 // 2026-06-05) and, worst, every node health probe when a subscription
 // provider's node domain was missed (11us.quandao.com, 2026-07-06:
 // all nodes alive=False because mihomo dialed the fake IP).
@@ -318,8 +318,8 @@ func TestRenderer_RedirHostNoFakeIP(t *testing.T) {
 	// Suffixes that used to require a fake-ip-filter carve-out. Under
 	// redir-host they need no carve-out at all — assert none is emitted.
 	r.cfg.DNS.FakeIPSkipSuffixes = []string{
-		"paigod.work",
-		".feilian.cn",
+		"corp.example.com",
+		".internal.example.com",
 		"+.intra.local",
 	}
 	body, err := r.Write(sampleOutbounds())
@@ -396,7 +396,7 @@ func TestRenderer_SnifferEnabled(t *testing.T) {
 //   - default nameserver = proxyDoH (not cnDoH) — overseas resolves through proxy
 //   - nameserver-policy["rule-set:geosite-cn"] = cnDoH — CN domains short-circuit
 //   - each fake-ip-skip suffix appears as "+.<suf>" in policy → cnDoH so
-//     intranet domains (paigod.work etc.) resolve via the right side
+//     intranet domains (corp.example.com etc.) resolve via the right side
 //   - no `fallback` / `fallback-filter` keys (otherwise we're paying for
 //     parallel queries again)
 //   - proxy-server-nameserver = cnDoH only (airport-node hostnames must
@@ -406,7 +406,7 @@ func TestRenderer_DNSNameserverPolicy(t *testing.T) {
 	r := newTestRenderer(t)
 	r.cfg.DNS.CNDoH = []string{"https://doh.pub/dns-query"}
 	r.cfg.DNS.ProxyDoH = []string{"tls://1.1.1.1:853"}
-	r.cfg.DNS.FakeIPSkipSuffixes = []string{"paigod.work", ".feilian.cn"}
+	r.cfg.DNS.FakeIPSkipSuffixes = []string{"corp.example.com", ".internal.example.com"}
 
 	body, err := r.Write(sampleOutbounds())
 	if err != nil {
@@ -466,8 +466,8 @@ func TestRenderer_DNSNameserverPolicy(t *testing.T) {
 	}
 	wantKeys := []string{
 		"rule-set:geosite-cn",
-		"+.paigod.work",
-		"+.feilian.cn",
+		"+.corp.example.com",
+		"+.internal.example.com",
 	}
 	for _, k := range wantKeys {
 		v, ok := pol[k]
@@ -626,7 +626,7 @@ func TestRenderer_PerTerminal(t *testing.T) {
 	}
 	r = r.WithLoadBalance(true)
 	// small subnet → few host rules
-	r.node.ClientSubnet = "10.8.13.0/29" // 6 usable hosts
+	r.node.ClientSubnet = "10.1.2.0/29" // 6 usable hosts
 
 	body, err := r.Write(sampleOutbounds())
 	if err != nil {
@@ -700,7 +700,7 @@ func TestRenderer_WithRoutingMembers(t *testing.T) {
 		Geosites: config.StringList{"geosite-openai"},
 	}
 	r = r.WithLoadBalance(true)
-	r.node.ClientSubnet = "10.8.13.0/29" // 6 usable hosts
+	r.node.ClientSubnet = "10.1.2.0/29" // 6 usable hosts
 
 	manualPool := []string{"ash/🇺🇸US-IEPL-01", "cyberguard/🇺🇸 US-01"}
 	r = r.WithRoutingMembers(manualPool)
@@ -767,7 +767,7 @@ func TestRenderer_WithRoutingMembers(t *testing.T) {
 // TestHRWStability: removing a node only reassigns IPs that were on it.
 func TestHRWStability(t *testing.T) {
 	members := []string{"nodeA", "nodeB", "nodeC", "nodeD"}
-	hosts := []string{"10.8.13.5", "10.8.13.6", "10.8.13.7", "10.8.13.8", "10.8.13.9"}
+	hosts := []string{"10.1.2.5", "10.1.2.6", "10.1.2.7", "10.1.2.8", "10.1.2.9"}
 	before := map[string]string{}
 	for _, h := range hosts {
 		before[h] = hrwPick(h, members)
@@ -807,7 +807,7 @@ func TestRenderer_PerTerminalNamedPoolUnified(t *testing.T) {
 		RequiresPassing: []string{"openai-api"},
 		RuleSets:        []string{"geosite-openai"},
 	}}).WithLoadBalance(true)
-	r.node.ClientSubnet = "10.8.13.0/29"
+	r.node.ClientSubnet = "10.1.2.0/29"
 	// Even with a probe-gated openai-pool, per-terminal mode should NOT
 	// emit a perterm-openai-pool sub-rule.
 	r.poolMembers = map[string][]string{

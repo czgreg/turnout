@@ -72,7 +72,7 @@ DNS 应答 → nft 集合的写入、TTL 过期清理、以及集合内容与 mi
 
 - `buildDNS()` 的 `listen` 兜底从 `r.node.Tun0GatewayIP + ":53"` → `r.node.IngressIP + ":53"`。
 - `FakeIPSkipSuffixes` 的**语义不变**（内网后缀走 CN DoH），
-  只是配置里的值从飞连的 `paigod.work` / `feilian.cn` 换成办公网内网域。
+  只是配置里的值从上游的内网域换成办公网内网域。
   字段名保留历史命名，不改——见 `configs/gateway.example.yaml` 里的说明。
 - `enhanced-mode` 保持 `redir-host`，理由见 README §3。
 - **不做**：DNS 应答驱动 nft 集合的输出（方案 A 已否决）。

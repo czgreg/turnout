@@ -9,10 +9,10 @@
 # / `scripts/deploy.sh` — they're faster and don't touch the unit files.
 #
 # Usage:
-#   scripts/redeploy-full.sh <host>            # e.g. 192.168.70.92
+#   scripts/redeploy-full.sh <host>
 #
 # Env:
-#   REMOTE_USER       SSH user (default ops)
+#   REMOTE_USER       SSH user (REQUIRED — no default)
 #   GOARCH            target arch (default amd64)
 
 set -euo pipefail
@@ -23,7 +23,7 @@ cd "$REPO_ROOT"
 HOST="${1:-}"
 [ -n "$HOST" ] || { echo "usage: $0 <host>" >&2; exit 1; }
 
-REMOTE_USER="${REMOTE_USER:-ops}"
+REMOTE_USER="${REMOTE_USER:?set REMOTE_USER (e.g. REMOTE_USER=ops)}"
 GOARCH="${GOARCH:-amd64}"
 TS=$(date -u +%Y%m%d-%H%M%S)
 PULLED_YAML="/tmp/gw-${HOST}-${TS}.yaml"
@@ -80,7 +80,7 @@ EXIT=$(grep '^INSTALL_EXIT=' "/tmp/install-${HOST}-${TS}.log" | tail -1 | cut -d
 # retry the API curl.
 log "verifying $HOST API (may take a few seconds while services restart)"
 sleep 6
-# LEAP_TOKEN, when exported, authenticates against api.token. Unset → no
+# TURNOUT_TOKEN, when exported, authenticates against api.token. Unset → no
 # header, correct for nodes that leave api.token empty.
 # Auth header as a single optional arg rather than an array: under `set -u`,
 # bash <4.4 (macOS's system /bin/bash is 3.2) treats "${AUTH[@]}" on an
@@ -88,7 +88,7 @@ sleep 6
 # in production on 2026-08-12, aborting verification after every install
 # had already succeeded.
 AUTHOPT=""
-[ -n "${LEAP_TOKEN:-}" ] && AUTHOPT="Authorization: Bearer $LEAP_TOKEN"
+[ -n "${TURNOUT_TOKEN:-}" ] && AUTHOPT="Authorization: Bearer $TURNOUT_TOKEN"
 for i in 1 2 3; do
   if [ -n "$AUTHOPT" ]; then
     RESP=$(curl -s --max-time 6 -H "$AUTHOPT" "http://$HOST:18080/api/proxies/active" 2>/dev/null || true)
