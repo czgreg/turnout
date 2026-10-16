@@ -172,9 +172,12 @@ DIRECT 出站走本机默认路由 → 下一跳是防火墙 → 交还
 5. 接到现有告警通路：状态翻转时经 `internal/notify` 推飞书，
    消息里带上**是哪一项检查失败**——这决定了你收到告警后该查什么。
 
-6. 新增 `deploy/node/turnout-watchdog.service`（systemd 单元，`Restart=always`）。
+6. **不新增 systemd 单元。** 原计划建 `turnout-watchdog.service`，实现时改为
+   `turnout-gateway` 进程内的一个 goroutine —— 它要读 `assert.go` 的断言状态和
+   NodeScorer 的池状态，两者都活在该进程内；拆成独立进程就得重新实现它们，
+   或绕一圈走自己的 API。少一个单元，也少一处状态同步。
 
-**交付**：watchdog 可独立运行；两种模式（告警 / 告警+摘地址）都可配置生效。
+**交付**：watchdog 随控制面启动；两种模式（告警 / 告警+摘地址）都可配置生效。
 **验证**：
 - `auto_failover: false`：手动 `kill` mihomo → 应**只收到飞书告警**（含失败项），
   探活地址**保持不变**，防火墙 IP-Link 状态不变

@@ -30,8 +30,7 @@
 | `internal/subscribe/` | 11 | 订阅拉取解析（clash / sing-box / uri / sip008），与部署位置无关 |
 | `internal/nodescorer/` | 17 | 双窗 EWMA 打分、池决策、紧急降级。这是上游最值钱的部分 |
 | `internal/rulesets/` | 3 | 规则集下载与 .mrs 缓存 |
-| `internal/nodeinfo/` | 2 | 节点探针 |
-| `internal/whitelistexpand/` | 1 | 白名单域名展开 |
+| `internal/nodeinfo/` | 2 | 节点探针（⚠️ 见 §二，VPN 服务块已换成旁挂链路事实） |
 
 ### 支撑
 
@@ -139,11 +138,46 @@ DNS 应答 → nft 集合的写入、TTL 过期清理、以及集合内容与 mi
 
 ## 四、删除
 
+### 4.1 飞连专属子系统（连带清掉 sing-box 依赖）
+
 | 文件 | 理由 |
 |---|---|
-| `deploy/node/install.sh` 中的 feilian 检查项 | `feilian-tun@tun0.service` 的状态检查、tun0 IP 比对等，在旁挂机上无意义。**函数骨架保留**，换检查项（见 PLAN.md P1） |
-| `docs/ops-*.md`（2 个） | 飞连节点 89/92 的运维记录。节点已下线，且属于上游资产——**留在上游仓库**，新仓库不搬 |
-| `deploy/node/leap-nft.service` 中的 `PartOf=leap-mihomo` | 上游注释提到这条链曾在 89 上泄漏到宿主 SSH 会话。重新评估绑定关系 |
+| `internal/whitelistexpand/expander.go` | **607 行。** 它的产出 `GET /api/whitelist/resolved` 在本仓库**零消费者**：数据面不走它（渲染器直接 emit rule-providers 指向 `.mrs`，mihomo 自己加载），前端也完全没有白名单相关代码。它的存在理由写在包注释里 —— 供飞连控制台的"极速模式"消费。 |
+| `GET /api/whitelist/resolved` 端点 | 同上。连同 `refreshExpander` / PUT 后的异步刷新、`api.Deps.Expander`、启动时的 warm 协程一起移除。 |
+| `scripts/expand-whitelist.py` | 唯一用途是把白名单喂给飞连的域名白名单。 |
+| 部署包里的 **sing-box 二进制** | 它被随包分发的**唯一原因**就是 `whitelistexpand` 调 `sing-box rule-set decompile` 展开 geoip。这条链没了，`stage.sh` / `install.sh` 都不再下载或安装它。 |
+| `scripts/setup-ssh.sh` 的默认密码 `ppio2026` | 硬编码凭据。改为必填环境变量 `SSH_PASSWORD`，并让 `<user@host>` 参数也成为必填——该脚本会对着你指定的任何主机跑。 |
+
+> **sing-box 不是全部删掉。** 它在这三个位置是**活功能**，保留：
+> `internal/subscribe/singbox.go`（解析机场原生返回的 sing-box JSON）、
+> `Format` 枚举里的 `singbox` 值、以及 UA 回退探测里的 `sing-box/1.10.7`
+> （部分机场按 UA 返回不同内容）。删的是**可执行的并分发的**那份。
+
+### 4.2 上游遗留（greenfield 上永不存在的对象）
+
+| 文件 | 理由 |
+|---|---|
+| `deploy/node/iproute.sh` 里的 fwmark 0x42 / table 100 清理块 | sing-box 时代 `tun.fwmark: 66 / routing_table: 100` 的遗留。greenfield 部署上从不存在，属于死代码。 |
+| 同文件的 `LEAP_TPROXY` 链清理块 | 上一代链名的清理。新部署不会有它。 |
+| `deploy/node/install.sh` 里的 sing-box 服务清理块 | 上游退役 sing-box 数据面时留的保护块。同理。 |
+
+### 4.3 配置与脚本里的节点专属假设
+
+| 位置 | 改动 |
+|---|---|
+| `Makefile` | `NODE` **不留默认值**（原为 `ops@<host>`），所有触网目标加 `check-node` 守卫；`deploy-92` / `redeploy-92` 合并为通用的 `deploy` / `redeploy`。 |
+| `scripts/deploy.sh`、`redeploy-full.sh` | `REMOTE_USER` 从默认 `ops` 改为必填。 |
+| `scripts/watch-node.sh` | 默认主机与硬编码的 `ops@` 移除；host 参数必填。 |
+| `scripts/setup-ssh.sh` | 默认主机移除，见 4.1。 |
+
+> 理由：默认值写死会让人以为这里仍指向作者的某个具体节点。生产节点不进新仓库。
+
+### 4.4 其余
+
+| 文件 | 理由 |
+|---|---|
+| `deploy/node/install.sh` 中的 feilian 检查项 | `feilian-tun@tun0.service` 的状态检查、tun0 IP 比对等，在旁挂机上无意义。已换成旁挂机检查项（见 PLAN.md P1）。 |
+| `docs/ops-*.md`（2 个） | 飞连节点 89/92 的运维记录。节点已下线，且属于上游资产——**留在上游仓库**，新仓库不搬。 |
 
 > `docs/design-*.md`（3 个：资格集选择、池容量、准入质量门）**建议搬过来**——
 > 它们记录的是打分与池设计的取舍，与部署位置无关，是有效的设计依据。
