@@ -207,8 +207,14 @@ func main() {
 	// Data-path asserter. Nil when there is no TPROXY path to assert
 	// (client_subnet empty or tproxy_port 0) — /healthz then reports
 	// process liveness only and labels itself as such.
+	//
+	// The interface MUST come from config: iproute.sh installs the jump with
+	// `-i <ingress_iface>`, and the asserter matches that same argument. A
+	// hardcoded value here would make the check report the jump as missing
+	// forever, which in turn marks the node unhealthy and — with
+	// auto_failover — withdraws the liveness address for no real fault.
 	asserter := dataplane.NewAsserter(
-		cfg.Node.ClientSubnet, "tun0", cfg.DataPlane.TProxyPort, cfg.DataPlane.ClashAPI)
+		cfg.Node.ClientSubnet, cfg.Node.IngressIface, cfg.DataPlane.TProxyPort, cfg.DataPlane.ClashAPI)
 	if asserter != nil {
 		asserter.Emit = func(subject, body string, urgent bool) {
 			sev := notify.SeverityInfo
