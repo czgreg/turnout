@@ -140,7 +140,16 @@ func addrPresent(ctx context.Context, iface, addr string) bool {
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	return parseAddrPresent(string(out), addr)
+}
+
+// parseAddrPresent scans `ip -4 -o addr show` output for an exact address
+// match. Split out so the matching rule — which must be exact, not a
+// substring — is testable without forking `ip`.
+//
+// Line shape: "3: ens19    inet 10.255.255.2/24 brd ... scope global ens19".
+func parseAddrPresent(out, addr string) bool {
+	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
 		for i, tok := range f {
 			if tok != "inet" || i+1 >= len(f) {
@@ -168,11 +177,21 @@ func defaultRoute(ctx context.Context) string {
 	if err != nil {
 		return ""
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
+	return parseDefaultRoute(string(out))
+}
+
+// parseDefaultRoute returns the first default route line, trimmed, or "".
+//
+// Only the first line is reported: with multiple defaults the kernel prefers
+// the lowest metric, and that is the one an operator needs to see. Listing
+// them all would push the answer off the panel.
+func parseDefaultRoute(out string) string {
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
 		return ""
 	}
-	return strings.TrimSpace(lines[0])
+	first, _, _ := strings.Cut(trimmed, "\n")
+	return strings.TrimSpace(first)
 }
 
 // systemdState: `systemctl is-active <unit>` — returns the textual state

@@ -24,7 +24,6 @@
 # Env overrides:
 #   GATEWAY_YAML       path to gateway.yaml (default: ./gateway.yaml)
 #   MIHOMO_VERSION     mihomo version       (default: 1.19.26)
-#   SINGBOX_VERSION    sing-box CLI version (default: 1.10.7)
 #   STAGE_CACHE        cache dir for downloaded binaries (default: ./.cache)
 #   OUT_DIR            output directory (default: ./build)
 #   GOARCH             target arch (default: amd64; set arm64 for ARM nodes)
@@ -36,8 +35,7 @@ cd "$REPO_ROOT"
 
 GATEWAY_YAML="${GATEWAY_YAML:-./gateway.yaml}"
 MIHOMO_VERSION="${MIHOMO_VERSION:-1.19.26}"
-SINGBOX_VERSION="${SINGBOX_VERSION:-1.10.7}"
-STAGE_CACHE="${STAGE_CACHE:-${SINGBOX_CACHE:-./.cache}}"
+STAGE_CACHE="${STAGE_CACHE:-./.cache}"
 OUT_DIR="${OUT_DIR:-./build}"
 GOARCH="${GOARCH:-amd64}"
 

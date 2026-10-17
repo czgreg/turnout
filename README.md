@@ -146,17 +146,24 @@ DNS 同样经本设备处理。零客户端、零终端配置。
 > 这三种情况下机器照样秒回 ICMP，防火墙认为一切正常，继续把整个办公网的
 > 流量灌进黑洞。手动切回的前提是"你知道它挂了"，而这时你不知道。
 
-**解法：把探测信号的准确性做成本机自己的责任。** 本项目新增一个 watchdog：
+**解法：把探测信号的准确性做成本机自己的责任。** `turnout-gateway` 进程内跑一个
+watchdog goroutine（不是独立单元——它要读 `assert.go` 的断言状态和 NodeScorer 的
+池状态，两者都活在控制面进程里）：
 
 ```
-turnout-watchdog 每 N 秒自检三项：
+watchdog 每 N 秒自检（默认 10s）：
   a. mihomo 进程存活 + clash-api /version 可达
   b. 数据面规则在位（消费 assert.go 的既有状态，不重复实现）
   c. 出口池里至少一个节点健康（复用 NodeScorer 的状态）
+  d. 端到端探测：经代理实取一个 URL（默认关闭，会产生真实流量）
 
 全部通过 → 探活地址在位，应答 ICMP → 防火墙 IP-Link Up   → PBR 生效
 任一失败 → 摘掉探活地址             → 防火墙 IP-Link Down → 回落直连
 ```
+
+判定不是单次采样：连续失败 `fail_threshold` 次（默认 3）才判不健康，
+连续通过 `recover_threshold` 次（默认 3）才恢复——与防火墙 IP-Link 自身的
+revertive 语义对齐。`assert.go` 可能在我们下一次自检前就修好了瞬时的规则丢失。
 
 这样把一个 L3 的哑探针，变成了反映数据面真实健康度的信号。
 `arp` 模式更可靠（同网段直连、不受对端 ICMP 策略影响），旁挂机与防火墙同 VLAN 时优先用；

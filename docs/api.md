@@ -45,6 +45,7 @@ token 为空时不鉴权。
 | DELETE | `/api/notifications/lark` | 移除 Lark webhook（停止外发，本地日志保留） | ✓ |
 | POST | `/api/notifications/test` | 同步发一条测试消息验证 webhook | ✓ |
 | GET | `/api/notifications/recent?limit=N` | 本地 JSONL 日志最近 N 条 | ✓ |
+| GET | `/api/watchdog/status` | 旁挂健康判定（探活地址 / 自检项 / 计数） | ✓ |
 
 ---
 
@@ -757,6 +758,59 @@ curl -s $BASE/api/whitelist \
 ---
 
 ## 接入变更日志（前端 / 控制平台）
+
+### 2026-10-17（旁挂角色改造）— 当前版本
+
+**Breaking — 删除 1 个端点**：
+
+| 端点 | 删除理由 |
+|---|---|
+| `GET /api/whitelist/resolved` | 它把 geosite/geoip 展开成扁平域名 + CIDR 列表，唯一消费者是上游控制台的"极速模式"。本仓库前端从未使用，数据面也不走它（渲染器直接 emit rule-providers 指向 `.mrs`，mihomo 自己加载）。随 `internal/whitelistexpand` 一并移除。 |
+
+**Breaking — 字段改名**：
+
+| 字段 | 变化 |
+|---|---|
+| `GET /api/proxies/active` 的 `feilian` | → `ingress`。旁挂角色下不存在 VPN 服务，原来的 `tun0_active` / `vpn_active` / `proxy_active` / `sentry_active` 四项永远是 false，属于噪音。新字段见下。 |
+
+**新增字段**（`GET /api/proxies/active` → `ingress`）：
+
+| 字段 | 说明 |
+|---|---|
+| `ingress.ingress_iface_up` | 引流网卡是否 up。为 false 时不会有任何流量到达——表现为"没人用"，而不是"坏了" |
+| `ingress.ingress_ip_present` | `node.ingress_ip` 是否真的配在网卡上。缺失即防火墙的 PBR 下一跳已死 |
+| `ingress.return_route` | 当前 IPv4 默认路由（字符串）。必须指向防火墙；为空表示回程不通 |
+| `ingress.liveness_up` | watchdog 当前是否持有探活地址。判定不健康时为 false 是**预期**，不是故障 |
+
+**新增端点**：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/watchdog/status` | 旁挂健康判定。**判定为 `unhealthy` 时返回 503，但仍带完整 body**（与 `/healthz` 同构）。`state=unknown` 表示首轮自检尚未完成，属正常启动态，返回 200。 |
+
+```json
+{
+  "state": "healthy",
+  "at": "2026-10-17T09:00:10Z",
+  "checks": [
+    {"name": "engine_alive",    "ok": true,  "detail": "clash-api 127.0.0.1:9090 answering"},
+    {"name": "dataplane_rules", "ok": true,  "detail": "all 4 data-path checks passing (asserted 12s ago)"},
+    {"name": "pool_healthy",    "ok": true,  "detail": "7 alive / 19 total (need 1)"}
+  ],
+  "failing": [],
+  "fail_streak": 0,
+  "ok_streak": 12,
+  "fail_threshold": 3,
+  "recover_threshold": 3,
+  "liveness_ip": "10.255.255.3",
+  "liveness_up": true,
+  "auto_failover": false,
+  "last_transition": "2026-10-17T08:41:02Z"
+}
+```
+
+> `auto_failover=false` 时，`state=unhealthy` 表示**已经告警但尚未切回**——防火墙仍在引流，
+> 需要人工处理。控制台必须把这一点显式渲染出来，否则红色判定很容易被读成"已自动处理"。
 
 ### 2026-07-04（active 接口运维增强）
 
