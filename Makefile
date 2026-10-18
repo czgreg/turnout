@@ -51,7 +51,7 @@ help:  ## 列出所有 target
 check-node:
 	@test -n "$(NODE)" || { \
 	  echo "✗ NODE is required — it has no default on purpose."; \
-	  echo "  Usage: make $@ NODE=ops@<host>"; \
+	  echo "  Usage: make $(or $(MAKECMDGOALS),<target>) NODE=ops@<host>"; \
 	  exit 1; }
 
 # ---------------------------------------------------------------------------
@@ -124,6 +124,10 @@ status: check-node  ## GET /api/status
 .PHONY: health
 health: check-node  ## GET /api/proxies/active
 	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/proxies/active | python3 -m json.tool
+
+.PHONY: verify
+verify: check-node  ## 旁挂验收：入向/回程/TPROXY/自检/分流/池/产物（需 sudo）  NODE=ops@<host>
+	$(SSH) 'sudo bash -s' < scripts/verify-bypass.sh
 
 .PHONY: watchdog
 watchdog: check-node  ## GET /api/watchdog/status（旁挂健康；不健康时 HTTP 503 但仍带 body）
