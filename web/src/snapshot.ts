@@ -3,10 +3,12 @@ import type {
   Healthz,
   NodesHealth,
   RefreshInterval,
+  RuleSets,
   Status,
   Subscription,
   Transitions,
   WatchdogStatus,
+  Whitelist,
 } from './types';
 
 /** One endpoint's latest result: data on success, err (and HTTP status) on failure. */
@@ -25,6 +27,13 @@ export interface Snapshot {
   health: Slot<NodesHealth>;
   subs: Slot<Subscription[]>;
   interval: Slot<RefreshInterval>;
+  /**
+   * Routing decision + rule-set catalog. The whitelist page keeps its own
+   * editable draft; these slots are the baseline it diffs against and reseeds
+   * from after a successful save.
+   */
+  wl: Slot<Whitelist>;
+  ruleSets: Slot<RuleSets>;
   trans: Slot<Transitions>;
   /**
    * Watchdog health. Same shape as healthz rather than Slot<T>: the endpoint
@@ -41,5 +50,7 @@ export const emptySnapshot: Snapshot = {
   health: {},
   subs: {},
   interval: {},
+  wl: {},
+  ruleSets: {},
   trans: {},
 };

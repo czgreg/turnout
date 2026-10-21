@@ -21,11 +21,13 @@ import type {
   Healthz,
   NodesHealth,
   RefreshInterval,
+  RuleSets,
   Status,
   Subscription,
   TerminalAssignment,
   Transitions,
   WatchdogStatus,
+  Whitelist,
 } from './types';
 
 let base = '';
@@ -136,3 +138,16 @@ export const refreshSubscriptions = () =>
 
 export const setRefreshInterval = (seconds: number) =>
   request<RefreshInterval>('/api/subscribe/refresh-interval', { method: 'PUT', ...json({ seconds }) });
+
+/**
+ * Current routing decision + the rule-set catalog.
+ *
+ * putWhitelist sends the FULL object, never a delta: the handler replaces
+ * every list wholesale. It also reloads mihomo (3–5s) and may spend up to
+ * 60s fetching rule-sets that aren't on disk yet, so the caller confirms
+ * first — same reasoning as the subscription writes above.
+ */
+export const getWhitelist = () => request<Whitelist>('/api/whitelist');
+export const putWhitelist = (wl: Whitelist) =>
+  request<Whitelist>('/api/whitelist', { method: 'PUT', ...json(wl) });
+export const getRuleSets = () => request<RuleSets>('/api/rule-sets');

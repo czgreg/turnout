@@ -8,10 +8,13 @@ import type {
   NodeHealth,
   NodesHealth,
   ProbeResult,
+  RuleSetEntry,
+  RuleSets,
   Status,
   Subscription,
   TerminalAssignment,
   Transition,
+  Whitelist,
 } from '../src/types';
 
 const PROBES = ['openai-api', 'anthropic-api', 'accounts.google.com', 'github'];
@@ -333,5 +336,74 @@ export function terminal(ip: string): TerminalAssignment {
     active_node: p.alive ? 'primary' : s.alive ? 'secondary' : '',
     primary: { name: p.name, alive: p.alive, health: p },
     secondary: { name: s.name, alive: s.alive, health: s },
+  };
+}
+
+/* ── whitelist + rule-set catalog ────────────────────────────────────────
+ * Mirrors GET /api/whitelist and GET /api/rule-sets. The catalog is a
+ * representative slice of internal/rulesets/catalog.json — enough categories
+ * and one uninstalled entry so the "未下载" path is visible in mock mode.
+ */
+export function whitelist(): Whitelist {
+  return {
+    mode: 'whitelist',
+    geosites: ['geosite-openai', 'geosite-anthropic', 'geosite-github', 'geosite-google-gemini'],
+    geoips: [],
+    domain_suffix: ['claude.ai'],
+    ip_cidr: [],
+    fake_ip_skip: [],
+  };
+}
+
+const GEOSITE_CATALOG: RuleSetEntry[] = [
+  ['tech', 'google', true],
+  ['tech', 'youtube', true],
+  ['tech', 'openai', true],
+  ['tech', 'anthropic', true],
+  ['tech', 'google-gemini', true],
+  ['tech', 'github', true],
+  ['tech', 'microsoft', true],
+  ['tech', 'cloudflare', true],
+  ['tech', 'jetbrains', false],
+  ['tech', 'docker', false],
+  ['social', 'telegram', true],
+  ['social', 'twitter', true],
+  ['social', 'discord', false],
+  ['streaming', 'netflix', true],
+  ['streaming', 'spotify', false],
+  ['productivity', 'notion', false],
+  ['productivity', 'figma', false],
+].map(([category, stem, installed]) => ({
+  name: 'geosite-' + stem,
+  url: `https://example.invalid/geosite/${stem}.mrs`,
+  category: category as string,
+  installed: installed as boolean,
+  selected: ['openai', 'anthropic', 'github', 'google-gemini'].includes(stem as string),
+}));
+
+const GEOIP_CATALOG: RuleSetEntry[] = [
+  ['tech', 'telegram', true],
+  ['tech', 'cloudflare', true],
+  ['tech', 'google', false],
+].map(([category, stem, installed]) => ({
+  name: 'geoip-' + stem,
+  url: `https://example.invalid/geoip/${stem}.mrs`,
+  category: category as string,
+  installed: installed as boolean,
+  selected: false,
+}));
+
+export function ruleSets(wl: Whitelist = whitelist()): RuleSets {
+  const mark = (items: RuleSetEntry[], selected: string[]) =>
+    items.map((i) => ({ ...i, selected: selected.includes(i.name) }));
+  return {
+    geosites: {
+      catalog: mark(GEOSITE_CATALOG, wl.geosites),
+      domain_suffix_examples: ['anthropic.com', 'claude.ai', 'cursor.com', 'figma.com', 'quora.com'],
+    },
+    geoips: {
+      catalog: mark(GEOIP_CATALOG, wl.geoips),
+      ip_cidr_examples: ['149.154.0.0/16', '91.108.0.0/16'],
+    },
   };
 }

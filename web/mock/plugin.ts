@@ -37,6 +37,7 @@ function handler(): Connect.NextHandleFunction {
   let subs = data.initialSubs();
   let interval = 0;
   let refreshing = false;
+  let wl = data.whitelist();
 
   return async (req, res, next) => {
     const url = new URL(req.url || '/', 'http://mock');
@@ -104,6 +105,36 @@ function handler(): Connect.NextHandleFunction {
         return send(res, 200, subs);
       }
     }
+    if (path === '/api/whitelist') {
+      if (method === 'GET') return send(res, 200, wl);
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        // Mirror the handler's empty-body guard: `{}` is rejected, and the
+        // message is the one the real server sends so the UI path is tested.
+        const empty =
+          !b.geosites?.length && !b.geoips?.length && !b.domain_suffix?.length && !b.ip_cidr?.length;
+        if (String(b.mode || wl.mode) !== 'overseas' && empty) {
+          return send(res, 400, {
+            error:
+              'whitelist body has no match entries — set mode="overseas" to intentionally clear, or include at least one of geosites/geoips/domain_suffix/ip_cidr',
+          });
+        }
+        await sleep(3000); // mihomo reload
+        wl = {
+          mode: b.mode || wl.mode,
+          geosites: b.geosites || [],
+          geoips: b.geoips || [],
+          // Server-side normalization, visible here so the UI's "saved value
+          // wins over the draft" behaviour can be exercised in mock mode.
+          domain_suffix: (b.domain_suffix || []).map((s: string) => s.toLowerCase()),
+          ip_cidr: (b.ip_cidr || []).map((s: string) => (s.includes('/') ? s : s + '/32')),
+          fake_ip_skip: (b.fake_ip_skip || []).map((s: string) => (s.startsWith('+.') ? s : '+.' + s)),
+        };
+        return send(res, 200, wl);
+      }
+    }
+    if (path === '/api/rule-sets') return send(res, 200, data.ruleSets(wl));
+
     return send(res, 404, { error: 'mock: no handler for ' + method + ' ' + path });
   };
 }

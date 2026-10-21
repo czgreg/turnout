@@ -67,8 +67,13 @@ token 为空时不鉴权。
 控制台读取的端点：`/healthz`、`/api/status`、`/api/proxies/active`、
 `/api/nodes/health`、`/api/subscriptions`（含 POST / PUT / DELETE）、
 `/api/subscribe/refresh`、`/api/subscribe/refresh-interval`、
+`/api/whitelist`（含 PUT）、`/api/rule-sets`、
 `/api/pool/transitions`、`/api/pool/terminal`。改这些端点的响应结构时，
 同步改 `web/src/types.ts`，并跑 `make ui`。
+
+分流白名单页（`#/whitelist`）**整体替换**语义：页面持有的是完整白名单草稿，
+保存时把整份 body PUT 回去，而不是发增量。确认框会逐条列出增/删项，
+并在有规则集尚未下载时提示保存会先拉取（最坏 60 秒）。
 
 **不鉴权，但只返回静态文件**（html / css / js）——页面本身不含节点数据或
 凭据，所有真实数据由浏览器带 `Authorization: Bearer` 去请下面的 `/api/*`。

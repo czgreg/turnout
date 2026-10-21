@@ -1,0 +1,519 @@
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Empty,
+  InputTag,
+  Message,
+  Modal,
+  Radio,
+  Select,
+  Space,
+  Tag,
+} from '@arco-design/web-react';
+import { IconSave, IconUndo } from '@arco-design/web-react/icon';
+import * as api from '../api';
+import type { Snapshot } from '../snapshot';
+import type { RuleSetEntry, Whitelist } from '../types';
+
+/* Whitelist editor.
+ *
+ * The one thing this page must never do is send a partial object. PUT
+ * /api/whitelist replaces every list wholesale, so the draft below is always
+ * the FULL whitelist and the save path sends exactly what is on screen.
+ * 2026-06-09: an automated caller sent `{}` and wiped production routing;
+ * the handler now rejects empty whitelist-mode bodies, but the same class of
+ * mistake from a UI would be "the operator edited one field and the other
+ * four vanished". Hence: baseline + draft + an explicit diff in the confirm.
+ *
+ * Baseline reseeding: the console polls every 10s. The draft is reseeded from
+ * the poll only while it is CLEAN, so a slow edit is never clobbered mid-type
+ * by another operator's change — the dirty banner tells the user their view
+ * is stale instead of silently reassigning it under them.
+ */
+
+const MODES = [
+  {
+    value: 'whitelist',
+    title: '白名单（推荐）',
+    desc: '只有命中下列规则的流量走海外池，其余一律交回防火墙直连。',
+  },
+  {
+    value: 'overseas',
+    title: '全量出海',
+    desc: '不匹配任何白名单：所有非国内目标都走海外池。通常只在故障演练时使用。',
+  },
+];
+
+const shortTag = (name: string) => name.replace(/^geosite-/, '').replace(/^geoip-/, '');
+
+// Mirrors validateDomainSuffix in internal/api/whitelist.go. Checked here so a
+// typo is caught before a save that would reload the data plane; the server
+// remains the authority.
+function suffixProblem(s: string): string {
+  if (/\s/.test(s)) return '含空白';
+  if (s.includes('://')) return '这是 URL，需要裸域名';
+  if (s.includes('/')) return "含 '/'";
+  if (!s.includes('.')) return "缺少 '.'";
+  if (s.startsWith('.') || s.endsWith('.')) return '首尾不能有点';
+  return '';
+}
+
+// Mirrors normalizeCIDRs' accept-set, loosely: the server parses with netip,
+// which the browser cannot do exactly. A shape check catches "10.0.0.0/300"
+// and stray text; anything subtler comes back as a 400 with the server text.
+function cidrProblem(s: string): string {
+  if (/\s/.test(s)) return '含空白';
+  const [addr, bits] = s.split('/');
+  if (bits !== undefined && !/^\d{1,3}$/.test(bits)) return '掩码长度不是数字';
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr);
+  if (v4) {
+    const bad = v4.slice(1).find((o) => Number(o) > 255);
+    if (bad !== undefined) return 'IPv4 段超过 255';
+    if (bits !== undefined && Number(bits) > 32) return 'IPv4 掩码最大 32';
+    return '';
+  }
+  if (addr.includes(':')) {
+    if (bits !== undefined && Number(bits) > 128) return 'IPv6 掩码最大 128';
+    return '';
+  }
+  return '既不是 IPv4/IPv6 地址也不是 CIDR';
+}
+
+const sorted = (xs: string[]) => xs.slice().sort((a, b) => a.localeCompare(b));
+
+function diffList(label: string, before: string[], after: string[]) {
+  const b = new Set(before);
+  const a = new Set(after);
+  const added = sorted(after.filter((x) => !b.has(x)));
+  const removed = sorted(before.filter((x) => !a.has(x)));
+  if (!added.length && !removed.length) return null;
+  return { label, added, removed };
+}
+
+export default function WhitelistPage({
+  snap,
+  reload,
+  onNavigate,
+}: {
+  snap: Snapshot;
+  reload: () => Promise<void>;
+  onNavigate: (k: string) => void;
+}) {
+  const base = snap.wl.data;
+  const sets = snap.ruleSets.data;
+  const [draft, setDraft] = useState<Whitelist | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Reseed while clean. `base` is a fresh object every poll, so compare by
+  // value — reference identity would mark this dirty on every tick.
+  useEffect(() => {
+    if (!base || dirty) return;
+    setDraft((cur) => (cur && sameWl(cur, base) ? cur : cloneWl(base)));
+  }, [base, dirty]);
+
+  const problems = useMemo(() => {
+    if (!draft) return [] as string[];
+    const out: string[] = [];
+    draft.domain_suffix.forEach((s) => {
+      const p = suffixProblem(s);
+      if (p) out.push(`domain_suffix「${s}」：${p}`);
+    });
+    draft.ip_cidr.forEach((s) => {
+      const p = cidrProblem(s);
+      if (p) out.push(`ip_cidr「${s}」：${p}`);
+    });
+    return out;
+  }, [draft]);
+
+  const matchCount = draft
+    ? draft.geosites.length + draft.geoips.length + draft.domain_suffix.length + draft.ip_cidr.length
+    : 0;
+  const emptyWhitelist = draft?.mode !== 'overseas' && matchCount === 0;
+
+  const patch = (p: Partial<Whitelist>) => {
+    setDraft((cur) => (cur ? { ...cur, ...p } : cur));
+    setDirty(true);
+  };
+
+  const reset = () => {
+    if (base) setDraft(cloneWl(base));
+    setDirty(false);
+  };
+
+  const confirmSave = () => {
+    if (!draft) return;
+    const diffs = [
+      diffList('geosites', base?.geosites || [], draft.geosites),
+      diffList('geoips', base?.geoips || [], draft.geoips),
+      diffList('domain_suffix', base?.domain_suffix || [], draft.domain_suffix),
+      diffList('ip_cidr', base?.ip_cidr || [], draft.ip_cidr),
+      diffList('fake_ip_skip', base?.fake_ip_skip || [], draft.fake_ip_skip),
+    ].filter((d): d is NonNullable<typeof d> => d !== null);
+    const modeChanged = base?.mode !== draft.mode;
+    const needFetch = newTagsNotOnDisk(draft, sets);
+
+    Modal.confirm({
+      title: '整体替换分流白名单？',
+      content: (
+        <div className="wl-confirm">
+          <p>
+            这是一个<b>整体替换</b>操作：提交后白名单就是下面这份内容，其余条目会消失。
+          </p>
+          {modeChanged && (
+            <p>
+              分流模式：<Tag size="small">{base?.mode || '—'}</Tag> → <Tag size="small" color="orange">{draft.mode}</Tag>
+            </p>
+          )}
+          {draft.mode === 'overseas' && (
+            <Alert
+              type="warning"
+              title="全量出海"
+              content="所有非国内目标都会被送进海外池。办公网的内网系统若不在 fake_ip_skip 里，可能因 DNS 走海外 DoH 而解析失败。"
+            />
+          )}
+          {diffs.length === 0 && !modeChanged ? (
+            <p className="dim">规则本身没有变化（只有顺序或大小写差异会被服务端规范化）。</p>
+          ) : (
+            diffs.map((d) => (
+              <div key={d.label} className="wl-diff">
+                <span className="mono">{d.label}</span>
+                {d.added.map((x) => (
+                  <Tag key={'+' + x} color="green" size="small">
+                    + {x}
+                  </Tag>
+                ))}
+                {d.removed.map((x) => (
+                  <Tag key={'-' + x} color="red" size="small">
+                    − {x}
+                  </Tag>
+                ))}
+              </div>
+            ))
+          )}
+          {needFetch.length > 0 && (
+            <Alert
+              type="info"
+              className="mt"
+              content={`${needFetch.join('、')} 尚未下载，保存时会先拉取规则集（最坏 60 秒），拉取失败则整次保存失败、白名单不变。`}
+            />
+          )}
+          <p className="mt">
+            保存会重启 mihomo，约 <b>3–5 秒</b>连接中断。期间已建立的连接会断开。
+          </p>
+        </div>
+      ),
+      okText: '替换并重载',
+      onOk: async () => {
+        setSaving(true);
+        try {
+          const saved = await api.putWhitelist(draft);
+          setDraft(cloneWl(saved));
+          setDirty(false);
+          Message.success('白名单已保存，数据面已重载');
+          await reload();
+        } catch (e) {
+          Message.error('保存失败：' + (e as Error).message);
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
+  };
+
+  if (snap.wl.err) {
+    return (
+      <div className="page">
+        <Alert type="error" title="读取分流白名单失败" content={snap.wl.err} />
+      </div>
+    );
+  }
+  if (!draft) {
+    return (
+      <div className="page">
+        <Card bordered={false}>
+          <Empty description={snap.updatedAt ? '尚无白名单数据' : '加载中…'} />
+        </Card>
+      </div>
+    );
+  }
+
+  const geoGroups = groupCatalog(sets?.geosites?.catalog || []);
+  const ipGroups = groupCatalog(sets?.geoips?.catalog || []);
+
+  return (
+    <div className="page">
+      <Alert
+        type="warning"
+        className="mb"
+        title="改这里等于改全公司的分流结果"
+        content="保存会整体替换白名单并重载 mihomo（3–5 秒中断）。不命中的流量一律交回防火墙直连；漏掉一个域名，表现不是报错，而是「那个网站打不开」。"
+      />
+
+      {dirty && (
+        <Alert
+          type="info"
+          className="mb"
+          title="有未保存的改动"
+          content={
+            <Space>
+              <span>
+                页面上的内容是你的草稿，节点上仍是上一次保存的版本。自动刷新不会再覆盖它。
+              </span>
+              <Button size="small" icon={<IconUndo />} onClick={reset}>
+                丢弃改动
+              </Button>
+            </Space>
+          }
+        />
+      )}
+
+      <Card bordered={false} className="mb" title="分流模式">
+        <Radio.Group
+          type="button"
+          value={draft.mode}
+          onChange={(v) => patch({ mode: v as Whitelist['mode'] })}
+        >
+          {MODES.map((m) => (
+            <Radio key={m.value} value={m.value}>
+              {m.title}
+            </Radio>
+          ))}
+        </Radio.Group>
+        <p className="dim mt">{MODES.find((m) => m.value === draft.mode)?.desc}</p>
+        {emptyWhitelist && (
+          <Alert
+            type="error"
+            className="mt"
+            content="白名单模式下至少要有一条规则（geosite / geoip / domain_suffix / ip_cidr 任意一条），否则服务端会拒绝保存。要清空请先切到「全量出海」。"
+          />
+        )}
+      </Card>
+
+      <Card
+        bordered={false}
+        className="mb"
+        title="域名侧"
+        extra={<span className="dim">命中任意一条即走海外池</span>}
+      >
+        <div className="wl-field">
+          <label>geosite 规则集</label>
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="选择应用/站点类别，例如 google、openai"
+            value={draft.geosites}
+            onChange={(v) => patch({ geosites: dedupe((v as string[]) || []) })}
+            style={{ width: '100%' }}
+          >
+            {geoGroups.map((g) => (
+              <Select.OptGroup key={g.category} label={g.category}>
+                {g.items.map((it) => (
+                  <Select.Option key={it.name} value={it.name}>
+                    <span className="wl-opt">
+                      <span className="mono">{shortTag(it.name)}</span>
+                      {!it.installed && <span className="wl-opt-flag">未下载</span>}
+                    </span>
+                  </Select.Option>
+                ))}
+              </Select.OptGroup>
+            ))}
+          </Select>
+          <div className="dim small">
+            规则集来自 MetaCubeX；「未下载」的项在首次保存时自动拉取。当前 {draft.geosites.length} 条。
+          </div>
+        </div>
+
+        <div className="wl-field">
+          <label>domain_suffix（裸域名）</label>
+          <InputTag
+            value={draft.domain_suffix}
+            onChange={(v) => patch({ domain_suffix: dedupe(((v as string[]) || []).map((s) => s.trim())) })}
+            placeholder="输入域名后回车，例如 claude.ai"
+            allowClear
+            saveOnBlur
+          />
+          <div className="dim small">
+            子域名自动包含（claude.ai 也覆盖 api.claude.ai）。只写域名，不带协议和路径。
+            {sets?.geosites?.domain_suffix_examples?.length ? (
+              <> 常用：{sets.geosites.domain_suffix_examples.slice(0, 6).join('、')}</>
+            ) : null}
+          </div>
+        </div>
+      </Card>
+
+      <Card
+        bordered={false}
+        className="mb"
+        title="IP 侧"
+        extra={<span className="dim">给跳过 DNS 的应用用（Telegram MTProto 等）</span>}
+      >
+        <div className="wl-field">
+          <label>geoip 规则集</label>
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="选择 IP 归属类别，例如 telegram"
+            value={draft.geoips}
+            onChange={(v) => patch({ geoips: dedupe((v as string[]) || []) })}
+            style={{ width: '100%' }}
+          >
+            {ipGroups.map((g) => (
+              <Select.OptGroup key={g.category} label={g.category}>
+                {g.items.map((it) => (
+                  <Select.Option key={it.name} value={it.name}>
+                    <span className="wl-opt">
+                      <span className="mono">{shortTag(it.name)}</span>
+                      {!it.installed && <span className="wl-opt-flag">未下载</span>}
+                    </span>
+                  </Select.Option>
+                ))}
+              </Select.OptGroup>
+            ))}
+          </Select>
+          <div className="dim small">当前 {draft.geoips.length} 条。</div>
+        </div>
+
+        <div className="wl-field">
+          <label>ip_cidr</label>
+          <InputTag
+            value={draft.ip_cidr}
+            onChange={(v) => patch({ ip_cidr: dedupe(((v as string[]) || []).map((s) => s.trim())) })}
+            placeholder="输入 CIDR 或单个 IP 后回车，例如 149.154.0.0/16"
+            allowClear
+            saveOnBlur
+          />
+          <div className="dim small">
+            单个 IP 会被服务端补成 /32（IPv6 为 /128）。
+            {sets?.geoips?.ip_cidr_examples?.length ? (
+              <> 示例：{sets.geoips.ip_cidr_examples.slice(0, 4).join('、')}</>
+            ) : null}
+          </div>
+        </div>
+      </Card>
+
+      <Card
+        bordered={false}
+        className="mb"
+        title="内网域名（fake_ip_skip）"
+        extra={<span className="dim">这些后缀走国内 DoH 解析</span>}
+      >
+        <div className="wl-field">
+          <InputTag
+            value={draft.fake_ip_skip}
+            onChange={(v) => patch({ fake_ip_skip: dedupe(((v as string[]) || []).map((s) => s.trim())) })}
+            placeholder="输入内网域名后缀后回车，例如 corp.example.com"
+            allowClear
+            saveOnBlur
+          />
+          <div className="dim small">
+            默认 nameserver 是海外 DoH，对纯内网域名没有记录。列出这里的后缀会改用国内 DoH 解析，并在 DNS 侧放行。
+            服务端会统一规范化为 <span className="mono">+.example.com</span> 形式。
+          </div>
+        </div>
+      </Card>
+
+      {problems.length > 0 && (
+        <Alert
+          type="error"
+          className="mb"
+          title={`${problems.length} 条格式问题，保存会被服务端拒绝`}
+          content={
+            <ul className="wl-problems">
+              {problems.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          }
+        />
+      )}
+
+      <Card bordered={false}>
+        <Space>
+          <Button
+            type="primary"
+            icon={<IconSave />}
+            loading={saving}
+            disabled={!dirty || emptyWhitelist || problems.length > 0}
+            onClick={confirmSave}
+          >
+            {saving ? '保存并重载中…' : '保存并重载'}
+          </Button>
+          <Button icon={<IconUndo />} disabled={!dirty || saving} onClick={reset}>
+            丢弃改动
+          </Button>
+          <Button type="text" onClick={() => onNavigate('terminal')}>
+            保存后用「终端查询」验证某个 IP 的实际出口 →
+          </Button>
+        </Space>
+        {!dirty && (
+          <span className="dim" style={{ marginLeft: 12 }}>
+            <Badge status="success" text="与服务端一致" />
+          </span>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ── helpers ───────────────────────────────────────────────────────────── */
+
+const cloneWl = (w: Whitelist): Whitelist => ({
+  mode: w.mode || 'whitelist',
+  geosites: [...(w.geosites || [])],
+  geoips: [...(w.geoips || [])],
+  domain_suffix: [...(w.domain_suffix || [])],
+  ip_cidr: [...(w.ip_cidr || [])],
+  fake_ip_skip: [...(w.fake_ip_skip || [])],
+});
+
+const sameWl = (a: Whitelist, b: Whitelist) =>
+  a.mode === b.mode &&
+  a.geosites.join('\n') === b.geosites.join('\n') &&
+  a.geoips.join('\n') === b.geoips.join('\n') &&
+  a.domain_suffix.join('\n') === b.domain_suffix.join('\n') &&
+  a.ip_cidr.join('\n') === b.ip_cidr.join('\n') &&
+  a.fake_ip_skip.join('\n') === b.fake_ip_skip.join('\n');
+
+// Client-side dedupe only. The server normalizes too, but doing it here keeps
+// the draft (and the confirm diff) honest about what the operator actually
+// wrote. Order is preserved — the renderer emits rules in this order.
+const dedupe = (xs: string[]) => {
+  const seen = new Set<string>();
+  return xs.filter((x) => {
+    if (!x || seen.has(x)) return false;
+    seen.add(x);
+    return true;
+  });
+};
+
+const findEntry = (catalog: RuleSetEntry[] | undefined, name: string) =>
+  catalog?.find((e) => e.name === name);
+
+function groupCatalog(catalog: RuleSetEntry[]) {
+  const m = new Map<string, RuleSetEntry[]>();
+  for (const it of catalog) {
+    const cat = it.category || 'other';
+    if (!m.has(cat)) m.set(cat, []);
+    m.get(cat)!.push(it);
+  }
+  return Array.from(m.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([category, items]) => ({ category, items }));
+}
+
+function newTagsNotOnDisk(w: Whitelist, sets: { geosites?: { catalog: RuleSetEntry[] }; geoips?: { catalog: RuleSetEntry[] } } | undefined) {
+  const out: string[] = [];
+  const check = (tags: string[], catalog: RuleSetEntry[] | undefined) => {
+    for (const t of tags) {
+      const e = findEntry(catalog, t);
+      if (e && !e.installed) out.push(shortTag(t));
+    }
+  };
+  check(w.geosites, sets?.geosites?.catalog);
+  check(w.geoips, sets?.geoips?.catalog);
+  return out;
+}

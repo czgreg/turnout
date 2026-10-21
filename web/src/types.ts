@@ -284,3 +284,57 @@ export interface WatchdogStatus {
   last_transition?: string;
   last_error?: string;
 }
+
+/* ── Whitelist (GET / PUT /api/whitelist) ────────────────────────────────
+ *
+ * The routing decision, as the data plane sees it. Mirrors whitelistDTO in
+ * internal/api/whitelist.go.
+ *
+ * PUT is a WHOLE-REPLACE operation, not a patch: whatever this object holds
+ * after the edit becomes the entire whitelist. A UI that only sends the
+ * fields it touched silently drops the rest (see the 2026-06-09 incident in
+ * the handler comment, where `{}` cleared production).
+ *
+ * mode='overseas' means "no whitelist": every non-CN destination goes to
+ * the pool. It is the only mode in which the match lists may be empty —
+ * the handler rejects an empty whitelist-mode body on purpose.
+ */
+export interface Whitelist {
+  mode: 'whitelist' | 'overseas' | string;
+  /** Rule-set tags, always prefixed "geosite-". Must exist in the catalog. */
+  geosites: string[];
+  /** Rule-set tags, always prefixed "geoip-". Must exist in the catalog. */
+  geoips: string[];
+  /** Bare domain suffixes, e.g. "claude.ai". */
+  domain_suffix: string[];
+  /** CIDR or bare IPs; bare IPs are normalized to /32 or /128 server-side. */
+  ip_cidr: string[];
+  /** Intranet suffixes resolved via CN DoH, e.g. "+.corp.example.com". */
+  fake_ip_skip: string[];
+}
+
+/* ── Rule-set catalog (GET /api/rule-sets) ───────────────────────────────
+ *
+ * installed = the .mrs/.srs is on disk; selected = the tag is in the current
+ * whitelist. Selecting an uninstalled tag is legal: PUT fetches it on demand
+ * (and can answer 502 if that fetch fails), which is why the UI warns about
+ * a slower save rather than blocking the choice.
+ */
+export interface RuleSetEntry {
+  name: string;
+  url: string;
+  category: string;
+  installed: boolean;
+  selected: boolean;
+}
+
+export interface RuleSetSide {
+  catalog: RuleSetEntry[];
+  domain_suffix_examples?: string[];
+  ip_cidr_examples?: string[];
+}
+
+export interface RuleSets {
+  geosites: RuleSetSide;
+  geoips: RuleSetSide;
+}

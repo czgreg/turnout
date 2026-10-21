@@ -23,6 +23,7 @@ import {
   IconStorage,
   IconSunFill,
   IconDown,
+  IconSafe,
 } from '@arco-design/web-react/icon';
 import * as api from './api';
 import { ApiError } from './api';
@@ -34,6 +35,7 @@ import Login from './Login';
 import Overview from './pages/Overview';
 import Nodes from './pages/Nodes';
 import Subscriptions from './pages/Subscriptions';
+import WhitelistPage from './pages/Whitelist';
 import Terminal from './pages/Terminal';
 import TransitionsPage from './pages/Transitions';
 
@@ -43,6 +45,7 @@ const VIEWS = [
   { key: 'overview', title: '总览', desc: '数据通路、出口与池规模', icon: <IconDashboard /> },
   { key: 'nodes', title: '节点状态', desc: '候选节点打分与站点探针', icon: <IconStorage /> },
   { key: 'subs', title: '订阅管理', desc: '机场订阅与周期刷新', icon: <IconLink /> },
+  { key: 'whitelist', title: '分流白名单', desc: '哪些域名/应用走海外池，其余一律交回防火墙', icon: <IconSafe /> },
   { key: 'terminal', title: '终端查询', desc: '按员工 IP 查出口 —— 报「慢 / 打不开」时的第一入口', icon: <IconSearch /> },
   { key: 'transitions', title: '池变更审计', desc: '池成员变更历史与隔离名单', icon: <IconHistory /> },
 ] as const;
@@ -89,13 +92,15 @@ export default function App() {
     const slot = <T,>(p: Promise<T>) =>
       p.then((data) => ({ data }), (e: Error) => ({ err: e.message, status: (e as ApiError).status }));
 
-    const [healthz, status, active, health, subs, interval, trans, watchdog] = await Promise.all([
+    const [healthz, status, active, health, subs, interval, wl, ruleSets, trans, watchdog] = await Promise.all([
       api.getHealthz().catch(() => null),
       slot(api.getStatus()),
       slot(api.getActive()),
       slot(api.getNodesHealth()),
       slot(api.getSubscriptions()),
       slot(api.getRefreshInterval()),
+      slot(api.getWhitelist()),
+      slot(api.getRuleSets()),
       slot(api.getTransitions()),
       // Not wrapped in slot(): the endpoint answers 503 WITH a body when the
       // verdict is unhealthy, and slot()'s reject path would discard it.
@@ -112,7 +117,7 @@ export default function App() {
       setAuthError(status.err);
       return;
     }
-    setSnap({ healthz, status, active, health, subs, interval, trans, watchdog, updatedAt: new Date() });
+    setSnap({ healthz, status, active, health, subs, interval, wl, ruleSets, trans, watchdog, updatedAt: new Date() });
   }, []);
 
   useEffect(() => {
@@ -241,6 +246,7 @@ export default function App() {
           {view === 'overview' && <Overview snap={snap} onNavigate={go} />}
           {view === 'nodes' && <Nodes snap={snap} />}
           {view === 'subs' && <Subscriptions snap={snap} reload={() => loadAll(true)} />}
+          {view === 'whitelist' && <WhitelistPage snap={snap} reload={() => loadAll(true)} onNavigate={go} />}
           {view === 'terminal' && <Terminal snap={snap} />}
           {view === 'transitions' && <TransitionsPage snap={snap} />}
         </Layout.Content>
