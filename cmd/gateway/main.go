@@ -67,6 +67,11 @@ func main() {
 		fmt.Printf("export TURNOUT_INGRESS_IP=%q\n", cfg.Node.IngressIP)
 		fmt.Printf("export TURNOUT_EGRESS_IFACE=%q\n", cfg.Node.EgressIface)
 		fmt.Printf("export TURNOUT_RETURN_GATEWAY=%q\n", cfg.Node.Return.GatewayIP)
+		// Interface the default route is pinned to. Without this install.sh
+		// emits `ip route replace default via <gw>` with no dev, and the
+		// kernel picks the device by its own route lookup — which on a
+		// multi-NIC box can be a different one than the firewall-facing NIC.
+		fmt.Printf("export TURNOUT_RETURN_IFACE=%q\n", cfg.Node.Return.Iface)
 		fmt.Printf("export TURNOUT_API_PORT=%q\n", apiPort)
 		// Space-separated source CIDRs allowed to reach the API port, for
 		// nft.conf's input chain. Empty → loopback only (install.sh emits

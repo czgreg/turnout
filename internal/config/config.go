@@ -11,6 +11,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"os"
@@ -988,7 +989,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var c Config
-	if err := yaml.Unmarshal(data, &c); err != nil {
+	// KnownFields(true): an unknown key is an ERROR, not a silent no-op.
+	//
+	// This is not pedantry. `route:` and `dns:` live under data_plane, and a
+	// hand-written yaml that puts them at the top level parses fine while
+	// every value under them is discarded — mode silently falls back to
+	// "overseas" and the deploy looks successful. That exact mistake shipped
+	// in configs/gateway.example.yaml and cost an install to debug. Refusing
+	// the file at load time is the only way the operator finds out.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	c.applyDefaults()

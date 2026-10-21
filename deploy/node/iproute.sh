@@ -73,7 +73,22 @@ tproxy_up() {
     # iptables TPROXY chain (idempotent: flush + re-add).
     iptables -t mangle -N "$CHAIN" 2>/dev/null || iptables -t mangle -F "$CHAIN"
 
+    # Packets addressed to THIS HOST are never proxied.
+    #
+    # TPROXY keyed on (ingress iface, source subnet) alone is too broad: an
+    # office terminal connecting to this box's own SSH / DNS / any local
+    # service matches both, and would be handed to mihomo instead of the
+    # local socket. The match is on the ORIGINAL destination, which is still
+    # intact here (TPROXY rewrites it only for packets that reach the target).
+    #
+    # This is what makes a single-NIC deployment safe: traffic that merely
+    # passes through is proxied, traffic that terminates on the box is not.
+    # It also covers the liveness address when the watchdog has it up on lo.
+    iptables -t mangle -A "$CHAIN" -m addrtype --dst-type LOCAL -j RETURN
+
     # Redirect non-DNS TCP from the diverted segment to mihomo's tproxy-port.
+    # (Local-destined traffic already returned above, which is also why DNS
+    # over TCP to ingress_ip:53 needs no explicit exclusion here.)
     iptables -t mangle -A "$CHAIN" -p tcp \
         -j TPROXY --on-port "$TPROXY_PORT" --on-ip 127.0.0.1 \
         --tproxy-mark "$TPROXY_MARK/$TPROXY_MARK"

@@ -162,31 +162,62 @@ while IFS= read -r u; do
 done < <(grep -oE 'https://[^"[:space:]]+\.(srs|mrs)' "$GATEWAY_YAML" | sort -u)
 
 # Tags from gateway.yaml's whitelist (geosites: [tag, ...] and geoips:
-# [tag, ...] — bare strings, no urls). Pull both and let the prefix
-# branch decide the upstream.
-WL_TAGS=()
-while IFS= read -r tag; do
-  WL_TAGS+=("$tag")
-done < <(awk '
-  /^[[:space:]]*geosites:/  { mode="geo";   next }
-  /^[[:space:]]*geoips:/    { mode="geo";   next }
-  /^[a-zA-Z]/                { mode=""; next }
-  mode=="geo" && /^[[:space:]]*-[[:space:]]/ {
-    sub(/^[[:space:]]*-[[:space:]]*/, "")
-    sub(/[[:space:]]*#.*/, "")
-    gsub(/"|'\''/, "")
-    if ($0 ~ /^(geosite|geoip)-/) print $0
-  }
-' "$GATEWAY_YAML")
+# [tag, ...] — bare strings, no urls).
+#
+# The renderer looks each whitelist tag up as `<tags_dir>/<tag>.mrs`
+# (internal/mihomo/groups.go buildRuleProviders) — the tag IS the filename.
+# So `- openai` under geosites must land as rule-sets/openai.mrs, NOT
+# geosite-openai.mrs. Two separate passes are needed because the upstream
+# directory depends on WHICH list the tag came from (geosite vs geoip), and
+# the prefix only disambiguates the legacy `geosite-openai` spelling.
+#
+# The mode resets on any key line (`something:`), not just column-0 ones:
+# `domain_suffix:` and `geosites:` are both indented inside `whitelist:`,
+# and resetting only at column 0 let domain names leak into this list.
+read_wl_list() {
+  # $1 = key name (geosites|geoips)
+  awk -v key="$1:" '
+    /^[[:space:]]*[a-zA-Z_-]+:/ { mode = ($1 == key) ? "in" : ""; next }
+    mode=="in" && /^[[:space:]]*-[[:space:]]/ {
+      sub(/^[[:space:]]*-[[:space:]]*/, "")
+      sub(/[[:space:]]*#.*/, "")
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+      gsub(/"/, "")
+      if ($0 != "") print $0
+    }
+  ' "$GATEWAY_YAML"
+}
 
-for tag in "${WL_TAGS[@]:-}"; do
+WL_GEOSITES=()
+while IFS= read -r tag; do
+  [ -n "$tag" ] && WL_GEOSITES+=("$tag")
+done < <(read_wl_list geosites)
+
+WL_GEOIPS=()
+while IFS= read -r tag; do
+  [ -n "$tag" ] && WL_GEOIPS+=("$tag")
+done < <(read_wl_list geoips)
+
+RULE_META="https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo"
+
+for tag in "${WL_GEOSITES[@]:-}"; do
+  [ -n "$tag" ] || continue
   case "$tag" in
-    geosite-*) stem="${tag#geosite-}"
-               RULESET_ENTRIES+=("${tag}.mrs|https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/${stem}.mrs") ;;
-    geoip-*)   stem="${tag#geoip-}"
-               RULESET_ENTRIES+=("${tag}.mrs|https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/${stem}.mrs") ;;
-    *)         log "  skip unknown tag prefix: $tag" ;;
+    geosite-*) stem="${tag#geosite-}"; save="${tag}.mrs" ;;
+    geoip-*)   stem="${tag#geoip-}";   save="${tag}.mrs" ;;
+    *)         stem="$tag";            save="${tag}.mrs" ;;
   esac
+  RULESET_ENTRIES+=("${save}|${RULE_META}/geosite/${stem}.mrs")
+done
+
+for tag in "${WL_GEOIPS[@]:-}"; do
+  [ -n "$tag" ] || continue
+  case "$tag" in
+    geoip-*)   stem="${tag#geoip-}";   save="${tag}.mrs" ;;
+    geosite-*) stem="${tag#geosite-}"; save="${tag}.mrs" ;;
+    *)         stem="$tag";            save="${tag}.mrs" ;;
+  esac
+  RULESET_ENTRIES+=("${save}|${RULE_META}/geoip/${stem}.mrs")
 done
 
 # Tags from gateway.yaml pools[].rule_sets — pools need their .mrs files

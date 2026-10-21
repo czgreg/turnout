@@ -63,18 +63,29 @@ precheck() {
     fail "gateway.yaml not found in $SCRIPT_DIR — it is required for preflight"
   fi
 
-  # ── The bypass role's two interfaces ────────────────────────────────────
+  # ── Ingress / egress interfaces ─────────────────────────────────────────
   #
   # ingress_iface carries traffic the firewall's PBR diverts to us, and is
   # the only interface whose packets are TPROXY-steered into mihomo.
-  # egress_iface reaches the airport nodes and must NOT be the return path.
+  # egress_iface is what mihomo binds when it dials the airport nodes.
+  #
+  # They ARE allowed to be the same NIC. That layout is safe because TPROXY
+  # captures only packets that ARRIVE on the interface from client_subnet
+  # and are not addressed to this host (see the --dst-type LOCAL return in
+  # iproute.sh), while mihomo's own dials leave via OUTPUT and never traverse
+  # PREROUTING at all. What a second NIC buys is separation of management /
+  # egress from the diverted path, not correctness.
   ip link show "$ingress_iface" >/dev/null 2>&1 \
     || fail "ingress_iface=$ingress_iface does not exist"
   ip link show "$egress_iface" >/dev/null 2>&1 \
     || fail "egress_iface=$egress_iface does not exist"
-  [ "$ingress_iface" != "$egress_iface" ] \
-    || fail "ingress_iface and egress_iface are both $ingress_iface — the bypass role needs two"
-  log "preflight: ingress_iface=$ingress_iface egress_iface=$egress_iface"
+  if [ "$ingress_iface" = "$egress_iface" ]; then
+    log "preflight: single-NIC layout — ingress and egress are both $ingress_iface"
+    log "preflight:   proxied dials and management traffic share the link; confirm the"
+    log "preflight:   default route still points at the firewall (return path, 方案 B)"
+  else
+    log "preflight: ingress_iface=$ingress_iface egress_iface=$egress_iface"
+  fi
 
   # ingress_ip must already be configured on ingress_iface. Unlike upstream
   # (where the tunnel interface was created by the VPN agent and its address

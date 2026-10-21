@@ -182,11 +182,15 @@ else
 fi
 
 if [ -n "$EG_IF" ] && [ "$EG_IF" = "$IN_IF" ]; then
-  bad "egress_iface 与 ingress_iface 相同（$IN_IF）—— 旁挂角色需要两条独立路径"
+  # Single-NIC is a supported layout: only packets that arrive on the
+  # ingress interface from client_subnet and are NOT addressed to this host
+  # are proxied, and mihomo's own dials leave via OUTPUT. Said differently,
+  # sharing one NIC costs isolation, not correctness.
+  ok "单网卡布局：ingress = egress = $IN_IF（出站绑定同一网卡）"
+elif [ -n "$EG_IF" ] && ip link show "$EG_IF" >/dev/null 2>&1; then
+  ok "出口口 $EG_IF 存在且不同于引流口"
 else
-  [ -n "$EG_IF" ] && ip link show "$EG_IF" >/dev/null 2>&1 \
-    && ok "出口口 $EG_IF 存在且不同于引流口" \
-    || bad "出口口 ${EG_IF:-<未配置>} 不存在"
+  bad "出口口 ${EG_IF:-<未配置>} 不存在"
 fi
 
 # ── 2. 回程 ─────────────────────────────────────────────────────────────────
@@ -231,7 +235,10 @@ else
   bad "ip rule: fwmark 0x44 → table 101 缺失（流量会被转发出去而不是交给 mihomo）"
 fi
 
-if ip route show table 101 2>/dev/null | grep -q '^local 0.0.0.0/0'; then
+# `ip route` prints 0.0.0.0/0 as `default`, in table 101 as `local default
+# dev lo`. Accept either spelling: the assertion is that a local catch-all
+# exists, not how the kernel chose to render the prefix length.
+if ip route show table 101 2>/dev/null | grep -Eq '^local (default|0\.0\.0\.0/0)'; then
   ok "table 101 有 local 默认路由（TPROXY 本地投递）"
 else
   bad "table 101 缺少 local 0.0.0.0/0 dev lo"
@@ -243,6 +250,15 @@ if iptables -t mangle -S TURNOUT_TPROXY >/dev/null 2>&1; then
     ok "  TPROXY 目标端口 = $TPROXY_PORT"
   else
     bad "  TURNOUT_TPROXY 里没有 --on-port $TPROXY_PORT"
+  fi
+  # Without this the box proxies its own inbound connections: an office
+  # terminal reaching SSH / the DNS listener from client_subnet would be
+  # handed to mihomo instead of the local socket. This is the check that
+  # makes a single-NIC layout safe, so it is asserted explicitly.
+  if iptables -t mangle -S TURNOUT_TPROXY | grep -q -- '--dst-type LOCAL -j RETURN'; then
+    ok "  本机目的地址不代理（--dst-type LOCAL -j RETURN 在位）"
+  else
+    bad "  TURNOUT_TPROXY 缺少 --dst-type LOCAL -j RETURN —— 登录本机的流量会被代理劫持"
   fi
 else
   bad "iptables 链 TURNOUT_TPROXY 不存在（turnout-nft 没起？）"
@@ -433,13 +449,19 @@ else
   ok "渲染配置存在：$CFG"
 
   if [ -n "$EG_IF" ]; then
-    total=$(grep -Ec '^[[:space:]]*- name:' "$CFG" 2>/dev/null || echo 0)
-    bound=$(grep -c "interface-name: $EG_IF" "$CFG" 2>/dev/null || echo 0)
-    if [ "$bound" -gt 0 ] 2>/dev/null; then
-      ok "出口绑定：$bound 个 proxy 绑到 $EG_IF"
-      info "（配置里共 $total 个 name: 条目，含分组与 proxy）"
+    # `proxies: []` means no subscription is configured. That is a real gap
+    # (nothing can be proxied) but it is NOT the bug this check hunts: with
+    # zero proxies there is nothing to bind, and reporting "no proxy binds
+    # <iface>" would send the operator looking at the renderer.
+    if grep -qE '^proxies: \[\]' "$CFG" 2>/dev/null; then
+      skip "配置里没有 proxy（subscriptions 为空）—— 补齐订阅后才能验证出口绑定"
     else
-      bad "没有任何 proxy 绑定 interface-name: $EG_IF —— 出墙流量会跟默认路由进防火墙"
+      bound=$(grep -c "interface-name: $EG_IF" "$CFG" 2>/dev/null || echo 0)
+      if [ "$bound" -gt 0 ] 2>/dev/null; then
+        ok "出口绑定：$bound 个 proxy 绑到 $EG_IF"
+      else
+        bad "没有任何 proxy 绑定 interface-name: $EG_IF —— 出墙流量会跟默认路由进防火墙"
+      fi
     fi
   fi
 

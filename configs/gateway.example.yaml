@@ -86,76 +86,80 @@ data_plane:
   # 方案 B 下同样需要：被选中翻墙的那部分流量仍由 TPROXY 送进 mihomo。
   tproxy_port: 7893
 
-# ─────────────────────────────────────────────────────────────
-# 分流
-# ─────────────────────────────────────────────────────────────
-route:
-  # [不变] whitelist —— 只有白名单命中才翻墙，其余一律直连（交回防火墙）。
-  # 这个语义正好满足旁挂需求：规则最后一行 MATCH,DIRECT 就是兜底回程。
-  mode: "whitelist"
-
-  whitelist:
-    # [不变] 域类白名单（geosite 标签）。命中后按 per-terminal 分配到出口。
-    geosites:
-      - "openai"
-      - "anthropic"
-      - "github"
-      - "google-gemini"
-    # [不变] 直接列域名后缀。
-    domain_suffix:
-      - "claude.ai"
-      # ... 按需补
-    # [不变] IP 类白名单 —— 硬编码 IP 的应用（Telegram MTProto 等）。
-    # 走 no-resolve，**不依赖 DNS**，因此不受 DoH/嗅探失效影响。
-    # 方案 B 下这些 CIDR 会被静态灌进 nft 集合，同样不依赖 DNS。
-    geoips: []
-    ip_cidr: []
-      # - "91.108.56.0/22"   # Telegram
-
-# ─────────────────────────────────────────────────────────────
-# DNS —— 旁挂场景下角色变了（见 README §3）
-# ─────────────────────────────────────────────────────────────
-dns:
-  # [改] 监听地址由 node.ingress_ip 决定（上游绑 tun0_gateway_ip）。
-  # 防火墙上把办公网段的 :53 引流到本机。
-  listen: ""            # 留空 = 自动用 node.ingress_ip + ":53"
-
-  # [不变] redir-host：不用 fake-ip。办公网里 NAS/打印机/监控/内网业务系统
-  # 大量靠纯 IP 或内网域名直连，fake-ip 的 filter 会变成无底洞。
-  # 上游 2026-07-06 从 fake-ip 切回 redir-host，血泪在此。
-  enhanced_mode: "redir-host"
-
-  # [不变] 国内外 DoH 上游。
-  cn_doh:    ["https://doh.pub/dns-query"]
-  proxy_doh: ["tls://1.1.1.1:853"]
-  bootstrap_resolver: "udp://119.29.29.29"
-
-  # [改] 上游的内网后缀 → 办公网内网后缀。这些域走 CN DoH 解析，避免
-  # 默认的 proxyDoH（海外）拿不到内网记录。
-  #
-  # 注意：字段名沿用了上游的 fake_ip_skip_suffixes，但**语义与 fake-ip 无关** ——
-  # redir-host 模式下没有 fake-ip 可跳过（见上方 enhanced_mode 注释）。
-  # 它当前的唯一作用是喂给 nameserver-policy，让这些内网后缀走 CN DoH。
-  # 上游保留了历史命名，本项目同样保留以避免无谓的 schema 变动。
-  fake_ip_skip_suffixes:
-    - "corp.example.com"
-    - "internal.example.com"
+  # ─────────────────────────────────────────────────────────────
+  # 分流
+  # ─────────────────────────────────────────────────────────────
+  route:
+    # [不变] whitelist —— 只有白名单命中才翻墙，其余一律直连（交回防火墙）。
+    # 这个语义正好满足旁挂需求：规则最后一行 MATCH,DIRECT 就是兜底回程。
+    mode: "whitelist"
+  
+    whitelist:
+      # [不变] 域类白名单（geosite 标签）。命中后按 per-terminal 分配到出口。
+      geosites:
+        - "openai"
+        - "anthropic"
+        - "github"
+        - "google-gemini"
+      # [不变] 直接列域名后缀。
+      domain_suffix:
+        - "claude.ai"
+        # ... 按需补
+      # [不变] IP 类白名单 —— 硬编码 IP 的应用（Telegram MTProto 等）。
+      # 走 no-resolve，**不依赖 DNS**，因此不受 DoH/嗅探失效影响。
+      # 方案 B 下这些 CIDR 会被静态灌进 nft 集合，同样不依赖 DNS。
+      geoips: []
+      ip_cidr: []
+        # - "91.108.56.0/22"   # Telegram
+  
+  # ─────────────────────────────────────────────────────────────
+  # DNS —— 旁挂场景下角色变了（见 README §3）
+  # ─────────────────────────────────────────────────────────────
+  dns:
+    # [改] 监听地址由 node.ingress_ip 决定（上游绑 tun0_gateway_ip）。
+    # 防火墙上把办公网段的 :53 引流到本机。
+    listen: ""            # 留空 = 自动用 node.ingress_ip + ":53"
+  
+    # redir-host 是代码里写死的（internal/mihomo/dns.go），**没有开关** ——
+    # 这里曾经写了一行 enhanced_mode，但 schema 里不存在该字段，一直被静默
+    # 忽略。留着只会让人以为能改。办公网里 NAS/打印机/监控/内网业务系统
+    # 大量靠纯 IP 或内网域名直连，fake-ip 的 filter 会变成无底洞；上游
+    # 2026-07-06 从 fake-ip 切回 redir-host，血泪在此。
+  
+    # [不变] 国内外 DoH 上游。
+    cn_doh:    ["https://doh.pub/dns-query"]
+    proxy_doh: ["tls://1.1.1.1:853"]
+    bootstrap_resolver: "udp://119.29.29.29"
+  
+    # [改] 上游的内网后缀 → 办公网内网后缀。这些域走 CN DoH 解析，避免
+    # 默认的 proxyDoH（海外）拿不到内网记录。
+    #
+    # 注意：字段名沿用了上游的 fake_ip_skip_suffixes，但**语义与 fake-ip 无关** ——
+    # redir-host 模式下没有 fake-ip 可跳过（见上方 enhanced_mode 注释）。
+    # 它当前的唯一作用是喂给 nameserver-policy，让这些内网后缀走 CN DoH。
+    # 上游保留了历史命名，本项目同样保留以避免无谓的 schema 变动。
+    fake_ip_skip_suffixes:
+      - "corp.example.com"
+      - "internal.example.com"
 
 # ─────────────────────────────────────────────────────────────
 # 出口池 —— [不变] 完全沿用上游
 # ─────────────────────────────────────────────────────────────
+# node_pattern 属于 data_plane.url_test（它决定哪些机场节点进 us-pool），
+# 不是 node_qualify 的字段 —— 见文件上方 data_plane 块。
 node_qualify:
   # 只收美国节点，配合机场订阅。
-  node_pattern: "美国|🇺🇸|\\bUS"
+  # （node_pattern 在 data_plane.url_test 下；node_qualify 只管评分阈值。）
+  enabled: true
 
 pools:
   # [不变] us-pool 等定义、成员、rule_sets 归属，与上游一致。
   # 详见上游 docs/design-eligibility-set-selection.md。
   []
 
-per_terminal:
+load_balance:
   # [不变] 一个终端一个出口 IP，避免 Cloudflare / OpenAI 风控。
-  enabled: true
+  per_terminal: true
 
 # ─────────────────────────────────────────────────────────────
 # 自检与降级 —— [新] 本项目的核心增量
@@ -237,5 +241,6 @@ watchdog:
 # 容量基线 —— [不变]
 # ─────────────────────────────────────────────────────────────
 capacity:
-  stable_users: 50
-  degraded_users: 150
+  # 2026-06-07 压测基线（见 memory: stress-baseline-2026-06-07）
+  sustained_max_users: 50
+  degraded_max_users: 150
