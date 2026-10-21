@@ -30,7 +30,7 @@ func TestUIServesAssets(t *testing.T) {
 		wantType string
 		wantBody string
 	}{
-		{"/ui/", "text/html", "Interchange"},
+		{"/ui/", "text/html", "Turnout"},
 		{"/ui/assets/app.css", "text/css", "arco-"},
 		{"/ui/assets/app.js", "javascript", "/api/subscriptions"},
 		{"/ui/favicon.svg", "image/svg+xml", "<svg"},

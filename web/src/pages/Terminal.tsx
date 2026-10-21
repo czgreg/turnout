@@ -45,7 +45,7 @@ export default function Terminal({ snap }: { snap: Snapshot }) {
               输入终端 IP，直接看到它的 primary / secondary 出口及其健康数据，判断问题出在机场端还是终端端。
               {subnet && (
                 <>
-                  {' '}本节点客户端网段 <span className="mono">{subnet}</span>。
+                  {' '}本机办公网段（client_subnet）<span className="mono">{subnet}</span>。
                 </>
               )}
             </p>

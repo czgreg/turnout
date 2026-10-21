@@ -1,4 +1,4 @@
-# turnout-gateway · 旁挂网关 —— 示例配置
+# Turnout · 道岔网关 —— 示例配置
 #
 # 复制为 gateway.yaml 并编辑。部署到旁挂机的 /etc/turnout/gateway.yaml。
 # 本文件相对上游 leap-gateway 的 schema 差异，逐项标注了 [新] / [改] / [不变]。

@@ -110,7 +110,7 @@ function handler(): Connect.NextHandleFunction {
 
 export function mockApi(): Plugin {
   return {
-    name: 'interchange-mock-api',
+    name: 'turnout-mock-api',
     configureServer(server) {
       server.middlewares.use(handler());
     },
