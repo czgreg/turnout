@@ -315,3 +315,58 @@ func TestFilterOutbounds(t *testing.T) {
 		}
 	}
 }
+
+// TestFilterOutbounds_ClientGatingHints covers the hutao shape observed in
+// production 2026-10-21: the provider answered our ClashforWindows UA with
+// four entries named after the client it wanted, and the old filter counted
+// them as working nodes. That made NodeCount look healthy and suppressed the
+// zero_nodes retry that would have fetched the 39 real nodes.
+func TestFilterOutbounds_ClientGatingHints(t *testing.T) {
+	in := []Outbound{
+		{"type": "vless", "tag": "Clash用户请改用FlClash"},
+		{"type": "vless", "tag": "Shadowrocket 请升级到 2.2.65 或以上版本"},
+		{"type": "anytls", "tag": "当前 Clash 客户端内核不支持 AnyTLS"},
+		{"type": "anytls", "tag": "当前客户端或内核不支持 AnyTLS 节点"},
+		{"type": "hysteria2", "tag": "美国HB.2x"},
+		{"type": "anytls", "tag": "🇺🇸 美国 AnyTLS 01"},
+	}
+	got, gated := filterOutboundsStats(in)
+	if gated != 4 {
+		t.Errorf("gated = %d, want 4", gated)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 kept, got %d: %#v", len(got), got)
+	}
+	// A real node whose name merely mentions AnyTLS must survive.
+	if got[1].Tag() != "🇺🇸 美国 AnyTLS 01" {
+		t.Errorf("real AnyTLS node dropped: %q", got[1].Tag())
+	}
+}
+
+// TestUACandidates guards the fallback chain: it must include the modern
+// UAs that unlock capability gating, must never retry the current UA, and
+// must stay empty for a vendor-specific UA it does not recognise.
+func TestUACandidates(t *testing.T) {
+	t.Parallel()
+	got := uaCandidates("ClashforWindows/0.20.39")
+	if len(got) == 0 {
+		t.Fatal("gatedUA must have fallbacks")
+	}
+	for _, ua := range got {
+		if ua == "ClashforWindows/0.20.39" {
+			t.Errorf("candidate chain re-tries the current UA")
+		}
+	}
+	found := false
+	for _, ua := range got {
+		if ua == "mihomo/1.19.26" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("mihomo missing from %v", got)
+	}
+	if got := uaCandidates("Mozilla/5.0"); got != nil {
+		t.Errorf("unknown vendor UA should not be swapped, got %v", got)
+	}
+}

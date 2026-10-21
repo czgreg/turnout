@@ -262,10 +262,31 @@ override 不 sticky：NodeScorer 只管 us-pool 成员，不回写 selector 指�
     "format": "auto",
     "user_agent": "sing-box/1.10.7",
     "nodes_count": 6,
-    "last_refresh": "2026-06-06T12:00:00Z"
+    "last_refresh": "2026-06-06T12:00:00Z",
+    "health": "ok",
+    "user_info": {
+      "upload": 55308050547,
+      "download": 483283111900,
+      "total": 536870912000,
+      "expire": 1795515130
+    }
   }
 ]
 ```
+
+字段说明：
+
+| 字段 | 含义 |
+|---|---|
+| `health` | `ok` / `fetch_error` / `parse_error` / `zero_nodes` |
+| `health_err` | 非 ok 时的失败详情（仅错误时出现） |
+| `user_info` | 来自上游 `Subscription-Userinfo` 响应头；机场未下发则该字段缺失 |
+| `user_info.upload/download/total` | 字节数；`total=0` 表示不限量 |
+| `user_info.expire` | Unix 秒；`0` 表示无到期时间，过去的时间表示已到期 |
+| `gated_count` | 被过滤掉的客户端提示型伪节点数（如「请改用 FlClash」「内核不支持 AnyTLS」）。与 `health=zero_nodes` 同时出现表示机场拒绝了我们当前的 UA |
+
+`user_info` 和 `gated_count` 只反映最近一次 refresh 的结果（`POST /api/subscribe/refresh`
+或周期刷新），不会单独发起请求。
 
 ## POST /api/subscriptions
 

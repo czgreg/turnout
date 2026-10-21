@@ -15,13 +15,14 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconPlus, IconSync } from '@arco-design/web-react/icon';
 import * as api from '../api';
 import { ApiError } from '../api';
 import type { Snapshot } from '../snapshot';
-import type { Subscription } from '../types';
-import { ago, fmtSeconds, fmtTime } from '../format';
+import type { Subscription, UserInfo } from '../types';
+import { ago, fmtSeconds, fmtTime, fmtBytes, fmtExpire } from '../format';
 
 // Common values from docs/api.md "user_agent 常用值".
 const UA_OPTIONS = ['mihomo/1.18.4', 'clash.meta', 'ClashforWindows/0.20.39', 'sing-box/1.10.7', 'clash-verge/1.7.7'];
@@ -30,6 +31,32 @@ const FORMATS = ['auto', 'clash', 'singbox', 'uri', 'sip008'];
 // Shown in every confirm: an operator who thinks the page hung and closes it
 // mid-refresh is how 2026-09-24 left new config on disk without a reload.
 const SLOW_NOTE = '拉取可能需要 30 秒以上（每个订阅最多两次 fetch），期间请勿关闭或刷新页面。';
+
+// Renders quota + expiry from Subscription-Userinfo header data.
+function UserInfoCell({ info }: { info?: UserInfo }) {
+  if (!info) return <span className="dim">—</span>;
+  const used = (info.upload ?? 0) + (info.download ?? 0);
+  const total = info.total ?? 0;
+  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : null;
+  const { text: expireText, expired } = fmtExpire(info.expire);
+  return (
+    <div style={{ lineHeight: 1.5 }}>
+      {total > 0 && (
+        <div>
+          <span className={'num' + (pct != null && pct >= 90 ? ' v-bad' : pct != null && pct >= 70 ? ' v-warn' : '')}>
+            {fmtBytes(used)}
+          </span>
+          <span className="dim"> / {fmtBytes(total)}</span>
+          {pct != null && <span className="dim"> ({pct}%)</span>}
+        </div>
+      )}
+      {info.expire ? (
+        <div className={'dim' + (expired ? ' v-bad' : '')}>{expireText}</div>
+      ) : null}
+      {!total && !info.expire && <span className="dim">无配额信息</span>}
+    </div>
+  );
+}
 
 interface FormValues {
   name: string;
@@ -146,6 +173,45 @@ export default function Subscriptions({ snap, reload }: { snap: Snapshot; reload
               width: 90,
               align: 'right',
               render: (v: number) => <span className={'num ' + (!v ? 'v-bad' : '')}>{v ?? 0}</span>,
+            },
+            {
+              title: '流量 / 到期',
+              dataIndex: 'user_info',
+              width: 180,
+              render: (_: unknown, s: Subscription) => <UserInfoCell info={s.user_info} />,
+            },
+            {
+              title: '状态',
+              dataIndex: 'health',
+              width: 110,
+              render: (_: unknown, s: Subscription) => {
+                if (!s.health) return <span className="dim">—</span>;
+                if (s.health === 'ok') {
+                  // Providers append gating hints next to real nodes; show
+                  // the count so an operator knows some were dropped.
+                  if (s.gated_count) {
+                    return (
+                      <Tooltip content={`机场下发了 ${s.gated_count} 条客户端提示（如「请改用 FlClash」），已过滤；其余节点正常`}>
+                        <Badge status="success" text={`正常 (过滤 ${s.gated_count})`} />
+                      </Tooltip>
+                    );
+                  }
+                  return <Badge status="success" text="正常" />;
+                }
+                if (s.health === 'zero_nodes') {
+                  const gated = s.gated_count ? `机场下发了 ${s.gated_count} 条客户端提示且没有真实节点，已自动尝试其他 UA` : '拉取成功但没有节点，可能是 UA 问题或订阅已清空';
+                  return (
+                    <Tooltip content={gated}>
+                      <Badge status="warning" text={s.gated_count ? '客户端被拒' : '空节点'} />
+                    </Tooltip>
+                  );
+                }
+                return (
+                  <Tooltip content={s.health_err || s.health}>
+                    <Badge status="error" text={s.health === 'fetch_error' ? '拉取失败' : '解析失败'} />
+                  </Tooltip>
+                );
+              },
             },
             {
               title: '启用',

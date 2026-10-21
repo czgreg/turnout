@@ -176,6 +176,13 @@ export interface NodesHealth {
   nodes: NodeHealth[];
 }
 
+export interface UserInfo {
+  upload: number;   // bytes used upstream
+  download: number; // bytes used downstream
+  total: number;    // quota ceiling in bytes (0 = unlimited)
+  expire: number;   // unix seconds (0 = no expiry)
+}
+
 export interface Subscription {
   name: string;
   url: string; // masked: token=abcd***ef01 — never write this back
@@ -184,6 +191,12 @@ export interface Subscription {
   user_agent?: string;
   nodes_count?: number;
   last_refresh?: string;
+  health?: string;       // "ok" | "fetch_error" | "parse_error" | "zero_nodes"
+  health_err?: string;
+  user_info?: UserInfo;
+  // Client-gating pseudo-nodes the provider sent ("请改用 FlClash" etc).
+  // Non-zero with health=zero_nodes means it refused our client entirely.
+  gated_count?: number;
 }
 
 export interface RefreshInterval {

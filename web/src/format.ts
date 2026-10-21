@@ -63,3 +63,31 @@ export function splitNode(tag: string): { sub: string; node: string } {
   const i = tag.indexOf('/');
   return i < 0 ? { sub: '', node: tag } : { sub: tag.slice(0, i), node: tag.slice(i + 1) };
 }
+
+/** Format bytes into a human-readable string: 1.23 GB, 456 MB, etc. */
+export function fmtBytes(n?: number | null): string {
+  if (n == null || n === 0) return '—';
+  if (n >= 1e12) return (n / 1e12).toFixed(2) + ' TB';
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + ' GB';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' MB';
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + ' KB';
+  return n + ' B';
+}
+
+/**
+ * Format a Unix timestamp (seconds) as a localized date string.
+ * Returns "—" for 0 or null, "已到期" if the timestamp is in the past.
+ */
+export function fmtExpire(ts?: number | null): { text: string; expired: boolean } {
+  if (!ts) return { text: '—', expired: false };
+  const d = new Date(ts * 1000);
+  const now = Date.now();
+  if (d.getTime() < now) return { text: '已到期', expired: true };
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const text =
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  // Show "剩 N 天" for the next 30 days
+  const daysLeft = Math.ceil((d.getTime() - now) / 86400000);
+  const suffix = daysLeft <= 30 ? ` (剩 ${daysLeft} 天)` : '';
+  return { text: text + suffix, expired: false };
+}

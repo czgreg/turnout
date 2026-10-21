@@ -23,12 +23,12 @@ func TestFetcher_ProxyFallback(t *testing.T) {
 	// 127.0.0.1:1 is reserved (tcpmux) and almost certainly closed —
 	// http.Client through that proxy will fail with connection refused.
 	f := newFetcherWithProxy(2*time.Second, "test", "http://127.0.0.1:1")
-	body, err := f.GetWithUA(context.Background(), srv.URL, "")
+	fr, err := f.GetWithUA(context.Background(), srv.URL, "")
 	if err != nil {
 		t.Fatalf("expected fallback to direct, got err: %v", err)
 	}
-	if string(body) != "OK-BODY" {
-		t.Errorf("body = %q, want OK-BODY", body)
+	if string(fr.Body) != "OK-BODY" {
+		t.Errorf("body = %q, want OK-BODY", fr.Body)
 	}
 }
 

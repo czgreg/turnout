@@ -88,6 +88,17 @@ type SubscriptionHealth struct {
 	NodeCount int
 	// Err is the failure detail, empty when Outcome == "ok".
 	Err string
+	// UserInfo carries the traffic-quota and expiry metadata the airport
+	// returned in the Subscription-Userinfo response header, if present.
+	// Nil when the header was absent or unparseable (including on errors).
+	UserInfo *UserInfo
+	// GatedCount is how many client-gating pseudo-nodes the filter dropped
+	// from this round's response ("please use FlClash", "your core does not
+	// support AnyTLS"). Non-zero with Outcome == "ok" is normal — providers
+	// append the hint alongside real nodes. Non-zero with Outcome ==
+	// "zero_nodes" means the provider refused to serve our client at all,
+	// which retrying with a newer UA can fix.
+	GatedCount int
 }
 
 // LastHealth returns the per-subscription outcome of the most recent Refresh.
@@ -122,11 +133,12 @@ func (m *Manager) Refresh(ctx context.Context) ([]SubscriptionResult, error) {
 		if !e.Enabled {
 			continue
 		}
-		body, fetchErr := m.fetcher.GetWithUA(ctx, e.URL, e.UserAgent)
+		fr, fetchErr := m.fetcher.GetWithUA(ctx, e.URL, e.UserAgent)
 		var parsed SubscriptionResult
 		var parseErr error
+		var gated int
 		if fetchErr == nil {
-			parsed, parseErr = ParseBytes(e.Name, e.Format, body)
+			parsed, gated, parseErr = parseBytesStats(e.Name, e.Format, fr.Body)
 		}
 		// Auto-fallback decision tree.
 		retry := false
@@ -138,27 +150,51 @@ func (m *Manager) Refresh(ctx context.Context) ([]SubscriptionResult, error) {
 				retry = true
 			}
 		}
+		var userInfo *UserInfo
+		if fr != nil {
+			userInfo = fr.UserInfo
+		}
 		if retry {
 			usedUA := e.UserAgent
 			if usedUA == "" {
 				usedUA = m.globalUA
 			}
-			altUA := alternateUA(usedUA)
-			if altUA != "" && altUA != usedUA {
-				body2, err2 := m.fetcher.GetWithUA(ctx, e.URL, altUA)
-				if err2 == nil {
-					if r2, perr := ParseBytes(e.Name, e.Format, body2); perr == nil && len(r2.Outbounds) > 0 {
-						slog.Info("subscribe: discovered ua override",
-							"name", e.Name, "ua", altUA, "primary_ua", usedUA,
-							"primary_outcome", primaryOutcome(fetchErr, parseErr, len(parsed.Outbounds)))
-						parsed = r2
-						parseErr = nil
-						fetchErr = nil
-						if m.onUADiscovered != nil {
-							m.onUADiscovered(e.Name, altUA)
-						}
-					}
+			// Walk the whole candidate chain, not just one alternate. Some
+			// providers gate on client capability rather than family: hutao
+			// (2026-10-21) answered ClashforWindows with four "please use
+			// FlClash / your core does not support AnyTLS" pseudo-nodes and
+			// served 39 real nodes to mihomo, sing-box and clash-verge alike.
+			// A single Clash→sing-box hop happened to be enough there, but a
+			// chain means a provider that rejects sing-box still gets a
+			// third try instead of being written off as dead.
+			for _, altUA := range uaCandidates(usedUA) {
+				if altUA == usedUA {
+					continue
 				}
+				fr2, err2 := m.fetcher.GetWithUA(ctx, e.URL, altUA)
+				if err2 != nil {
+					continue
+				}
+				r2, gated2, perr := parseBytesStats(e.Name, e.Format, fr2.Body)
+				if perr != nil || len(r2.Outbounds) == 0 {
+					continue
+				}
+				slog.Info("subscribe: discovered ua override",
+					"name", e.Name, "ua", altUA, "primary_ua", usedUA,
+					"primary_outcome", primaryOutcome(fetchErr, parseErr, len(parsed.Outbounds)),
+					"primary_gated", gated)
+				parsed = r2
+				gated = gated2
+				parseErr = nil
+				fetchErr = nil
+				// Prefer userinfo from the successful retry fetch.
+				if fr2.UserInfo != nil {
+					userInfo = fr2.UserInfo
+				}
+				if m.onUADiscovered != nil {
+					m.onUADiscovered(e.Name, altUA)
+				}
+				break
 			}
 		}
 		if fetchErr != nil {
@@ -174,7 +210,7 @@ func (m *Manager) Refresh(ctx context.Context) ([]SubscriptionResult, error) {
 				firstErr = parseErr
 			}
 			health = append(health, SubscriptionHealth{
-				Name: e.Name, Outcome: "parse_error", Err: parseErr.Error()})
+				Name: e.Name, Outcome: "parse_error", Err: parseErr.Error(), UserInfo: userInfo})
 			continue
 		}
 		outcome := "ok"
@@ -186,7 +222,7 @@ func (m *Manager) Refresh(ctx context.Context) ([]SubscriptionResult, error) {
 			outcome = "zero_nodes"
 		}
 		health = append(health, SubscriptionHealth{
-			Name: e.Name, Outcome: outcome, NodeCount: len(parsed.Outbounds)})
+			Name: e.Name, Outcome: outcome, NodeCount: len(parsed.Outbounds), UserInfo: userInfo, GatedCount: gated})
 		results = append(results, parsed)
 	}
 	m.mu.Lock()
@@ -213,6 +249,49 @@ func alternateUA(ua string) string {
 		return "sing-box/1.10.7"
 	}
 	return ""
+}
+
+// gatedUA is the conservative Clash-family UA. Several providers treat it as
+// an old client and answer with capability warnings instead of real nodes;
+// it still leads the chain because it is the widest-compatibility choice and
+// the first hop costs one request.
+const gatedUA = "ClashforWindows/0.20.39"
+
+// modernUACandidates are tried in order after the current UA fails. Each
+// entry claims a newer core than the previous, which is what unlocks
+// capability gating (AnyTLS and friends). Ordered so the cheapest/most
+// likely answer comes first: hutao served real nodes to every one of these,
+// but a provider that only recognises one brand still gets tried in a
+// predictable order.
+var modernUACandidates = []string{
+	"mihomo/1.19.26",
+	"clash-verge/v2.0.0",
+	"sing-box/1.10.7",
+}
+
+// uaCandidates returns the UAs to try after current failed, excluding
+// current itself. An explicit operator-set UA is not in the chain — Refresh
+// only calls this when the entry has no override.
+func uaCandidates(current string) []string {
+	lc := strings.ToLower(current)
+	out := make([]string, 0, len(modernUACandidates)+1)
+	for _, ua := range modernUACandidates {
+		if !strings.EqualFold(ua, current) {
+			out = append(out, ua)
+		}
+	}
+	// Legacy compat: an unknown-family UA got no fallback before (see
+	// alternateUA's contract) — keep that behaviour for non-Clash inputs so
+	// a custom vendor UA isn't silently swapped for a Clash one.
+	if lc != "" &&
+		!strings.Contains(lc, "clash") &&
+		!strings.Contains(lc, "stash") &&
+		!strings.Contains(lc, "mihomo") &&
+		!strings.Contains(lc, "sing-box") &&
+		!strings.HasPrefix(lc, "turnout-gateway") {
+		return nil
+	}
+	return out
 }
 
 // primaryOutcome turns the (fetchErr, parseErr, nodeCount) of the first
@@ -256,11 +335,20 @@ func (m *Manager) SetEntries(entries []config.SubscriptionEntry) {
 // caller already has in memory — useful for offline replay (selftest), unit
 // tests, and any path that doesn't go through the HTTP fetcher.
 func ParseBytes(name, format string, body []byte) (SubscriptionResult, error) {
+	res, _, err := parseBytesStats(name, format, body)
+	return res, err
+}
+
+// parseBytesStats is ParseBytes plus the number of client-gating pseudo-nodes
+// dropped by the filter. Refresh uses the count to report WHY a subscription
+// yielded nothing, so the operator can tell an empty subscription from one
+// that is refusing our client.
+func parseBytesStats(name, format string, body []byte) (SubscriptionResult, int, error) {
 	out, fmtName, err := parseAuto(body, format)
 	if err != nil {
-		return SubscriptionResult{}, fmt.Errorf("parse %s: %w", name, err)
+		return SubscriptionResult{}, 0, fmt.Errorf("parse %s: %w", name, err)
 	}
-	out = filterOutbounds(out)
+	out, gated := filterOutboundsStats(out)
 	for i := range out {
 		tag := out[i].Tag()
 		if tag == "" {
@@ -268,7 +356,7 @@ func ParseBytes(name, format string, body []byte) (SubscriptionResult, error) {
 		}
 		out[i]["tag"] = name + "/" + tag
 	}
-	return SubscriptionResult{Name: name, Format: fmtName, Outbounds: out}, nil
+	return SubscriptionResult{Name: name, Format: fmtName, Outbounds: out}, gated, nil
 }
 
 // AllOutbounds returns a flat list of all outbounds from the last refresh.

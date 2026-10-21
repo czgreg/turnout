@@ -9,16 +9,24 @@ import (
 	"strings"
 
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 type subscriptionDTO struct {
-	Name        string `json:"name"`
-	URL         string `json:"url"` // masked in GET responses
-	Enabled     bool   `json:"enabled"`
-	Format      string `json:"format,omitempty"`
-	UserAgent   string `json:"user_agent,omitempty"`
-	NodesCount  int    `json:"nodes_count,omitempty"`
-	LastRefresh string `json:"last_refresh,omitempty"`
+	Name        string               `json:"name"`
+	URL         string               `json:"url"` // masked in GET responses
+	Enabled     bool                 `json:"enabled"`
+	Format      string               `json:"format,omitempty"`
+	UserAgent   string               `json:"user_agent,omitempty"`
+	NodesCount  int                  `json:"nodes_count,omitempty"`
+	LastRefresh string               `json:"last_refresh,omitempty"`
+	UserInfo    *subscribe.UserInfo  `json:"user_info,omitempty"`
+	Health      string               `json:"health,omitempty"` // "ok" | "fetch_error" | "parse_error" | "zero_nodes"
+	HealthErr   string               `json:"health_err,omitempty"`
+	// GatedCount is how many client-gating pseudo-nodes the provider sent
+	// ("please use FlClash", "your core does not support AnyTLS"). Non-zero
+	// with health=zero_nodes means the provider refused our client.
+	GatedCount int `json:"gated_count,omitempty"`
 }
 
 func (s *Server) handleSubscriptionsGet(w http.ResponseWriter, _ *http.Request) {
@@ -26,6 +34,22 @@ func (s *Server) handleSubscriptionsGet(w http.ResponseWriter, _ *http.Request) 
 	nodesByName := make(map[string]int, len(results))
 	for _, r := range results {
 		nodesByName[r.Name] = len(r.Outbounds)
+	}
+	// Index health by name so we can enrich each DTO in O(1).
+	type healthEntry struct {
+		outcome  string
+		err      string
+		userInfo *subscribe.UserInfo
+		gated    int
+	}
+	healthByName := make(map[string]healthEntry)
+	for _, h := range s.deps.Subscribe.LastHealth() {
+		healthByName[h.Name] = healthEntry{
+			outcome:  h.Outcome,
+			err:      h.Err,
+			userInfo: h.UserInfo,
+			gated:    h.GatedCount,
+		}
 	}
 	out := make([]subscriptionDTO, 0, len(s.deps.Cfg.Subscriptions))
 	for _, e := range s.deps.Cfg.Subscriptions {
@@ -39,6 +63,12 @@ func (s *Server) handleSubscriptionsGet(w http.ResponseWriter, _ *http.Request) 
 		}
 		if !last.IsZero() {
 			dto.LastRefresh = last.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if he, ok := healthByName[e.Name]; ok {
+			dto.Health = he.outcome
+			dto.HealthErr = he.err
+			dto.UserInfo = he.userInfo
+			dto.GatedCount = he.gated
 		}
 		out = append(out, dto)
 	}

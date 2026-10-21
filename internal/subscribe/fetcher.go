@@ -70,8 +70,19 @@ func newFetcherWithProxy(timeout time.Duration, ua, proxyURL string) *fetcher {
 	}
 }
 
+// FetchResult holds both the response body and any metadata headers the
+// upstream returned alongside it.
+type FetchResult struct {
+	Body     []byte
+	UserInfo *UserInfo // nil when the header was absent or unparseable
+}
+
 func (f *fetcher) Get(ctx context.Context, url string) ([]byte, error) {
-	return f.GetWithUA(ctx, url, "")
+	r, err := f.GetWithUA(ctx, url, "")
+	if err != nil {
+		return nil, err
+	}
+	return r.Body, nil
 }
 
 // GetWithUA fetches url using the override UA if non-empty, else the
@@ -82,7 +93,11 @@ func (f *fetcher) Get(ctx context.Context, url string) ([]byte, error) {
 // client; this method only converts non-200 responses to *HTTPError so
 // callers can distinguish "upstream said no" from "transport failure"
 // for retry decisions (see parser.go's 5xx-retry).
-func (f *fetcher) GetWithUA(ctx context.Context, target, ua string) ([]byte, error) {
+//
+// Any Subscription-Userinfo header in the response is parsed and returned
+// in FetchResult.UserInfo; a missing or malformed header yields nil, which
+// callers treat as "info unavailable" rather than an error.
+func (f *fetcher) GetWithUA(ctx context.Context, target, ua string) (*FetchResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
@@ -99,5 +114,12 @@ func (f *fetcher) GetWithUA(ctx context.Context, target, ua string) ([]byte, err
 	if resp.StatusCode != http.StatusOK {
 		return nil, &HTTPError{Status: resp.StatusCode, URL: target}
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, err
+	}
+	return &FetchResult{
+		Body:     body,
+		UserInfo: parseUserInfoHeader(resp.Header.Get("Subscription-Userinfo")),
+	}, nil
 }
