@@ -78,7 +78,14 @@ EXIT=$(grep '^INSTALL_EXIT=' "/tmp/install-${HOST}-${TS}.log" | tail -1 | cut -d
 
 # 4. Verify post-install. SSH may briefly drop during gateway restart;
 # retry the API curl.
-log "verifying $HOST API (may take a few seconds while services restart)"
+#
+# Verify ON the node, through its loopback. Curling from the deploying
+# machine broke the moment client_subnet covered that machine: iproute.sh
+# denies the whole segment on the API port (by design, so a diverted office
+# terminal cannot reach the control plane), and every redeploy reported
+# "API unreachable" while the service was fine. Loopback is also the only
+# vantage point that works wherever the operator happens to sit.
+log "verifying $HOST API from the node (may take a few seconds while services restart)"
 sleep 6
 # TURNOUT_TOKEN, when exported, authenticates against api.token. Unset → no
 # header, correct for nodes that leave api.token empty.
@@ -87,18 +94,15 @@ sleep 6
 # empty array as an unbound-variable error, not "expands to nothing" — hit
 # in production on 2026-08-12, aborting verification after every install
 # had already succeeded.
-AUTHOPT=""
-[ -n "${TURNOUT_TOKEN:-}" ] && AUTHOPT="Authorization: Bearer $TURNOUT_TOKEN"
+HDR=""
+[ -n "${TURNOUT_TOKEN:-}" ] && HDR="-H \"Authorization: Bearer $TURNOUT_TOKEN\""
+RESP=""
 for i in 1 2 3; do
-  if [ -n "$AUTHOPT" ]; then
-    RESP=$(curl -s --max-time 6 -H "$AUTHOPT" "http://$HOST:18080/api/proxies/active" 2>/dev/null || true)
-  else
-    RESP=$(curl -s --max-time 6 "http://$HOST:18080/api/proxies/active" 2>/dev/null || true)
-  fi
+  RESP=$($SSH "curl -s --max-time 6 $HDR http://127.0.0.1:18080/api/proxies/active" 2>/dev/null || true)
   [ -n "$RESP" ] && break
   sleep 3
 done
-[ -n "$RESP" ] || fail "API on $HOST unreachable after install — check 'journalctl -u turnout-gateway' on the node"
+[ -n "$RESP" ] || fail "API on $HOST unreachable from the node itself — check 'journalctl -u turnout-gateway' on the node"
 
 VER=$(printf '%s' "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['turnout']['gateway_version'])" 2>/dev/null || echo UNKNOWN)
 SVC=$(printf '%s' "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['turnout']['services'])" 2>/dev/null || echo UNKNOWN)
