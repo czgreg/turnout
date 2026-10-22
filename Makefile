@@ -126,15 +126,24 @@ health: check-node  ## GET /api/proxies/active
 	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/proxies/active | python3 -m json.tool
 
 .PHONY: observe
-observe: check-node  ## 分级观测流量路径（引流/拦截/判定/出口/回程），可直接指出卡在哪一层  NODE=ops@<host>
-	$(SSH) 'sudo -n bash -s' < scripts/observe.sh
+# observe.sh runs on the node; its knobs must be exported INSIDE the remote
+# sudo shell — a plain `VAR=x make observe` never crosses ssh. Wrapped in
+# `sudo bash -c` (not `sudo env`) because the deploy sudoers dropin allows
+# /bin/bash but not /usr/bin/env.
+SAMPLE_SECONDS ?= 6
+EXPECT_SRC     ?=
+OBSERVE_REMOTE  = sudo -n bash -c "export SAMPLE_SECONDS=$(SAMPLE_SECONDS) EXPECT_SRC=$(EXPECT_SRC); exec bash -s"
+
+.PHONY: observe
+observe: check-node  ## 分级观测流量路径（引流/拦截/DNS/判定/出口/回程）  NODE=ops@<host> [EXPECT_SRC=<终端IP>] [SAMPLE_SECONDS=6]
+	$(SSH) '$(OBSERVE_REMOTE)' < scripts/observe.sh
 
 .PHONY: observe-loop
 observe-loop: check-node  ## 每 10 秒跑一次 observe，只看结论行（导流测试时开一个窗口盯着）  NODE=ops@<host>
 	@while true; do \
-	  out=$$(SSH=1 $(SSH) 'sudo -n bash -s' < scripts/observe.sh 2>/dev/null); \
+	  out=$$($(SSH) '$(OBSERVE_REMOTE)' < scripts/observe.sh 2>/dev/null); \
 	  printf '\n=== %s ===\n' "$$(date +%H:%M:%S)"; \
-	  printf '%s\n' "$$out" | grep -E '窗口|PASS|FAIL|IDLE|活跃连接|type|pool eligible|回程|默认路由' | sed 's/\x1b\[[0-9;]*m//g'; \
+	  printf '%s\n' "$$out" | grep -E '窗口|细分|PASS|FAIL|IDLE|活跃连接|type|来源|期望源|pool eligible|默认路由' | sed 's/\x1b\[[0-9;]*m//g'; \
 	  sleep 10; \
 	done
 

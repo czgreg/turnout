@@ -56,16 +56,22 @@ fix() { printf '        \033[36m→ %s\033[0m\n' "$*"; }
 # `-x` gives exact numbers; parsing -v text would round KB and hide slow flows.
 
 counters() {
+  # Parse by column, not by text. `iptables -L -v -x` columns are
+  #   pkts bytes target prot opt in out source destination [extra]
+  # and prot is printed NUMERICALLY (6 / 17), so matching on the word
+  # "tcp" never hits the TPROXY tcp rule — tproxy_tcp read 0 from the day
+  # this script shipped and all TCP was misfiled as "other".
   { iptables -t mangle -L PREROUTING -v -n -x 2>/dev/null | awk '
-      /TURNOUT_TPROXY/ {print "jump", $1}
-      /dport 18080/     {print "api_drop", $1}'
+      $3=="TURNOUT_TPROXY" {print "jump", $1}
+      $3=="DROP" && /dpt:18080/ {print "api_drop", $1}'
     iptables -t mangle -L TURNOUT_TPROXY -v -n -x 2>/dev/null | awk '
-      /dst-type LOCAL/ {print "local_return", $1}
-      /TPROXY .*tcp|tcp.*TPROXY/ {print "tproxy_tcp", $1}
-      /TPROXY .*udp|udp.*TPROXY/ {print "tproxy_udp", $1}'
+      $3=="RETURN" && /dst-type LOCAL/ {print "local_return", $1}
+      $3=="RETURN" && $4=="6" && /dpt:53/ {print "dns_tcp_return", $1}
+      $3=="TPROXY" && $4=="6"  {print "tproxy_tcp", $1}
+      $3=="TPROXY" && $4=="17" {print "tproxy_udp", $1}'
     iptables -t nat -L TURNOUT_DNS -v -n -x 2>/dev/null | awk '
-      /DNAT.*udp|udp.*DNAT/ {print "dns_udp", $1}
-      /DNAT.*tcp|tcp.*DNAT/ {print "dns_tcp", $1}'
+      $3=="DNAT" && $4=="17" {print "dns_udp", $1}
+      $3=="DNAT" && $4=="6"  {print "dns_tcp", $1}'
   } | sort
 }
 
@@ -137,14 +143,22 @@ else
   # "jump>0, tproxy=0" is NOT automatically a fault; it is a fault only
   # when packets were headed OUT and still missed TPROXY. Compare the two
   # counters before grading.
+  # Packets that fall through the chain without TPROXY or a LOCAL return
+  # are, by construction, UDP/TCP 53 (handed to the nat DNS hijack) or
+  # non-TCP/UDP (ICMP). They are expected, so they are reported as a
+  # breakdown, never graded as a failure. The nat DNAT counter only sees
+  # the first packet of each flow, so the two numbers do not reconcile.
+  DNSRET=$(delta dns_tcp_return)
+  OTHER=$((JUMP - RET - TCP - UDP - DNSRET))
+  [ "$OTHER" -lt 0 ] && OTHER=0
+  info "细分  本机=$RET  TPROXY=$((TCP + UDP))  DNS/ICMP 等=$OTHER"
   if [ $((TCP + UDP)) -gt 0 ]; then
     pass "TPROXY 接住 $((TCP + UDP)) 包（tcp=$TCP udp=$UDP）"
-  elif [ "$RET" -ge "$JUMP" ]; then
+  elif [ "$OTHER" -gt 0 ]; then
+    idle "窗口内只有 DNS / ICMP 经过（交给 2b 级处理），没有 TCP/UDP 业务流量"
+  else
     idle "窗口内只有发往本机的流量（jump=$JUMP，全部 LOCAL 返回）—— 尚无被引流的外网流量"
     fix "这是 SSH / 控制台轮询本身。保持一个外部页面在访问，再采样一次"
-  else
-    fail "有 $((JUMP - RET)) 个发往外部的包进入跳转链但没有命中 TPROXY"
-    fix "这些包的目的地址被判定为本机：检查防火墙是否把目标 NAT 成 ingress_ip"
   fi
 fi
 
