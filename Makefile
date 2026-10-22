@@ -129,6 +129,15 @@ health: check-node  ## GET /api/proxies/active
 observe: check-node  ## 分级观测流量路径（引流/拦截/判定/出口/回程），可直接指出卡在哪一层  NODE=ops@<host>
 	$(SSH) 'sudo -n bash -s' < scripts/observe.sh
 
+.PHONY: observe-loop
+observe-loop: check-node  ## 每 10 秒跑一次 observe，只看结论行（导流测试时开一个窗口盯着）  NODE=ops@<host>
+	@while true; do \
+	  out=$$(SSH=1 $(SSH) 'sudo -n bash -s' < scripts/observe.sh 2>/dev/null); \
+	  printf '\n=== %s ===\n' "$$(date +%H:%M:%S)"; \
+	  printf '%s\n' "$$out" | grep -E '窗口|PASS|FAIL|IDLE|活跃连接|type|pool eligible|回程|默认路由' | sed 's/\x1b\[[0-9;]*m//g'; \
+	  sleep 10; \
+	done
+
 .PHONY: verify
 verify: check-node  ## 旁挂验收：入向/回程/TPROXY/自检/分流/池/产物（需 sudo）  NODE=ops@<host>
 	$(SSH) 'sudo bash -s' < scripts/verify-bypass.sh

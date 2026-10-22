@@ -128,12 +128,20 @@ elif [ "$JUMP" -eq 0 ]; then
   idle "窗口内没有包进入跳转 —— 防火墙此刻没在导流，或没有终端在访问外网"
   fix "保持一个页面在刷新，再跑一次；仍为 0 就是防火墙侧 PBR 没命中"
 else
-  pass "跳转规则命中 ${JUMP} 包"
-  if [ $((TCP + UDP)) -eq 0 ]; then
-    fail "包进入跳转链但没有一条命中 TPROXY —— 全部被 'dst-type LOCAL' 返回了"
-    fix "这些包的目的地址是本机：确认 firewall 没有把目标 NAT 到 ingress_ip，或该目的本就属于本机服务"
-  else
+  # The jump counter also counts traffic addressed to this box — the
+  # operator's own SSH and the console's API polling come from the same
+  # client_subnet and match the jump, then RETURN on dst-type LOCAL. So
+  # "jump>0, tproxy=0" is NOT automatically a fault; it is a fault only
+  # when packets were headed OUT and still missed TPROXY. Compare the two
+  # counters before grading.
+  if [ $((TCP + UDP)) -gt 0 ]; then
     pass "TPROXY 接住 $((TCP + UDP)) 包（tcp=$TCP udp=$UDP）"
+  elif [ "$RET" -ge "$JUMP" ]; then
+    idle "窗口内只有发往本机的流量（jump=$JUMP，全部 LOCAL 返回）—— 尚无被引流的外网流量"
+    fix "这是 SSH / 控制台轮询本身。保持一个外部页面在访问，再采样一次"
+  else
+    fail "有 $((JUMP - RET)) 个发往外部的包进入跳转链但没有命中 TPROXY"
+    fix "这些包的目的地址被判定为本机：检查防火墙是否把目标 NAT 成 ingress_ip"
   fi
 fi
 
