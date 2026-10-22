@@ -178,6 +178,23 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 		return cond + "," + outSelector
 	}
 
+	// ipRule is domainRule for IP-keyed conditions. no-resolve must survive
+	// inside the SUB-RULE condition — verified against mihomo v1.19.26 on the
+	// node (`mihomo -t` accepts "SUB-RULE,(RULE-SET,geoip-x,no-resolve),perterm").
+	//
+	// These used to go straight to `out` even with per-terminal on. `out`
+	// leads with us-pool, a consistent-hashing load-balancer keyed on the
+	// DESTINATION, so one terminal's IP-matched flows (QUIC to Google IPs,
+	// Telegram MTProto) were spread across every egress while its
+	// domain-matched flows stayed pinned — exactly the multi-IP pattern
+	// per-terminal exists to prevent.
+	ipRule := func(cond string) string {
+		if perterm {
+			return "SUB-RULE,(" + cond + ",no-resolve),perterm"
+		}
+		return cond + "," + outSelector + ",no-resolve"
+	}
+
 	// Pool rule_sets (openai-pool etc.). When per-terminal is ON, ALL
 	// rule-set domain hits — including pool-claimed tags — go through the
 	// regular perterm sub-rule, so a terminal's traffic exits via its
@@ -196,8 +213,12 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 		if poolName == "" {
 			continue
 		}
-		if perterm && !strings.HasPrefix(tag, "geoip-") {
-			rules = append(rules, domainRule("RULE-SET,"+tag))
+		if perterm {
+			if strings.HasPrefix(tag, "geoip-") {
+				rules = append(rules, ipRule("RULE-SET,"+tag))
+			} else {
+				rules = append(rules, domainRule("RULE-SET,"+tag))
+			}
 			poolRouted[tag] = true
 			continue
 		}
@@ -219,16 +240,16 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 		for _, sx := range r.cfg.Route.Whitelist.DomainSuffix {
 			rules = append(rules, domainRule("DOMAIN-SUFFIX,"+sx))
 		}
-		// IP-based whitelist stays on `out` (no-resolve; hardcoded-IP apps
-		// like Telegram MTProto don't suffer subdomain drift).
+		// IP-based whitelist (no-resolve; hardcoded-IP apps like Telegram
+		// MTProto). Pinned per terminal like everything else — see ipRule.
 		for _, tag := range r.cfg.Route.Whitelist.Geoips {
 			if poolRouted[tag] {
 				continue
 			}
-			rules = append(rules, "RULE-SET,"+tag+","+outSelector+",no-resolve")
+			rules = append(rules, ipRule("RULE-SET,"+tag))
 		}
 		for _, cidr := range r.cfg.Route.Whitelist.IPCIDR {
-			rules = append(rules, "IP-CIDR,"+cidr+","+outSelector+",no-resolve")
+			rules = append(rules, ipRule("IP-CIDR,"+cidr))
 		}
 		rules = append(rules, "MATCH,DIRECT")
 	} else {

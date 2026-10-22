@@ -647,23 +647,28 @@ func TestRenderer_PerTerminal(t *testing.T) {
 	}
 
 	// whitelist domain hit → SUB-RULE,(RULE-SET,geosite-openai),perterm
-	// geoip → still ,out,no-resolve
+	// geoip → ALSO via perterm, keeping no-resolve inside the condition.
+	// Sending it to `out` (us-pool, consistent-hashing by destination)
+	// spread one terminal's IP-matched flows across every egress.
 	rules, _ := doc["rules"].([]any)
-	var sawDomainSub, sawGeoipOut bool
+	var sawDomainSub, sawGeoipSub bool
 	for _, ru := range rules {
 		s, _ := ru.(string)
 		if s == "SUB-RULE,(RULE-SET,geosite-openai),perterm" {
 			sawDomainSub = true
 		}
-		if s == "RULE-SET,geoip-telegram,out,no-resolve" {
-			sawGeoipOut = true
+		if s == "SUB-RULE,(RULE-SET,geoip-telegram,no-resolve),perterm" {
+			sawGeoipSub = true
+		}
+		if strings.HasSuffix(s, ","+outSelector+",no-resolve") || strings.HasSuffix(s, ","+outSelector) {
+			t.Errorf("per-terminal on, but %q bypasses perterm", s)
 		}
 	}
 	if !sawDomainSub {
 		t.Error("expected domain whitelist to dispatch via perterm sub-rule")
 	}
-	if !sawGeoipOut {
-		t.Error("expected geoip whitelist to stay on out (no-resolve)")
+	if !sawGeoipSub {
+		t.Error("expected geoip whitelist to dispatch via perterm sub-rule with no-resolve")
 	}
 
 	// sub-rules.perterm: SRC-IP-CIDR slices for the 6 hosts + MATCH,us-pool
