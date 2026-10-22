@@ -201,3 +201,54 @@ func TestHRWTopN_IndependentOfInputOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestPerTerminalUnits_BlockModeForLargeSubnets: a subnet bigger than
+// maxPerTerminalUnits hosts must still pin every terminal — by block —
+// instead of silently disabling per-terminal routing (the 2026-10-22 /16
+// regression where one terminal used four egresses at once).
+func TestPerTerminalUnits_BlockModeForLargeSubnets(t *testing.T) {
+	units := perTerminalUnits("192.168.0.0/16")
+	if len(units) != maxPerTerminalUnits {
+		t.Fatalf("/16 → %d units, want %d", len(units), maxPerTerminalUnits)
+	}
+	if units[0].cidr != "192.168.0.0/26" || units[len(units)-1].cidr != "192.168.255.192/26" {
+		t.Errorf("block layout wrong: first=%s last=%s", units[0].cidr, units[len(units)-1].cidr)
+	}
+	// Blocks tile the subnet without gaps.
+	for i := 1; i < len(units); i++ {
+		if units[i].cidr == units[i-1].cidr {
+			t.Fatalf("duplicate block %s", units[i].cidr)
+		}
+	}
+
+	// A terminal maps to the block that contains it, and the group name the
+	// API reports is exactly a group the renderer emits.
+	if k := perTerminalKey("192.168.1.126", "192.168.0.0/16"); k != "192.168.1.64/26" {
+		t.Errorf("key(192.168.1.126) = %q, want 192.168.1.64/26", k)
+	}
+	if g := PerTerminalGroupName("192.168.1.126", "192.168.0.0/16"); g != "fb-192.168.1.64/26" {
+		t.Errorf("group = %q", g)
+	}
+	if g := PerTerminalGroupName("10.0.0.1", "192.168.0.0/16"); g != "" {
+		t.Errorf("out-of-subnet ip must have no group, got %q", g)
+	}
+}
+
+// Subnets that fit stay per-host, so existing /24 deployments keep their
+// exact fb-<ip> names and HRW assignments.
+func TestPerTerminalUnits_HostModeUnchanged(t *testing.T) {
+	units := perTerminalUnits("10.1.3.0/24")
+	if len(units) != 254 {
+		t.Fatalf("/24 → %d units, want 254", len(units))
+	}
+	if units[0].cidr != "10.1.3.1/32" || units[0].key != "10.1.3.1" {
+		t.Errorf("host unit = %+v", units[0])
+	}
+	if g := PerTerminalGroupName("10.1.3.42", "10.1.3.0/24"); g != "fb-10.1.3.42" {
+		t.Errorf("group = %q, want fb-10.1.3.42", g)
+	}
+	// /22 = 1022 hosts still fits.
+	if n := len(perTerminalUnits("192.168.0.0/22")); n != 1022 {
+		t.Errorf("/22 → %d units, want 1022 hosts", n)
+	}
+}

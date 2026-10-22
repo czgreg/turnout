@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/turnout-gateway/turnout-gateway/internal/mihomo"
 	"github.com/turnout-gateway/turnout-gateway/internal/nodescorer"
 )
 
@@ -83,7 +84,9 @@ func (s *Server) handlePoolTerminal(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	resp.GroupName = "fb-" + ip
+	// Large subnets pin per address block, not per host — the renderer
+	// owns that mapping, so ask it rather than rebuilding "fb-" + ip.
+	resp.GroupName = mihomo.PerTerminalGroupName(ip, s.deps.Cfg.Node.ClientSubnet)
 
 	snap := s.deps.NodeScorer.GetSnapshot()
 	byName := make(map[string]*nodescorer.NodeHealth, len(snap.Nodes))

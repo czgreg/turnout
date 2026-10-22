@@ -17,6 +17,17 @@
 // HRW (rendezvous hashing) properties carry over: when the routing pool
 // gains/loses a member, only the terminals whose top-2 changed get
 // reassigned — most terminals keep their (primary, secondary) pair stable.
+//
+// Large subnets: the unit of assignment is a host when the subnet has at
+// most maxPerTerminalUnits hosts, otherwise an equal-size address BLOCK
+// (e.g. a /16 is cut into 1024 /26 blocks). Every terminal in a block
+// shares the block's [primary, secondary]; a terminal still never spreads
+// across egresses. This replaced "give up past 1024 hosts", which silently
+// disabled per-terminal pinning for the office /16 on 2026-10-22: one
+// terminal's flows went out through four different egress IPs at once.
+// Blocks lose nothing in practice — with a handful of pool members,
+// thousands of terminals already share each egress IP; what matters is
+// that each terminal keeps ONE.
 
 package mihomo
 
@@ -31,11 +42,11 @@ import (
 )
 
 const (
-	// maxPerTerminalHosts caps host enumeration so a misconfigured huge
-	// subnet (e.g. /16 = 65k rules) can't blow up the config. /24 = 254 is
-	// the normal client-pool size; anything bigger than this many
-	// hosts falls back to no per-terminal slicing.
-	maxPerTerminalHosts = 1024
+	// maxPerTerminalUnits caps the number of SRC-IP-CIDR rules / fb-*
+	// groups emitted. Subnets with more hosts than this are split into
+	// blocks instead (see perTerminalUnits), so the config stays bounded
+	// (/16 would otherwise be 65k rules) without dropping pinning.
+	maxPerTerminalUnits = 1024
 
 	// perTerminalFallbackDepth is the number of HRW-ordered members
 	// included in each fb-<ip> fallback group. 2 = [primary, secondary]
@@ -75,8 +86,8 @@ func (r *Renderer) perTerminalSlices(outbounds []subscribe.Outbound) []string {
 	if len(members) == 0 {
 		return nil
 	}
-	hosts := enumerateHosts(r.node.ClientSubnet, maxPerTerminalHosts)
-	if len(hosts) == 0 {
+	units := perTerminalUnits(r.node.ClientSubnet)
+	if len(units) == 0 {
 		return nil
 	}
 	// Only emit fb-<ip> rules when we have enough members to form a fallback
@@ -86,9 +97,9 @@ func (r *Renderer) perTerminalSlices(outbounds []subscribe.Outbound) []string {
 	if len(members) < perTerminalFallbackDepth {
 		return nil
 	}
-	rules := make([]string, 0, len(hosts)+1)
-	for _, ip := range hosts {
-		rules = append(rules, fmt.Sprintf("SRC-IP-CIDR,%s/32,%s%s", ip, perTerminalGroupPrefix, ip))
+	rules := make([]string, 0, len(units)+1)
+	for _, u := range units {
+		rules = append(rules, fmt.Sprintf("SRC-IP-CIDR,%s,%s%s", u.cidr, perTerminalGroupPrefix, u.key))
 	}
 	rules = append(rules, "MATCH,"+usPool)
 	return rules
@@ -112,15 +123,15 @@ func (r *Renderer) perTerminalFallbackGroups(outbounds []subscribe.Outbound, pro
 		// will have been emitted either.
 		return nil
 	}
-	hosts := enumerateHosts(r.node.ClientSubnet, maxPerTerminalHosts)
-	if len(hosts) == 0 {
+	units := perTerminalUnits(r.node.ClientSubnet)
+	if len(units) == 0 {
 		return nil
 	}
-	out := make([]map[string]any, 0, len(hosts))
-	for _, ip := range hosts {
-		ranked := hrwTopN(ip, members, perTerminalFallbackDepth)
+	out := make([]map[string]any, 0, len(units))
+	for _, u := range units {
+		ranked := hrwTopN(u.key, members, perTerminalFallbackDepth)
 		out = append(out, map[string]any{
-			"name":     perTerminalGroupPrefix + ip,
+			"name":     perTerminalGroupPrefix + u.key,
 			"type":     "fallback",
 			"proxies":  ranked,
 			"url":      probeURL,
@@ -162,7 +173,108 @@ func (r *Renderer) AssignmentForIP(ip string, outbounds []subscribe.Outbound) ([
 	if depth > len(members) {
 		depth = len(members)
 	}
-	return hrwTopN(ip, members, depth), true
+	return hrwTopN(perTerminalKey(ip, r.node.ClientSubnet), members, depth), true
+}
+
+// PerTerminalGroupName is the fb-* proxy-group that carries traffic from
+// ip under the given client_subnet, or "" when ip is outside it. Exported
+// so the API reports the same name the renderer emits — they must agree,
+// and both derive it from perTerminalKey.
+func PerTerminalGroupName(ip, clientSubnet string) string {
+	if !ipInSubnet(ip, clientSubnet) {
+		return ""
+	}
+	if k := perTerminalKey(ip, clientSubnet); k != "" {
+		return perTerminalGroupPrefix + k
+	}
+	return ""
+}
+
+// ptUnit is one per-terminal routing unit: the SRC-IP-CIDR it matches and
+// the key that names its group and seeds HRW.
+type ptUnit struct {
+	cidr string // "10.1.3.7/32" or "192.168.4.0/26"
+	key  string // "10.1.3.7"    or "192.168.4.0/26"
+}
+
+// perTerminalUnitBits returns the prefix length of one routing unit for
+// cidr: 32 (single host) when the subnet fits in maxPerTerminalUnits
+// hosts, else the shortest prefix that yields at most that many blocks.
+// ok=false for non-IPv4 or unparsable input.
+func perTerminalUnitBits(cidr string) (base uint32, ones, unitBits int, ok bool) {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	ip4 := ipnet.IP.To4()
+	if ip4 == nil {
+		return 0, 0, 0, false // IPv6 client pools not supported
+	}
+	ones, _ = ipnet.Mask.Size()
+	base = binary.BigEndian.Uint32(ip4)
+	hostBits := 32 - ones
+	// Hosts excluding network/broadcast, as enumerateHosts counts them.
+	hosts := 1 << uint(hostBits)
+	if hostBits >= 2 {
+		hosts -= 2
+	}
+	if hosts <= maxPerTerminalUnits {
+		return base, ones, 32, true
+	}
+	// Blocks: 2^(unitBits-ones) <= maxPerTerminalUnits.
+	b := 0
+	for (1 << uint(b+1)) <= maxPerTerminalUnits {
+		b++
+	}
+	return base, ones, ones + b, true
+}
+
+// perTerminalUnits lists every routing unit in cidr (see ptUnit).
+func perTerminalUnits(cidr string) []ptUnit {
+	base, ones, unitBits, ok := perTerminalUnitBits(cidr)
+	if !ok {
+		return nil
+	}
+	if unitBits == 32 {
+		hosts := enumerateHosts(cidr, maxPerTerminalUnits)
+		out := make([]ptUnit, 0, len(hosts))
+		for _, h := range hosts {
+			out = append(out, ptUnit{cidr: h + "/32", key: h})
+		}
+		return out
+	}
+	n := 1 << uint(unitBits-ones)
+	step := uint32(1) << uint(32-unitBits)
+	out := make([]ptUnit, 0, n)
+	for i := 0; i < n; i++ {
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], base+uint32(i)*step)
+		c := fmt.Sprintf("%s/%d", net.IP(b[:]).String(), unitBits)
+		out = append(out, ptUnit{cidr: c, key: c})
+	}
+	return out
+}
+
+// perTerminalKey maps one terminal ip to its unit key: the ip itself in
+// host mode, the containing block's CIDR in block mode. "" if not
+// computable (bad input). Callers check subnet membership separately.
+func perTerminalKey(ip, cidr string) string {
+	_, _, unitBits, ok := perTerminalUnitBits(cidr)
+	if !ok {
+		return ""
+	}
+	if unitBits == 32 {
+		return ip
+	}
+	p := net.ParseIP(ip).To4()
+	if p == nil {
+		return ""
+	}
+	mask := ^uint32(0) << uint(32-unitBits)
+	v := binary.BigEndian.Uint32(p) & mask
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], v)
+	return fmt.Sprintf("%s/%d", net.IP(b[:]).String(), unitBits)
 }
 
 // intersectWithPresent filters wanted by membership in outbounds' tag set.
