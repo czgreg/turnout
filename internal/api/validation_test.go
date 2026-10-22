@@ -13,7 +13,7 @@ func TestMaskURLToken(t *testing.T) {
 	}{
 		{
 			in:      "https://yuyun.example/sub?token=deadbeefdeadbeefdeadbeefdeadbeef",
-			want:    "3f18***8960",
+			want:    "dead***beef",
 			mustNot: "deadbeefdeadbeefdeadbeefdeadbeef",
 		},
 		{

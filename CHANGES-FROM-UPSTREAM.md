@@ -166,7 +166,7 @@ DNS 应答 → nft 集合的写入、TTL 过期清理、以及集合内容与 mi
 | 位置 | 改动 |
 |---|---|
 | `Makefile` | `NODE` **不留默认值**（原为 `ops@<host>`），所有触网目标加 `check-node` 守卫；`deploy-92` / `redeploy-92` 合并为通用的 `deploy` / `redeploy`。 |
-| `scripts/deploy.sh`、`redeploy-full.sh` | `REMOTE_USER` 从默认 `ops` 改为必填。 |
+| `scripts/deploy.sh`、`redeploy-full.sh` | `REMOTE_USER` 从硬编码默认值改为必填。 |
 | `scripts/watch-node.sh` | 默认主机与硬编码的 `ops@` 移除；host 参数必填。 |
 | `scripts/setup-ssh.sh` | 默认主机移除，见 4.1。 |
 
