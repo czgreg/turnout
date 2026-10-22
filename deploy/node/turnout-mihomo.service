@@ -9,6 +9,16 @@ Documentation=https://wiki.metacubex.one/
 # with a clearer message than a failed unit dependency would.
 After=network-online.target
 Wants=network-online.target
+# turnout-nft is PartOf= this unit, so stopping or restarting mihomo tears the
+# TPROXY rules down. PartOf propagates stop/restart ONLY — starting mihomo does
+# NOT start turnout-nft again. Without this Wants=, a mihomo crash that systemd
+# restarts (Restart=on-failure below) leaves the node with no TPROXY rules at
+# all: the data plane is silently dead while every unit reports "active".
+# Found 2026-10-22 by stopping mihomo: after `systemctl start turnout-mihomo`
+# the rules stayed gone and the watchdog, correctly seeing dataplane_rules
+# failed, kept the liveness address withdrawn forever — the node could never
+# recover without a manual `systemctl start turnout-nft`.
+Wants=turnout-nft.service
 
 [Service]
 Type=simple

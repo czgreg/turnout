@@ -69,6 +69,15 @@ const outageRuleOutput = `0:	from all lookup local
 32767:	from all lookup default
 `
 
+// liveChainOutput is what iproute.sh leaves in TURNOUT_TPROXY. The jump
+// alone is not enough — these four rules are what actually intercept.
+const liveChainOutput = `-N TURNOUT_TPROXY
+-A TURNOUT_TPROXY -m addrtype --dst-type LOCAL -j RETURN
+-A TURNOUT_TPROXY -p tcp -m tcp --dport 53 -j RETURN
+-A TURNOUT_TPROXY -p tcp -j TPROXY --on-port 7893 --on-ip 127.0.0.1 --tproxy-mark 0x44/0x44
+-A TURNOUT_TPROXY -p udp -m udp ! --dport 53 -j TPROXY --on-port 7893 --on-ip 127.0.0.1 --tproxy-mark 0x44/0x44
+`
+
 func TestCheckIPRule_PresentDoesNotRepair(t *testing.T) {
 	fr := newFakeRunner()
 	fr.out["ip rule show"] = liveRuleOutput
@@ -210,6 +219,7 @@ func TestOnce_AllObjectsPresentIsHealthy(t *testing.T) {
 	fr.out["ip route show table 101"] = "local default dev lo scope host\n"
 	fr.out["iptables -t mangle -S PREROUTING"] =
 		"-A PREROUTING -i ens19 -s 10.1.0.0/16 -j TURNOUT_TPROXY\n"
+	fr.out["iptables -t mangle -S TURNOUT_TPROXY"] = liveChainOutput
 	a := NewAsserter("10.1.0.0/16", "ens19", 7893)
 	a.runner = fr.run
 
@@ -232,6 +242,7 @@ func TestOnce_AlertsOnTransitionOnly(t *testing.T) {
 	fr.out["ip route show table 101"] = "local default dev lo scope host\n"
 	fr.out["iptables -t mangle -S PREROUTING"] =
 		"-A PREROUTING -i ens19 -s 10.1.0.0/16 -j TURNOUT_TPROXY\n"
+	fr.out["iptables -t mangle -S TURNOUT_TPROXY"] = liveChainOutput
 	a := NewAsserter("10.1.0.0/16", "ens19", 7893)
 	a.runner = fr.run
 
@@ -276,5 +287,61 @@ func TestNewAsserter_DisabledWithoutDataPath(t *testing.T) {
 	}
 	if a := NewAsserter("10.1.0.0/16", "ens19", 0); a != nil {
 		t.Error("tproxy_port 0 must disable the asserter")
+	}
+}
+
+// An empty chain is the failure the jump check structurally cannot see:
+// traffic reaches TURNOUT_TPROXY, matches nothing, and falls through to the
+// default route — back to the firewall. Verified on a live node 2026-10-22
+// by flushing the chain: every other check, and the watchdog, stayed green.
+func TestCheckChainRules_EmptyChainFailsAndRepairs(t *testing.T) {
+	fr := newFakeRunner()
+	fr.out["iptables -t mangle -S TURNOUT_TPROXY"] = "-N TURNOUT_TPROXY\n"
+	a := testAsserter(t, fr)
+
+	res := a.checkChainRules(context.Background())
+	if res.OK {
+		t.Fatal("an empty TPROXY chain must not be healthy")
+	}
+	if !res.Repaired {
+		t.Fatalf("expected repair, got %+v", res)
+	}
+	for _, want := range []string{"-I TURNOUT_TPROXY 1", "-A TURNOUT_TPROXY -p tcp", "-A TURNOUT_TPROXY -p udp"} {
+		if !fr.called(want) {
+			t.Errorf("repair should run %q; calls=%v", want, fr.calls)
+		}
+	}
+}
+
+// A partially damaged chain (TCP rule gone, UDP intact) repairs only the
+// missing object and leaves the rest alone.
+func TestCheckChainRules_PartialDamageRepairsOnlyWhatIsMissing(t *testing.T) {
+	fr := newFakeRunner()
+	fr.out["iptables -t mangle -S TURNOUT_TPROXY"] = `-N TURNOUT_TPROXY
+-A TURNOUT_TPROXY -m addrtype --dst-type LOCAL -j RETURN
+-A TURNOUT_TPROXY -p udp -j TPROXY --on-port 7893 --on-ip 127.0.0.1 --tproxy-mark 0x44/0x44
+`
+	a := testAsserter(t, fr)
+	res := a.checkChainRules(context.Background())
+	if res.OK || !res.Repaired {
+		t.Fatalf("expected a repaired failure, got %+v", res)
+	}
+	if fr.called("-I TURNOUT_TPROXY 1") {
+		t.Error("the local RETURN was present and must not be re-inserted")
+	}
+	if fr.called("-A TURNOUT_TPROXY -p udp") {
+		t.Error("the UDP rule was present and must not be re-added")
+	}
+	if !fr.called("-A TURNOUT_TPROXY -p tcp") {
+		t.Error("the missing TCP rule must be re-added")
+	}
+}
+
+func TestCheckChainRules_IntactChainIsHealthy(t *testing.T) {
+	fr := newFakeRunner()
+	fr.out["iptables -t mangle -S TURNOUT_TPROXY"] = liveChainOutput
+	a := testAsserter(t, fr)
+	if res := a.checkChainRules(context.Background()); !res.OK {
+		t.Fatalf("intact chain must be healthy, got %+v", res)
 	}
 }

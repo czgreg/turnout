@@ -63,6 +63,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -88,6 +89,13 @@ const (
 	CheckIPRule         = "ip_rule_fwmark"
 	CheckRouteLocal     = "route_table_local"
 	CheckPreroutingJump = "prerouting_jump"
+	// CheckChainRules asserts the TPROXY chain still holds the rules that do
+	// the work. The first three prove a packet REACHES the chain; none proves
+	// the chain DOES anything. An `iptables -F TURNOUT_TPROXY` (or any
+	// ruleset reload that re-creates only the jump) leaves an empty chain:
+	// traffic falls through, the post-TPROXY lookup hands it to the default
+	// route, and it is given back to the firewall. Every other check passes.
+	CheckChainRules = "tproxy_rules"
 )
 
 // CheckResult is one assertion's outcome.
@@ -186,6 +194,7 @@ func (a *Asserter) once(ctx context.Context) {
 		a.checkIPRule(ctx),
 		a.checkRouteLocal(ctx),
 		a.checkPreroutingJump(ctx),
+		a.checkChainRules(ctx),
 	}
 	healthy := true
 	for _, c := range checks {
@@ -348,6 +357,89 @@ func (a *Asserter) checkPreroutingJump(ctx context.Context) CheckResult {
 	} else {
 		res.Repaired = true
 		res.Detail += "; re-attached"
+	}
+	return res
+}
+
+// checkChainRules asserts the TPROXY chain holds the rules that actually
+// intercept traffic: the local-destination RETURN and the TCP/UDP TPROXY
+// rules. See CheckChainRules for why the jump alone is not enough.
+//
+// Repair is additive and order-preserving rather than a flush-and-rebuild:
+// iproute.sh owns the canonical shape (including the TCP/53 RETURN for DNS
+// hijack), and a flush on the 30s timer would drop live conntrack entries
+// for no reason. The local RETURN is inserted at position 1 so it keeps
+// precedence over anything already in the chain.
+func (a *Asserter) checkChainRules(ctx context.Context) CheckResult {
+	res := CheckResult{Name: CheckChainRules}
+	out, err := a.runner(ctx, "iptables", "-t", "mangle", "-S", tproxyChainName)
+	if err != nil {
+		res.Detail = fmt.Sprintf("iptables -S %s failed: %v: %s", tproxyChainName, err, strings.TrimSpace(out))
+		return res
+	}
+
+	onPort := "--on-port " + strconv.Itoa(a.tproxyPort)
+	hasLocalReturn, hasTCP, hasUDP := false, false, false
+	sc := bufio.NewScanner(strings.NewReader(out))
+	for sc.Scan() {
+		l := sc.Text()
+		switch {
+		case strings.Contains(l, "--dst-type LOCAL") && strings.Contains(l, "-j RETURN"):
+			hasLocalReturn = true
+		case strings.Contains(l, "-p tcp") && strings.Contains(l, "-j TPROXY") && strings.Contains(l, onPort):
+			hasTCP = true
+		case strings.Contains(l, "-p udp") && strings.Contains(l, "-j TPROXY") && strings.Contains(l, onPort):
+			hasUDP = true
+		}
+	}
+	if hasLocalReturn && hasTCP && hasUDP {
+		res.OK = true
+		res.Detail = fmt.Sprintf("%s has local RETURN + tcp/udp TPROXY to :%d", tproxyChainName, a.tproxyPort)
+		return res
+	}
+
+	var missing []string
+	if !hasLocalReturn {
+		missing = append(missing, "local-destination RETURN")
+	}
+	if !hasTCP {
+		missing = append(missing, "tcp TPROXY")
+	}
+	if !hasUDP {
+		missing = append(missing, "udp TPROXY")
+	}
+	res.Detail = fmt.Sprintf("%s is missing %s — intercepted traffic falls through to the default route",
+		tproxyChainName, strings.Join(missing, ", "))
+
+	tprox := []string{"-j", "TPROXY", "--on-port", strconv.Itoa(a.tproxyPort),
+		"--on-ip", "127.0.0.1", "--tproxy-mark", tproxyMark + "/" + tproxyMark}
+	add := func(args ...string) error {
+		rout, rerr := a.runner(ctx, "iptables", args...)
+		if rerr != nil {
+			res.Detail += fmt.Sprintf("; repair %v failed: %v: %s", args, rerr, strings.TrimSpace(rout))
+		}
+		return rerr
+	}
+	ok := true
+	if !hasLocalReturn {
+		if add("-t", "mangle", "-I", tproxyChainName, "1",
+			"-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN") != nil {
+			ok = false
+		}
+	}
+	if !hasTCP {
+		if add(append([]string{"-t", "mangle", "-A", tproxyChainName, "-p", "tcp"}, tprox...)...) != nil {
+			ok = false
+		}
+	}
+	if !hasUDP {
+		if add(append([]string{"-t", "mangle", "-A", tproxyChainName, "-p", "udp", "!", "--dport", "53"}, tprox...)...) != nil {
+			ok = false
+		}
+	}
+	if ok {
+		res.Repaired = true
+		res.Detail += "; re-added"
 	}
 	return res
 }
