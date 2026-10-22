@@ -147,7 +147,7 @@ func (c *rulesChecker) Check(ctx context.Context) CheckResult {
 	// Summarize which checks failed, so the alert names the object.
 	var bad []string
 	for _, ck := range snap.Checks {
-		if !ck.OK && !ck.Skipped {
+		if !ck.OK {
 			d := string(ck.Name)
 			if ck.Repaired {
 				d += " (auto-repaired)"

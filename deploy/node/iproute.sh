@@ -58,6 +58,41 @@ CHAIN="TURNOUT_TPROXY"
 [ "$API_PORT" -gt 0 ] 2>/dev/null \
     || { echo "TURNOUT_API_PORT=$API_PORT — set api.listen to a valid port in /etc/turnout/gateway.yaml and re-run install.sh" >&2; exit 1; }
 
+# purge_prerouting deletes every PREROUTING rule this script owns on the
+# ingress interface — the jump into $CHAIN and the API DROP — regardless of
+# which source subnet wrote them. Scoped to -i "$INGRESS_IFACE" and this
+# chain/port so it cannot touch an operator's unrelated rules.
+purge_prerouting() {
+    local src
+    # Jump rules: "-A PREROUTING -s <subnet> -i <iface> ... -j TURNOUT_TPROXY"
+    for src in $(iptables -t mangle -S PREROUTING \
+        | awk -v ifc="$(printf '%s' "$INGRESS_IFACE")" -v ch="$CHAIN" '
+            $1=="-A" && $2=="PREROUTING" && $0 ~ "-j "ch {
+                for (i=1;i<=NF;i++) {
+                    if ($i=="-s") s=$(i+1);
+                    if ($i=="-i") f=$(i+1);
+                }
+                if (f==ifc && s!="") print s
+            }' | sort -u); do
+        while iptables -t mangle -D PREROUTING -i "$INGRESS_IFACE" -s "$src" \
+            -j "$CHAIN" 2>/dev/null; do :; done
+    done
+    # API deny rules: same scoping, keyed on the drop target.
+    for src in $(iptables -t mangle -S PREROUTING \
+        | awk -v ifc="$INGRESS_IFACE" -v port="$API_PORT" '
+            $1=="-A" && $2=="PREROUTING" && $0 ~ /--dst-type LOCAL/ \
+            && $0 ~ ("--dport " port) && $0 ~ /-j DROP/ {
+                for (i=1;i<=NF;i++) {
+                    if ($i=="-s") s=$(i+1);
+                    if ($i=="-i") f=$(i+1);
+                }
+                if (f==ifc && s!="") print s
+            }' | sort -u); do
+        while iptables -t mangle -D PREROUTING -i "$INGRESS_IFACE" -s "$src" \
+            -m addrtype --dst-type LOCAL -p tcp --dport "$API_PORT" -j DROP 2>/dev/null; do :; done
+    done
+}
+
 tproxy_up() {
     # Ensure xt_TPROXY module is loaded.
     modprobe xt_TPROXY 2>/dev/null || true
@@ -100,6 +135,15 @@ tproxy_up() {
         -j TPROXY --on-port "$TPROXY_PORT" --on-ip 127.0.0.1 \
         --tproxy-mark "$TPROXY_MARK/$TPROXY_MARK"
 
+    # Stale rules from a previous client_subnet must go first. Deleting by
+    # the CURRENT "$CLIENT_SUBNET" only ever matches rules written by the
+    # same config, so widening or narrowing the subnet used to leave the old
+    # jump/DROP in place next to the new one: traffic from both segments was
+    # intercepted (or denied) and only the new one was reported anywhere.
+    # Seen 2026-10-22 when 10.1.3.0/24 -> 192.168.0.0/16 left the /24 jump
+    # live and the /16 terminals still un-intercepted.
+    purge_prerouting
+
     # Block diverted office terminals from reaching the gateway API before
     # the generic TPROXY jump. Without this early drop, mihomo can accept a
     # terminal's connection to our own API port before the inet/turnout input
@@ -107,9 +151,6 @@ tproxy_up() {
     #
     # Note the source match is the configured subnet rather than a hardcoded
     # one (upstream hardcoded its VPN pool).
-    while iptables -t mangle -D PREROUTING -i "$INGRESS_IFACE" \
-        -s "$CLIENT_SUBNET" -m addrtype --dst-type LOCAL \
-        -p tcp --dport "$API_PORT" -j DROP 2>/dev/null; do :; done
     iptables -t mangle -I PREROUTING 1 -i "$INGRESS_IFACE" \
         -s "$CLIENT_SUBNET" -m addrtype --dst-type LOCAL \
         -p tcp --dport "$API_PORT" -j DROP
@@ -117,9 +158,6 @@ tproxy_up() {
     # Attach to PREROUTING: apply TPROXY only to traffic that arrived FROM
     # the firewall on the ingress interface, from the diverted segment.
     # Both matches matter — see the header note on the DIRECT path.
-    # Idempotent: delete existing rule before adding.
-    iptables -t mangle -D PREROUTING -i "$INGRESS_IFACE" -s "$CLIENT_SUBNET" \
-        -j "$CHAIN" 2>/dev/null || true
     iptables -t mangle -A PREROUTING -i "$INGRESS_IFACE" -s "$CLIENT_SUBNET" \
         -j "$CHAIN"
 

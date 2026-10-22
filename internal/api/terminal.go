@@ -14,7 +14,7 @@ import (
 type TerminalAssignment struct {
 	IP         string                 `json:"ip"`
 	Subnet     string                 `json:"subnet"`               // configured client_subnet
-	InSubnet   bool                   `json:"in_subnet"`            // false → terminal is outside enumerated range, falls through to MATCH,us-pool
+	InSubnet   bool                   `json:"in_subnet"`            // false → the node does not intercept this source at all (TPROXY jump is -s client_subnet)
 	Primary    *terminalNodeView      `json:"primary,omitempty"`    // current default egress for this terminal
 	Secondary  *terminalNodeView      `json:"secondary,omitempty"`  // mihomo fallback target when primary is alive=false
 	ActiveNode string                 `json:"active_node,omitempty"` // which one is actually carrying traffic right now ("primary" | "secondary" | "")
@@ -69,7 +69,12 @@ func (s *Server) handlePoolTerminal(w http.ResponseWriter, r *http.Request) {
 		PoolMode: s.deps.Cfg.NodeQualify.PoolMode,
 	}
 	if !inSubnet {
-		resp.Hint = "ip is outside client_subnet — traffic from this source falls through to MATCH,us-pool, not a per-terminal fb group"
+		// In the bypass role the TPROXY jump is keyed on -s client_subnet, so a
+		// source outside it never reaches mihomo: a diverted packet is simply
+		// forwarded back out the default route. The old hint described the
+		// mihomo rule fallback (MATCH,us-pool), which never gets a chance to
+		// apply and sent operators looking at the wrong layer.
+		resp.Hint = "ip is outside client_subnet — this node does not intercept traffic from it; packets the firewall diverts here are forwarded back out the default route untouched"
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}

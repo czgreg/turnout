@@ -2,14 +2,9 @@ package dataplane
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // fakeRunner records every command and replays canned output keyed by a
@@ -52,7 +47,7 @@ func (f *fakeRunner) called(substr string) bool {
 
 func testAsserter(t *testing.T, fr *fakeRunner) *Asserter {
 	t.Helper()
-	a := NewAsserter("10.1.0.0/16", "ens19", 7893, config.ClashAPIConfig{})
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893)
 	if a == nil {
 		t.Fatal("NewAsserter returned nil for a valid TPROXY config")
 	}
@@ -206,96 +201,22 @@ func TestCheckPreroutingJump_WrongSubnetIsNotAMatch(t *testing.T) {
 	}
 }
 
-// connStub serves a /connections payload with the given (type, count) mix.
-func connStub(t *testing.T, types ...string) *httptest.Server {
-	t.Helper()
-	type meta struct {
-		Type     string `json:"type"`
-		SourceIP string `json:"sourceIP"`
-	}
-	type conn struct {
-		Metadata meta `json:"metadata"`
-	}
-	body := struct {
-		Connections []conn `json:"connections"`
-	}{}
-	for _, ty := range types {
-		body.Connections = append(body.Connections, conn{Metadata: meta{Type: ty, SourceIP: "10.1.1.9"}})
-	}
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/connections") {
-			w.WriteHeader(404)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(body)
-	}))
-}
-
-func flowAsserter(t *testing.T, srv *httptest.Server) *Asserter {
-	t.Helper()
-	addr := strings.TrimPrefix(srv.URL, "http://")
-	a := NewAsserter("10.1.0.0/16", "ens19", 7893, config.ClashAPIConfig{ExternalController: addr})
-	if a == nil {
-		t.Fatal("NewAsserter returned nil")
-	}
-	a.runner = newFakeRunner().run
-	return a
-}
-
-func TestCheckTProxyFlow_TProxyConnectionsPass(t *testing.T) {
-	srv := connStub(t, "TProxy", "TProxy", "HTTP")
-	defer srv.Close()
-	res := flowAsserter(t, srv).checkTProxyFlow(context.Background())
-	if !res.OK {
-		t.Errorf("expected OK with live TProxy connections, got %+v", res)
-	}
-}
-
-// The whole point of this check: objects can all be present while
-// interception is broken. Connections exist, none is TProxy → not OK.
-func TestCheckTProxyFlow_NoTProxyAmongLiveConnsFails(t *testing.T) {
-	srv := connStub(t, "HTTP", "Socks5")
-	defer srv.Close()
-	res := flowAsserter(t, srv).checkTProxyFlow(context.Background())
-	if res.OK {
-		t.Error("connections present but zero TProxy must fail")
-	}
-	if res.Skipped {
-		t.Error("this is a real failure, not a skip")
-	}
-}
-
-// An idle night must not page anyone.
-func TestCheckTProxyFlow_NoConnectionsAtAllSkips(t *testing.T) {
-	srv := connStub(t)
-	defer srv.Close()
-	res := flowAsserter(t, srv).checkTProxyFlow(context.Background())
-	if !res.Skipped {
-		t.Errorf("zero total connections must be Skipped, not a failure; got %+v", res)
-	}
-	if res.OK {
-		t.Error("a skipped check must not claim OK")
-	}
-}
-
-// Skipped checks must not drag the aggregate to unhealthy — otherwise an
-// idle node reports 503 all night.
-func TestOnce_SkippedFlowDoesNotBreakHealth(t *testing.T) {
-	srv := connStub(t) // zero connections → flow check skips
-	defer srv.Close()
-	addr := strings.TrimPrefix(srv.URL, "http://")
+// All data-path objects present must read as healthy regardless of whether
+// any client traffic is flowing — an idle segment is not a fault, and
+// /healthz must not 503 all night.
+func TestOnce_AllObjectsPresentIsHealthy(t *testing.T) {
 	fr := newFakeRunner()
 	fr.out["ip rule show"] = liveRuleOutput
 	fr.out["ip route show table 101"] = "local default dev lo scope host\n"
 	fr.out["iptables -t mangle -S PREROUTING"] =
 		"-A PREROUTING -i ens19 -s 10.1.0.0/16 -j TURNOUT_TPROXY\n"
-	a := NewAsserter("10.1.0.0/16", "ens19", 7893, config.ClashAPIConfig{ExternalController: addr})
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893)
 	a.runner = fr.run
 
 	a.once(context.Background())
 	snap := a.Snapshot()
 	if !snap.Healthy {
-		t.Errorf("all objects present + idle clients must be healthy; checks=%+v", snap.Checks)
+		t.Errorf("all data-path objects present must be healthy; checks=%+v", snap.Checks)
 	}
 	if snap.At.IsZero() {
 		t.Error("snapshot timestamp must be set after a round")
@@ -306,15 +227,12 @@ func TestOnce_SkippedFlowDoesNotBreakHealth(t *testing.T) {
 // on recovery. 120 identical Lark messages an hour is how alerting gets
 // muted, and a muted alert is the same as no alert.
 func TestOnce_AlertsOnTransitionOnly(t *testing.T) {
-	srv := connStub(t, "TProxy")
-	defer srv.Close()
-	addr := strings.TrimPrefix(srv.URL, "http://")
 	fr := newFakeRunner()
 	fr.out["ip rule show"] = outageRuleOutput // broken
 	fr.out["ip route show table 101"] = "local default dev lo scope host\n"
 	fr.out["iptables -t mangle -S PREROUTING"] =
 		"-A PREROUTING -i ens19 -s 10.1.0.0/16 -j TURNOUT_TPROXY\n"
-	a := NewAsserter("10.1.0.0/16", "ens19", 7893, config.ClashAPIConfig{ExternalController: addr})
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893)
 	a.runner = fr.run
 
 	var mu sync.Mutex
@@ -353,10 +271,10 @@ func TestOnce_AlertsOnTransitionOnly(t *testing.T) {
 // A config with no TPROXY path must yield no asserter, so /healthz falls
 // back to liveness-only instead of repairing objects toward port 0.
 func TestNewAsserter_DisabledWithoutDataPath(t *testing.T) {
-	if a := NewAsserter("", "ens19", 7893, config.ClashAPIConfig{}); a != nil {
+	if a := NewAsserter("", "ens19", 7893); a != nil {
 		t.Error("empty client_subnet must disable the asserter")
 	}
-	if a := NewAsserter("10.1.0.0/16", "ens19", 0, config.ClashAPIConfig{}); a != nil {
+	if a := NewAsserter("10.1.0.0/16", "ens19", 0); a != nil {
 		t.Error("tproxy_port 0 must disable the asserter")
 	}
 }

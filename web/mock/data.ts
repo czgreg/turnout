@@ -192,7 +192,6 @@ export function healthz(): Healthz {
       { name: 'ip_rule_fwmark', ok: true, detail: 'fwmark 0x44 lookup 101 present' },
       { name: 'route_table_local', ok: true, detail: 'table 101 has local default' },
       { name: 'prerouting_jump', ok: true, detail: `PREROUTING -i ens19 -s ${SUBNET} -j TURNOUT_TPROXY present` },
-      { name: 'tproxy_flow', ok: true, detail: '187/189 live connections are TProxy' },
     ],
   };
 }

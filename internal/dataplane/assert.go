@@ -45,8 +45,14 @@
 //     repairs only its own object.
 //   - Repair still ALERTS. A silent self-heal would hide a recurring
 //     remover and destroy the evidence that it is still happening.
-//   - The end-to-end check is gated on clients actually being present, so
-//     an idle night does not page anyone.
+//   - There is deliberately no "is client traffic flowing" check. One
+//     existed (tproxy_flow, counting TProxy entries in mihomo /connections)
+//     and was removed 2026-10-21: an idle segment and a broken path both
+//     produce zero client connections, so it could not tell them apart, and
+//     the gateway's own loopback connections (subscription fetches, scorer
+//     probes) made it report "interception is not working" on an idle node.
+//     Every failure it could catch is caught deterministically by the
+//     object checks below.
 //   - exec of ip/iptables rather than netlink: the repo has no netlink
 //     dependency, and iproute.sh already defines these objects through the
 //     same CLI, so the two agree by construction.
@@ -55,15 +61,11 @@ package dataplane
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
 
 // TPROXY constants — must match deploy/node/iproute.sh. Divergence here
@@ -86,7 +88,6 @@ const (
 	CheckIPRule         = "ip_rule_fwmark"
 	CheckRouteLocal     = "route_table_local"
 	CheckPreroutingJump = "prerouting_jump"
-	CheckTProxyFlow     = "tproxy_flow"
 )
 
 // CheckResult is one assertion's outcome.
@@ -99,9 +100,6 @@ type CheckResult struct {
 	// check is still reported as not-OK for this round so the alert fires
 	// and /healthz reflects that something was broken.
 	Repaired bool `json:"repaired,omitempty"`
-	// Skipped marks a check that could not run meaningfully — currently
-	// only the end-to-end flow check, when no clients are present.
-	Skipped bool `json:"skipped,omitempty"`
 }
 
 // Snapshot is the asserter's latest full result, read by /healthz.
@@ -114,10 +112,8 @@ type Snapshot struct {
 // Asserter periodically verifies the TPROXY data path and repairs it.
 type Asserter struct {
 	clientSubnet string
-	ingressIface    string
+	ingressIface string
 	tproxyPort   int
-	clashAPI     config.ClashAPIConfig
-	client       *http.Client
 
 	// Emit reports a check transition to the operator. Non-nil in
 	// production (wired to notify.Notifier); nil-safe for tests.
@@ -136,7 +132,7 @@ type Asserter struct {
 // tproxyPort <= 0 or an empty clientSubnet disables the asserter entirely
 // (returns nil) — those mean gateway.yaml has no TPROXY data path to
 // assert, and asserting nothing is better than repairing into port 0.
-func NewAsserter(clientSubnet, ingressIface string, tproxyPort int, clashAPI config.ClashAPIConfig) *Asserter {
+func NewAsserter(clientSubnet, ingressIface string, tproxyPort int) *Asserter {
 	if clientSubnet == "" || tproxyPort <= 0 {
 		return nil
 	}
@@ -145,10 +141,8 @@ func NewAsserter(clientSubnet, ingressIface string, tproxyPort int, clashAPI con
 	}
 	return &Asserter{
 		clientSubnet: clientSubnet,
-		ingressIface:    ingressIface,
+		ingressIface: ingressIface,
 		tproxyPort:   tproxyPort,
-		clashAPI:     clashAPI,
-		client:       &http.Client{Timeout: 5 * time.Second},
 		lastAlerted:  map[string]bool{},
 		runner:       defaultRunner,
 	}
@@ -192,11 +186,10 @@ func (a *Asserter) once(ctx context.Context) {
 		a.checkIPRule(ctx),
 		a.checkRouteLocal(ctx),
 		a.checkPreroutingJump(ctx),
-		a.checkTProxyFlow(ctx),
 	}
 	healthy := true
 	for _, c := range checks {
-		if !c.OK && !c.Skipped {
+		if !c.OK {
 			healthy = false
 		}
 	}
@@ -207,9 +200,6 @@ func (a *Asserter) once(ctx context.Context) {
 	// Alert on transitions only: a check that has been failing for an hour
 	// should not emit 120 identical messages.
 	for _, c := range checks {
-		if c.Skipped {
-			continue
-		}
 		failing := !c.OK
 		if failing && !a.lastAlerted[c.Name] {
 			a.alert(c, true)
@@ -358,72 +348,6 @@ func (a *Asserter) checkPreroutingJump(ctx context.Context) CheckResult {
 	} else {
 		res.Repaired = true
 		res.Detail += "; re-attached"
-	}
-	return res
-}
-
-// checkTProxyFlow is the end-to-end assertion: mihomo must be holding at
-// least one connection whose metadata.type is TProxy. This is the only
-// check that would have caught a failure mode where every object above
-// is present but traffic still is not being intercepted.
-//
-// Gated on clients being present: with no client traffic there are
-// legitimately zero TProxy connections, so a bare count would page every
-// idle night. When the count is zero we report Skipped rather than
-// guessing.
-func (a *Asserter) checkTProxyFlow(ctx context.Context) CheckResult {
-	res := CheckResult{Name: CheckTProxyFlow}
-	url := fmt.Sprintf("http://%s/connections", a.clashAPI.ExternalController)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		res.Detail = err.Error()
-		return res
-	}
-	if a.clashAPI.Secret != "" {
-		req.Header.Set("Authorization", "Bearer "+a.clashAPI.Secret)
-	}
-	resp, err := a.client.Do(req)
-	if err != nil {
-		res.Detail = fmt.Sprintf("clash api /connections failed: %v", err)
-		return res
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		res.Detail = fmt.Sprintf("clash api /connections status %d", resp.StatusCode)
-		return res
-	}
-	var body struct {
-		Connections []struct {
-			Metadata struct {
-				Type string `json:"type"`
-				// SourceIP distinguishes real client flows from the
-				// gateway's own loopback egress through mixed-port.
-				SourceIP string `json:"sourceIP"`
-			} `json:"metadata"`
-		} `json:"connections"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		res.Detail = fmt.Sprintf("decode /connections: %v", err)
-		return res
-	}
-	tproxy, total := 0, len(body.Connections)
-	for _, c := range body.Connections {
-		if strings.EqualFold(c.Metadata.Type, "tproxy") {
-			tproxy++
-		}
-	}
-	switch {
-	case tproxy > 0:
-		res.OK = true
-		res.Detail = fmt.Sprintf("%d/%d live connections are TProxy", tproxy, total)
-	case total == 0:
-		res.Skipped = true
-		res.Detail = "no live connections at all — cannot distinguish idle clients from a broken path"
-	default:
-		// Connections exist but none is TProxy. Every object check above
-		// may still pass in this state (e.g. mihomo's tproxy listener
-		// down), which is exactly why this check exists.
-		res.Detail = fmt.Sprintf("0 of %d live connections are TProxy — client interception is not working", total)
 	}
 	return res
 }

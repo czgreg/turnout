@@ -70,7 +70,7 @@ export default function Terminal({ snap }: { snap: Snapshot }) {
         <Alert
           type="warning"
           title={`${result.ip} 不在本节点的 client_subnet（${result.subnet || '未配置'}）内`}
-          content="这个 IP 没有专属的 fb-<ip> 组，流量会走 MATCH,us-pool 兜底。"
+          content="本节点只拦截 client_subnet 内的源地址（TPROXY 规则按 -s client_subnet 匹配）。防火墙把这个终端的流量导过来，也不会交给 mihomo 判定，而是按默认路由原样转发回防火墙 —— 白名单对它不生效。要接入这个终端，把它加进 client_subnet。"
         />
       )}
 
