@@ -47,7 +47,7 @@ func (f *fakeRunner) called(substr string) bool {
 
 func testAsserter(t *testing.T, fr *fakeRunner) *Asserter {
 	t.Helper()
-	a := NewAsserter("10.1.0.0/16", "ens19", 7893)
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893, true)
 	if a == nil {
 		t.Fatal("NewAsserter returned nil for a valid TPROXY config")
 	}
@@ -220,7 +220,7 @@ func TestOnce_AllObjectsPresentIsHealthy(t *testing.T) {
 	fr.out["iptables -t mangle -S PREROUTING"] =
 		"-A PREROUTING -i ens19 -s 10.1.0.0/16 -j TURNOUT_TPROXY\n"
 	fr.out["iptables -t mangle -S TURNOUT_TPROXY"] = liveChainOutput
-	a := NewAsserter("10.1.0.0/16", "ens19", 7893)
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893, true)
 	a.runner = fr.run
 
 	a.once(context.Background())
@@ -243,7 +243,7 @@ func TestOnce_AlertsOnTransitionOnly(t *testing.T) {
 	fr.out["iptables -t mangle -S PREROUTING"] =
 		"-A PREROUTING -i ens19 -s 10.1.0.0/16 -j TURNOUT_TPROXY\n"
 	fr.out["iptables -t mangle -S TURNOUT_TPROXY"] = liveChainOutput
-	a := NewAsserter("10.1.0.0/16", "ens19", 7893)
+	a := NewAsserter("10.1.0.0/16", "ens19", 7893, true)
 	a.runner = fr.run
 
 	var mu sync.Mutex
@@ -282,10 +282,10 @@ func TestOnce_AlertsOnTransitionOnly(t *testing.T) {
 // A config with no TPROXY path must yield no asserter, so /healthz falls
 // back to liveness-only instead of repairing objects toward port 0.
 func TestNewAsserter_DisabledWithoutDataPath(t *testing.T) {
-	if a := NewAsserter("", "ens19", 7893); a != nil {
+	if a := NewAsserter("", "ens19", 7893, true); a != nil {
 		t.Error("empty client_subnet must disable the asserter")
 	}
-	if a := NewAsserter("10.1.0.0/16", "ens19", 0); a != nil {
+	if a := NewAsserter("10.1.0.0/16", "ens19", 0, true); a != nil {
 		t.Error("tproxy_port 0 must disable the asserter")
 	}
 }

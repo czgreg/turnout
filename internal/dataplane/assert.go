@@ -122,6 +122,12 @@ type Asserter struct {
 	clientSubnet string
 	ingressIface string
 	tproxyPort   int
+	// dnsHijack mirrors data_plane.dns.hijack. When on, iproute.sh puts a
+	// `tcp --dport 53 RETURN` ahead of the TPROXY rules so the nat chain can
+	// DNAT TCP DNS instead of handing it to mihomo as an opaque flow. The
+	// repair path needs the same fact or a rebuilt chain silently changes
+	// that behaviour until the next turnout-nft restart.
+	dnsHijack bool
 
 	// Emit reports a check transition to the operator. Non-nil in
 	// production (wired to notify.Notifier); nil-safe for tests.
@@ -140,7 +146,7 @@ type Asserter struct {
 // tproxyPort <= 0 or an empty clientSubnet disables the asserter entirely
 // (returns nil) — those mean gateway.yaml has no TPROXY data path to
 // assert, and asserting nothing is better than repairing into port 0.
-func NewAsserter(clientSubnet, ingressIface string, tproxyPort int) *Asserter {
+func NewAsserter(clientSubnet, ingressIface string, tproxyPort int, dnsHijack bool) *Asserter {
 	if clientSubnet == "" || tproxyPort <= 0 {
 		return nil
 	}
@@ -151,6 +157,7 @@ func NewAsserter(clientSubnet, ingressIface string, tproxyPort int) *Asserter {
 		clientSubnet: clientSubnet,
 		ingressIface: ingressIface,
 		tproxyPort:   tproxyPort,
+		dnsHijack:    dnsHijack,
 		lastAlerted:  map[string]bool{},
 		runner:       defaultRunner,
 	}
@@ -379,20 +386,23 @@ func (a *Asserter) checkChainRules(ctx context.Context) CheckResult {
 	}
 
 	onPort := "--on-port " + strconv.Itoa(a.tproxyPort)
-	hasLocalReturn, hasTCP, hasUDP := false, false, false
+	hasLocalReturn, hasDNSReturn, hasTCP, hasUDP := false, false, false, false
 	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
 		l := sc.Text()
 		switch {
 		case strings.Contains(l, "--dst-type LOCAL") && strings.Contains(l, "-j RETURN"):
 			hasLocalReturn = true
+		case strings.Contains(l, "-p tcp") && strings.Contains(l, "--dport 53") && strings.Contains(l, "-j RETURN"):
+			hasDNSReturn = true
 		case strings.Contains(l, "-p tcp") && strings.Contains(l, "-j TPROXY") && strings.Contains(l, onPort):
 			hasTCP = true
 		case strings.Contains(l, "-p udp") && strings.Contains(l, "-j TPROXY") && strings.Contains(l, onPort):
 			hasUDP = true
 		}
 	}
-	if hasLocalReturn && hasTCP && hasUDP {
+	dnsOK := hasDNSReturn || !a.dnsHijack
+	if hasLocalReturn && dnsOK && hasTCP && hasUDP {
 		res.OK = true
 		res.Detail = fmt.Sprintf("%s has local RETURN + tcp/udp TPROXY to :%d", tproxyChainName, a.tproxyPort)
 		return res
@@ -401,6 +411,9 @@ func (a *Asserter) checkChainRules(ctx context.Context) CheckResult {
 	var missing []string
 	if !hasLocalReturn {
 		missing = append(missing, "local-destination RETURN")
+	}
+	if !dnsOK {
+		missing = append(missing, "tcp/53 RETURN")
 	}
 	if !hasTCP {
 		missing = append(missing, "tcp TPROXY")
@@ -421,9 +434,21 @@ func (a *Asserter) checkChainRules(ctx context.Context) CheckResult {
 		return rerr
 	}
 	ok := true
+	// Position 1 is the local RETURN, position 2 the DNS return; the TPROXY
+	// rules must come after both, so insert the RETURNs at the head.
 	if !hasLocalReturn {
 		if add("-t", "mangle", "-I", tproxyChainName, "1",
 			"-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN") != nil {
+			ok = false
+		}
+	}
+	if !dnsOK {
+		pos := "1"
+		if hasLocalReturn {
+			pos = "2"
+		}
+		if add("-t", "mangle", "-I", tproxyChainName, pos,
+			"-p", "tcp", "--dport", "53", "-j", "RETURN") != nil {
 			ok = false
 		}
 	}

@@ -226,7 +226,8 @@ func main() {
 	// forever, which in turn marks the node unhealthy and — with
 	// auto_failover — withdraws the liveness address for no real fault.
 	asserter := dataplane.NewAsserter(
-		cfg.Node.ClientSubnet, cfg.Node.IngressIface, cfg.DataPlane.TProxyPort)
+		cfg.Node.ClientSubnet, cfg.Node.IngressIface, cfg.DataPlane.TProxyPort,
+		cfg.DataPlane.DNS.HijackEnabled())
 	if asserter != nil {
 		asserter.Emit = func(subject, body string, urgent bool) {
 			sev := notify.SeverityInfo
