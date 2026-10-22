@@ -222,7 +222,7 @@ func TestPerTerminalUnits_SuffixModeForLargeSubnets(t *testing.T) {
 		seen[u.key] = true
 	}
 
-	// 192.168.1.126: low 10 bits = (101&3)<<8 | 126 = 382.
+	// 192.168.1.126: low 10 bits = (1&3)<<8 | 126 = 382.
 	if k := perTerminalKey("192.168.1.126", "192.168.0.0/16"); k != "s0.0.1.126" {
 		t.Errorf("key(192.168.1.126) = %q, want s0.0.1.126", k)
 	}
