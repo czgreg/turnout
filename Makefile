@@ -125,6 +125,10 @@ status: check-node  ## GET /api/status
 health: check-node  ## GET /api/proxies/active
 	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/proxies/active | python3 -m json.tool
 
+.PHONY: observe
+observe: check-node  ## 分级观测流量路径（引流/拦截/判定/出口/回程），可直接指出卡在哪一层  NODE=ops@<host>
+	$(SSH) 'sudo -n bash -s' < scripts/observe.sh
+
 .PHONY: verify
 verify: check-node  ## 旁挂验收：入向/回程/TPROXY/自检/分流/池/产物（需 sudo）  NODE=ops@<host>
 	$(SSH) 'sudo bash -s' < scripts/verify-bypass.sh
