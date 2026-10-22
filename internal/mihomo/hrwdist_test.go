@@ -43,7 +43,7 @@ func firstMemberCounts(members []string, depth int) map[string]int {
 }
 
 func spread(counts map[string]int, members []string) (min, max int, ratio float64) {
-	min, max = 1 << 30, 0
+	min, max = 1<<30, 0
 	for _, m := range members {
 		c := counts[m]
 		if c < min {
@@ -202,35 +202,60 @@ func TestHRWTopN_IndependentOfInputOrder(t *testing.T) {
 	}
 }
 
-// TestPerTerminalUnits_BlockModeForLargeSubnets: a subnet bigger than
-// maxPerTerminalUnits hosts must still pin every terminal — by block —
-// instead of silently disabling per-terminal routing (the 2026-10-22 /16
-// regression where one terminal used four egresses at once).
-func TestPerTerminalUnits_BlockModeForLargeSubnets(t *testing.T) {
+// TestPerTerminalUnits_SuffixModeForLargeSubnets: a subnet bigger than
+// maxPerTerminalUnits hosts must still pin every terminal — by low-bit
+// suffix bucket — instead of silently disabling per-terminal routing (the
+// 2026-10-22 /16 regression where one terminal used four egresses at once).
+func TestPerTerminalUnits_SuffixModeForLargeSubnets(t *testing.T) {
 	units := perTerminalUnits("192.168.0.0/16")
 	if len(units) != maxPerTerminalUnits {
 		t.Fatalf("/16 → %d units, want %d", len(units), maxPerTerminalUnits)
 	}
-	if units[0].cidr != "192.168.0.0/26" || units[len(units)-1].cidr != "192.168.255.192/26" {
-		t.Errorf("block layout wrong: first=%s last=%s", units[0].cidr, units[len(units)-1].cidr)
+	if u := units[382]; u.ruleType != "SRC-IP-SUFFIX" || u.match != "0.0.1.126/10" || u.key != "s0.0.1.126" {
+		t.Errorf("bucket 382 = %+v", u)
 	}
-	// Blocks tile the subnet without gaps.
-	for i := 1; i < len(units); i++ {
-		if units[i].cidr == units[i-1].cidr {
-			t.Fatalf("duplicate block %s", units[i].cidr)
+	seen := map[string]bool{}
+	for _, u := range units {
+		if seen[u.key] {
+			t.Fatalf("duplicate bucket %s", u.key)
 		}
+		seen[u.key] = true
 	}
 
-	// A terminal maps to the block that contains it, and the group name the
-	// API reports is exactly a group the renderer emits.
-	if k := perTerminalKey("192.168.1.126", "192.168.0.0/16"); k != "192.168.1.64/26" {
-		t.Errorf("key(192.168.1.126) = %q, want 192.168.1.64/26", k)
+	// 192.168.1.126: low 10 bits = (101&3)<<8 | 126 = 382.
+	if k := perTerminalKey("192.168.1.126", "192.168.0.0/16"); k != "s0.0.1.126" {
+		t.Errorf("key(192.168.1.126) = %q, want s0.0.1.126", k)
 	}
-	if g := PerTerminalGroupName("192.168.1.126", "192.168.0.0/16"); g != "fb-192.168.1.64/26" {
+	// Addresses 1024 apart share a bucket; neighbours do not.
+	if a, b := perTerminalKey("192.168.0.5", "192.168.0.0/16"), perTerminalKey("192.168.4.5", "192.168.0.0/16"); a != b {
+		t.Errorf("1024-apart addresses must share a bucket: %s vs %s", a, b)
+	}
+	if g := PerTerminalGroupName("192.168.1.126", "192.168.0.0/16"); g != "fb-s0.0.1.126" {
 		t.Errorf("group = %q", g)
 	}
 	if g := PerTerminalGroupName("10.0.0.1", "192.168.0.0/16"); g != "" {
 		t.Errorf("out-of-subnet ip must have no group, got %q", g)
+	}
+}
+
+// The point of suffix buckets: a run of adjacent terminals (one floor, one
+// team) must spread across the pool like independent per-host draws, not
+// land on one egress pair as contiguous blocks did.
+func TestPerTerminalUnits_NeighboursSpread(t *testing.T) {
+	members := []string{"n1", "n2", "n3", "n4", "n5"}
+	count := map[string]int{}
+	for i := 64; i < 128; i++ { // 192.168.1.64-127: one former /26 block
+		ip := fmt.Sprintf("192.168.1.%d", i)
+		count[hrwTopN(perTerminalKey(ip, "192.168.0.0/16"), members, 1)[0]]++
+	}
+	if len(count) != len(members) {
+		t.Fatalf("64 adjacent terminals used only %d of %d egresses: %v", len(count), len(members), count)
+	}
+	for m, c := range count {
+		// Uniform is 12.8 each; allow wide slack, catch clustering.
+		if c > 26 {
+			t.Errorf("egress %s carries %d of 64 adjacent terminals: %v", m, c, count)
+		}
 	}
 }
 
@@ -241,7 +266,7 @@ func TestPerTerminalUnits_HostModeUnchanged(t *testing.T) {
 	if len(units) != 254 {
 		t.Fatalf("/24 → %d units, want 254", len(units))
 	}
-	if units[0].cidr != "10.1.3.1/32" || units[0].key != "10.1.3.1" {
+	if units[0].ruleType != "SRC-IP-CIDR" || units[0].match != "10.1.3.1/32" || units[0].key != "10.1.3.1" {
 		t.Errorf("host unit = %+v", units[0])
 	}
 	if g := PerTerminalGroupName("10.1.3.42", "10.1.3.0/24"); g != "fb-10.1.3.42" {

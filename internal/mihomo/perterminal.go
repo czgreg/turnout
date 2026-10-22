@@ -19,15 +19,23 @@
 // reassigned — most terminals keep their (primary, secondary) pair stable.
 //
 // Large subnets: the unit of assignment is a host when the subnet has at
-// most maxPerTerminalUnits hosts, otherwise an equal-size address BLOCK
-// (e.g. a /16 is cut into 1024 /26 blocks). Every terminal in a block
-// shares the block's [primary, secondary]; a terminal still never spreads
-// across egresses. This replaced "give up past 1024 hosts", which silently
-// disabled per-terminal pinning for the office /16 on 2026-10-22: one
-// terminal's flows went out through four different egress IPs at once.
-// Blocks lose nothing in practice — with a handful of pool members,
-// thousands of terminals already share each egress IP; what matters is
-// that each terminal keeps ONE.
+// most maxPerTerminalUnits hosts. Above that it is a SUFFIX BUCKET: the
+// terminal's low suffixBits address bits (10 → 1024 buckets), matched with
+// mihomo's SRC-IP-SUFFIX. Every terminal in a bucket shares its
+// [primary, secondary]; a terminal still never spreads across egresses.
+//
+// Why low bits and not contiguous blocks: a /26 block put 64 ADJACENT
+// addresses on one egress pair, and adjacent addresses are usually one
+// floor or one team — they all landed on the same node and all failed
+// over together. Low-bit buckets give neighbours (…101.126, …101.127)
+// different buckets and independent HRW draws, so a team spreads across
+// the pool the way per-host assignment would. Bucket members are 1024
+// addresses apart (192.168.0.5, 192.168.4.5, …).
+//
+// History: before buckets, any subnet over 1024 hosts silently got NO
+// per-terminal pinning (2026-10-22: one terminal on four egresses at once);
+// contiguous /26 blocks fixed that and were replaced the same day for the
+// clustering above.
 
 package mihomo
 
@@ -42,11 +50,15 @@ import (
 )
 
 const (
-	// maxPerTerminalUnits caps the number of SRC-IP-CIDR rules / fb-*
-	// groups emitted. Subnets with more hosts than this are split into
-	// blocks instead (see perTerminalUnits), so the config stays bounded
-	// (/16 would otherwise be 65k rules) without dropping pinning.
+	// maxPerTerminalUnits caps the number of per-terminal rules / fb-*
+	// groups emitted. Subnets with more hosts than this are bucketed by
+	// address suffix instead (see perTerminalUnits), so the config stays
+	// bounded (/16 would otherwise be 65k rules) without dropping pinning.
 	maxPerTerminalUnits = 1024
+
+	// suffixBits is log2(maxPerTerminalUnits): the low address bits that
+	// select a bucket in suffix mode.
+	suffixBits = 10
 
 	// perTerminalFallbackDepth is the number of HRW-ordered members
 	// included in each fb-<ip> fallback group. 2 = [primary, secondary]
@@ -99,7 +111,7 @@ func (r *Renderer) perTerminalSlices(outbounds []subscribe.Outbound) []string {
 	}
 	rules := make([]string, 0, len(units)+1)
 	for _, u := range units {
-		rules = append(rules, fmt.Sprintf("SRC-IP-CIDR,%s,%s%s", u.cidr, perTerminalGroupPrefix, u.key))
+		rules = append(rules, fmt.Sprintf("%s,%s,%s%s", u.ruleType, u.match, perTerminalGroupPrefix, u.key))
 	}
 	rules = append(rules, "MATCH,"+usPool)
 	return rules
@@ -190,91 +202,81 @@ func PerTerminalGroupName(ip, clientSubnet string) string {
 	return ""
 }
 
-// ptUnit is one per-terminal routing unit: the SRC-IP-CIDR it matches and
-// the key that names its group and seeds HRW.
+// ptUnit is one per-terminal routing unit: the rule that matches its
+// terminals and the key that names its group and seeds HRW.
 type ptUnit struct {
-	cidr string // "10.1.3.7/32" or "192.168.4.0/26"
-	key  string // "10.1.3.7"    or "192.168.4.0/26"
+	ruleType string // "SRC-IP-CIDR" (host) or "SRC-IP-SUFFIX" (bucket)
+	match    string // "10.1.3.7/32"  or "0.0.1.126/10"
+	key      string // "10.1.3.7"     or "s0.0.1.126" (group fb-s0.0.1.126)
 }
 
-// perTerminalUnitBits returns the prefix length of one routing unit for
-// cidr: 32 (single host) when the subnet fits in maxPerTerminalUnits
-// hosts, else the shortest prefix that yields at most that many blocks.
+// suffixMode reports whether cidr is too large for per-host units.
 // ok=false for non-IPv4 or unparsable input.
-func perTerminalUnitBits(cidr string) (base uint32, ones, unitBits int, ok bool) {
+func suffixMode(cidr string) (suffix, ok bool) {
 	_, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return 0, 0, 0, false
+	if err != nil || ipnet.IP.To4() == nil {
+		return false, false // IPv6 client pools not supported
 	}
-	ip4 := ipnet.IP.To4()
-	if ip4 == nil {
-		return 0, 0, 0, false // IPv6 client pools not supported
-	}
-	ones, _ = ipnet.Mask.Size()
-	base = binary.BigEndian.Uint32(ip4)
+	ones, _ := ipnet.Mask.Size()
 	hostBits := 32 - ones
-	// Hosts excluding network/broadcast, as enumerateHosts counts them.
 	hosts := 1 << uint(hostBits)
 	if hostBits >= 2 {
-		hosts -= 2
+		hosts -= 2 // network + broadcast, as enumerateHosts counts
 	}
-	if hosts <= maxPerTerminalUnits {
-		return base, ones, 32, true
-	}
-	// Blocks: 2^(unitBits-ones) <= maxPerTerminalUnits.
-	b := 0
-	for (1 << uint(b+1)) <= maxPerTerminalUnits {
-		b++
-	}
-	return base, ones, ones + b, true
+	return hosts > maxPerTerminalUnits, true
+}
+
+// suffixAddr renders bucket n as the dotted address whose low suffixBits
+// equal n — the form SRC-IP-SUFFIX takes ("0.0.1.126" for n=382).
+func suffixAddr(n uint32) string {
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], n)
+	return net.IP(b[:]).String()
 }
 
 // perTerminalUnits lists every routing unit in cidr (see ptUnit).
 func perTerminalUnits(cidr string) []ptUnit {
-	base, ones, unitBits, ok := perTerminalUnitBits(cidr)
+	suffix, ok := suffixMode(cidr)
 	if !ok {
 		return nil
 	}
-	if unitBits == 32 {
+	if !suffix {
 		hosts := enumerateHosts(cidr, maxPerTerminalUnits)
 		out := make([]ptUnit, 0, len(hosts))
 		for _, h := range hosts {
-			out = append(out, ptUnit{cidr: h + "/32", key: h})
+			out = append(out, ptUnit{ruleType: "SRC-IP-CIDR", match: h + "/32", key: h})
 		}
 		return out
 	}
-	n := 1 << uint(unitBits-ones)
-	step := uint32(1) << uint(32-unitBits)
+	n := 1 << suffixBits
 	out := make([]ptUnit, 0, n)
 	for i := 0; i < n; i++ {
-		var b [4]byte
-		binary.BigEndian.PutUint32(b[:], base+uint32(i)*step)
-		c := fmt.Sprintf("%s/%d", net.IP(b[:]).String(), unitBits)
-		out = append(out, ptUnit{cidr: c, key: c})
+		a := suffixAddr(uint32(i))
+		out = append(out, ptUnit{
+			ruleType: "SRC-IP-SUFFIX",
+			match:    fmt.Sprintf("%s/%d", a, suffixBits),
+			key:      "s" + a,
+		})
 	}
 	return out
 }
 
 // perTerminalKey maps one terminal ip to its unit key: the ip itself in
-// host mode, the containing block's CIDR in block mode. "" if not
-// computable (bad input). Callers check subnet membership separately.
+// host mode, "s<suffix>" in suffix mode. "" if not computable. Callers
+// check subnet membership separately.
 func perTerminalKey(ip, cidr string) string {
-	_, _, unitBits, ok := perTerminalUnitBits(cidr)
+	suffix, ok := suffixMode(cidr)
 	if !ok {
 		return ""
 	}
-	if unitBits == 32 {
+	if !suffix {
 		return ip
 	}
 	p := net.ParseIP(ip).To4()
 	if p == nil {
 		return ""
 	}
-	mask := ^uint32(0) << uint(32-unitBits)
-	v := binary.BigEndian.Uint32(p) & mask
-	var b [4]byte
-	binary.BigEndian.PutUint32(b[:], v)
-	return fmt.Sprintf("%s/%d", net.IP(b[:]).String(), unitBits)
+	return "s" + suffixAddr(binary.BigEndian.Uint32(p)&(1<<suffixBits-1))
 }
 
 // intersectWithPresent filters wanted by membership in outbounds' tag set.
