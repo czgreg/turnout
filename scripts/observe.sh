@@ -63,6 +63,9 @@ counters() {
       /dst-type LOCAL/ {print "local_return", $1}
       /TPROXY .*tcp|tcp.*TPROXY/ {print "tproxy_tcp", $1}
       /TPROXY .*udp|udp.*TPROXY/ {print "tproxy_udp", $1}'
+    iptables -t nat -L TURNOUT_DNS -v -n -x 2>/dev/null | awk '
+      /DNAT.*udp|udp.*DNAT/ {print "dns_udp", $1}
+      /DNAT.*tcp|tcp.*DNAT/ {print "dns_tcp", $1}'
   } | sort
 }
 
@@ -152,6 +155,30 @@ if [ "$fwmark" -ge 1 ] && [ "$t101" -ge 1 ]; then
 else
   fail "策略路由缺失（rule=$fwmark table101=$t101）—— 被 TPROXY 标记的包会走普通路由"
   fix "systemctl restart turnout-nft"
+fi
+
+# ── 2b. DNS hijack ──────────────────────────────────────────────────────────
+# Terminals keep their own resolvers; the firewall diverts those queries
+# here and the nat chain hands them to mihomo. If this stage is broken the
+# symptom is "nothing resolves" on every diverted terminal — worse than
+# any routing fault, so it gets its own stage.
+
+head_ "2b. DNS 劫持（终端自带的 223.5.5.5 / 119.29.29.29 等）"
+DNSU=$(delta dns_udp); DNST=$(delta dns_tcp)
+hijack_flag=$(grep -m1 'TURNOUT_DNS_HIJACK' /etc/turnout/env 2>/dev/null | sed 's/.*=//' | tr -d '"')
+dns_jump=$(iptables -t nat -S PREROUTING 2>/dev/null | grep 'TURNOUT_DNS')
+printf '        规则  %s\n' "${dns_jump:-<none>}"
+printf '        窗口  dnat_udp=+%s  dnat_tcp=+%s\n' "$DNSU" "$DNST"
+if [ "${hijack_flag:-1}" != "1" ]; then
+  idle "DNS 劫持已关闭（data_plane.dns.hijack=false）—— 被导流的终端 DNS 会在防火墙和本机之间成环"
+elif [ -z "$dns_jump" ]; then
+  fail "DNS 劫持已开启但 nat PREROUTING 没有跳转 —— 被导流终端会完全无法解析"
+  fix "systemctl restart turnout-nft（iproute.sh 会重装 TURNOUT_DNS）"
+elif [ $((DNSU + DNST)) -gt 0 ]; then
+  pass "劫持了 $((DNSU + DNST)) 个 DNS 查询（udp=$DNSU tcp=$DNST）"
+else
+  idle "窗口内没有被导流的 DNS 查询"
+  fix "终端执行 dig @223.5.5.5 www.google.com 再采样；仍为 0 说明防火墙没导 53 端口（不影响分流，SNI 嗅探兜底）"
 fi
 
 # ── 3. classification ───────────────────────────────────────────────────────

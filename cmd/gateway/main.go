@@ -73,6 +73,13 @@ func main() {
 		// multi-NIC box can be a different one than the firewall-facing NIC.
 		fmt.Printf("export TURNOUT_RETURN_IFACE=%q\n", cfg.Node.Return.Iface)
 		fmt.Printf("export TURNOUT_API_PORT=%q\n", apiPort)
+		// DNS hijack: iproute.sh DNATs diverted dport-53 traffic to
+		// INGRESS_IP:53 when 1. See DNSConfig.Hijack.
+		dnsHijack := 0
+		if cfg.DataPlane.DNS.HijackEnabled() {
+			dnsHijack = 1
+		}
+		fmt.Printf("export TURNOUT_DNS_HIJACK=%d\n", dnsHijack)
 		// Space-separated source CIDRs allowed to reach the API port, for
 		// nft.conf's input chain. Empty → loopback only (install.sh emits
 		// no saddr accept rule, so only the `iif lo` rule matches).

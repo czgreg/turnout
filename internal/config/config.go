@@ -563,7 +563,32 @@ type DNSConfig struct {
 	// (overseas), which has no records for them. Name kept for yaml/API
 	// back-compat; predates the 2026-07-06 redir-host switch.
 	FakeIPSkipSuffixes []string `yaml:"fake_ip_skip_suffixes,omitempty"`
+
+	// Hijack controls transparent capture of DNS that the firewall diverts
+	// here. Default true (nil → true).
+	//
+	// Terminals keep their own resolvers (223.5.5.5, 119.29.29.29, the
+	// ISP's): we may not change them. Once the firewall's PBR diverts that
+	// UDP/TCP 53 traffic to this box, something must answer it — the
+	// TPROXY chain deliberately skips dport 53, so without hijack the query
+	// is forwarded back out the default route, re-diverted by the firewall,
+	// and loops until TTL expires. Observed 2026-10-22: every diverted
+	// terminal lost DNS entirely.
+	//
+	// With hijack on, iproute.sh DNATs non-local dport-53 traffic from
+	// client_subnet to <ingress_ip>:53 (mihomo's DNS). conntrack rewrites
+	// the reply's source back to the resolver the client asked, so the
+	// terminal sees 119.29.29.29 answer — same model as OpenClash /
+	// ShellCrash "DNS hijack", sing-box hijack-dns, mihomo tun dns-hijack.
+	//
+	// Encrypted DNS (DoT 853, DoH 443) is not captured: DoH is ordinary
+	// HTTPS and DoT would need TLS termination. Those terminals fall back
+	// to SNI sniffing, which still routes correctly.
+	Hijack *bool `yaml:"hijack,omitempty"`
 }
+
+// HijackEnabled reports whether diverted DNS is captured (default true).
+func (d DNSConfig) HijackEnabled() bool { return d.Hijack == nil || *d.Hijack }
 
 type RouteConfig struct {
 	GeositeURL string `yaml:"geosite_url"`

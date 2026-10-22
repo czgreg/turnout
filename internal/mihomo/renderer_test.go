@@ -852,3 +852,57 @@ func TestRenderer_PerTerminalNamedPoolUnified(t *testing.T) {
 		t.Error("geosite-github should route through the unified perterm sub-rule")
 	}
 }
+
+// TestRenderer_DNSWhitelistSplit pins the whitelist-mode DNS model that
+// diverted-DNS hijack depends on: once every office lookup lands on this
+// node, only names we will actually proxy may resolve through the pool.
+//
+//   - default nameserver flips to cnDoH (DIRECT traffic gets domestic/CDN-
+//     local answers, and lookups do not consume airport bandwidth)
+//   - each whitelisted geosite and domain_suffix → proxyDoH
+//   - geosite-cn and intranet suffixes keep cnDoH even when a whitelist
+//     entry overlaps them (rules route those DIRECT first)
+//   - geoip whitelist entries contribute nothing (IP sets name no domains)
+func TestRenderer_DNSWhitelistSplit(t *testing.T) {
+	r := newTestRenderer(t)
+	r.cfg.DNS.CNDoH = []string{"https://doh.pub/dns-query"}
+	r.cfg.DNS.ProxyDoH = []string{"tls://1.1.1.1:853"}
+	r.cfg.DNS.FakeIPSkipSuffixes = []string{"corp.example.com"}
+	r.SetWhitelist("whitelist", config.WhitelistConfig{
+		Geosites:     config.StringList{"geosite-google", "geosite-openai"},
+		Geoips:       config.StringList{"geoip-telegram"},
+		DomainSuffix: []string{"claude.ai", "corp.example.com"},
+	})
+
+	body, err := r.Write(sampleOutbounds())
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var doc map[string]any
+	_ = yaml.Unmarshal(body, &doc)
+	dns, _ := doc["dns"].(map[string]any)
+
+	ns, _ := dns["nameserver"].([]any)
+	if len(ns) != 1 || ns[0] != "https://doh.pub/dns-query" {
+		t.Errorf("whitelist mode: dns.nameserver = %v, want [cnDoH]", ns)
+	}
+
+	pol, _ := dns["nameserver-policy"].(map[string]any)
+	want := map[string]string{
+		"rule-set:geosite-google": "tls://1.1.1.1:853",
+		"rule-set:geosite-openai": "tls://1.1.1.1:853",
+		"+.claude.ai":             "tls://1.1.1.1:853",
+		"rule-set:geosite-cn":     "https://doh.pub/dns-query",
+		// overlap: intranet suffix stays domestic
+		"+.corp.example.com": "https://doh.pub/dns-query",
+	}
+	for k, up := range want {
+		got, ok := pol[k].([]any)
+		if !ok || len(got) != 1 || got[0] != up {
+			t.Errorf("nameserver-policy[%q] = %v, want [%s]", k, pol[k], up)
+		}
+	}
+	if _, has := pol["rule-set:geoip-telegram"]; has {
+		t.Error("geoip rule-sets must not appear in nameserver-policy")
+	}
+}

@@ -66,6 +66,8 @@
 
 package mihomo
 
+import "strings"
+
 func (r *Renderer) buildDNS() map[string]any {
 	cnDoH := r.cfg.DNS.CNDoH
 	if len(cnDoH) == 0 {
@@ -84,13 +86,37 @@ func (r *Renderer) buildDNS() map[string]any {
 		nodeResolver = []string{"udp://119.29.29.29"}
 	}
 
+	// Which side answers by default depends on the route mode — DNS must
+	// agree with where the traffic will actually go.
+	//
+	//   overseas:  every non-CN destination is proxied, so non-CN names
+	//              resolve through proxyDoH (default) and only geosite-cn
+	//              short-circuits to cnDoH.
+	//   whitelist: only whitelisted destinations are proxied; everything
+	//              else goes DIRECT through the firewall. Default flips to
+	//              cnDoH and the whitelist is the proxyDoH exception list.
+	//
+	// The whitelist flip matters once diverted terminal DNS is hijacked
+	// (DNSConfig.Hijack): every lookup from the office then lands here.
+	// Resolving apple.com / microsoft.com / akamai edges through the airport
+	// would hand DIRECT traffic US CDN addresses (slow, and the firewall's
+	// CN/non-CN split then misclassifies it) and burn pool bandwidth on
+	// lookups that never needed it. Same model as ChinaDNS-NG / mosdns:
+	// proxy list → trusted remote, everything else → domestic.
+	defaultNS := proxyDoH
+	policy := buildNameserverPolicy(cnDoH, r.cfg.DNS.FakeIPSkipSuffixes)
+	if r.cfg.Route.Mode == "whitelist" {
+		defaultNS = cnDoH
+		addProxyPolicy(policy, proxyDoH, r.proxiedDomainRuleSets(), r.cfg.Route.Whitelist.DomainSuffix)
+	}
+
 	dns := map[string]any{
 		"enable":                  true,
 		"ipv6":                    false,
 		"enhanced-mode":           "redir-host",
 		"default-nameserver":      []string{stripScheme(bootstrap)},
-		"nameserver":              proxyDoH,
-		"nameserver-policy":       buildNameserverPolicy(cnDoH, r.cfg.DNS.FakeIPSkipSuffixes),
+		"nameserver":              defaultNS,
+		"nameserver-policy":       policy,
 		"proxy-server-nameserver": dedupeUpstreams(cnDoH),
 	}
 
@@ -199,6 +225,52 @@ func buildNameserverPolicy(cnDoH, fakeIPSkip []string) map[string]any {
 		policy[s] = cnDoH
 	}
 	return policy
+}
+
+// proxiedDomainRuleSets lists the domain rule-providers whose traffic is
+// sent through a pool in whitelist mode: the whitelisted geosites plus any
+// pool rule_sets that are domain-typed (geoip-* sets are IP-keyed and say
+// nothing about names). Provider names equal the tag, which is how rules.go
+// declares them, so the policy key "rule-set:<tag>" resolves.
+func (r *Renderer) proxiedDomainRuleSets() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(tag string) {
+		if tag == "" || seen[tag] || strings.HasPrefix(tag, "geoip-") {
+			return
+		}
+		seen[tag] = true
+		out = append(out, tag)
+	}
+	for _, tag := range r.cfg.Route.Whitelist.Geosites {
+		add(tag)
+	}
+	for _, tag := range r.poolRuleSets() {
+		add(tag)
+	}
+	return out
+}
+
+// addProxyPolicy routes proxied names to proxyDoH. Existing keys win:
+// geosite-cn and operator intranet suffixes were placed first by
+// buildNameserverPolicy and must keep resolving domestically even if a
+// whitelist entry happens to overlap them.
+func addProxyPolicy(policy map[string]any, proxyDoH, ruleSets, suffixes []string) {
+	for _, tag := range ruleSets {
+		key := "rule-set:" + tag
+		if _, ok := policy[key]; !ok {
+			policy[key] = proxyDoH
+		}
+	}
+	for _, raw := range suffixes {
+		key := normalizePolicySuffix(strings.TrimSpace(raw))
+		if key == "" {
+			continue
+		}
+		if _, ok := policy[key]; !ok {
+			policy[key] = proxyDoH
+		}
+	}
 }
 
 // normalizePolicySuffix accepts ".corp.example.com", "corp.example.com", or

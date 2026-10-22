@@ -119,7 +119,23 @@ data_plane:
     # [改] 监听地址由 node.ingress_ip 决定（上游绑 tun0_gateway_ip）。
     # 防火墙上把办公网段的 :53 引流到本机。
     listen: ""            # 留空 = 自动用 node.ingress_ip + ":53"
-  
+
+    # [新] 透明劫持被导流过来的 DNS。默认 true。
+    #
+    # 终端**不改 DNS**，继续用 223.5.5.5 / 119.29.29.29 / 运营商 DNS。
+    # 防火墙 PBR 把这些 53 端口查询导到本机后，iproute.sh 在 nat PREROUTING
+    # 把「目的端口 53、目的地址非本机」的 UDP/TCP DNAT 到 ingress_ip:53
+    # （mihomo）；conntrack 把应答源地址改回终端问的那个 DNS，终端无感。
+    # 与 OpenClash/ShellCrash 的 DNS 劫持、sing-box hijack-dns 同一模型。
+    #
+    # 关掉（false）的后果：被导过来的 DNS 不处理，按默认路由交还防火墙后
+    # 又被导回来，成环直到 TTL 耗尽 —— 被导流终端完全无法解析。
+    #
+    # 解析分流随 route.mode：whitelist 模式下只有白名单域名走 proxy_doh，
+    # 其余（含所有直连站点）走 cn_doh，拿到国内/就近 CDN 地址。
+    # 不覆盖：DoT(853)/DoH(443) 加密 DNS —— 这类终端退回 SNI 嗅探分流。
+    hijack: true
+
     # redir-host 是代码里写死的（internal/mihomo/dns.go），**没有开关** ——
     # 这里曾经写了一行 enhanced_mode，但 schema 里不存在该字段，一直被静默
     # 忽略。留着只会让人以为能改。办公网里 NAS/打印机/监控/内网业务系统
