@@ -229,3 +229,82 @@ watchdog.checks.go:
 形成无意义的来回切换。**先修复、后报信，且报信要有阈值去抖**——这是正确的分工。
 
 PLAN.md P3 第 2 条的表格已按此更新。
+
+---
+
+## 七、2026-10-22：控制面可达性与引流网段可编辑
+
+### 1. 移除 18080 的 API DROP（`deploy/node/iproute.sh`）
+
+旧行为：mangle PREROUTING 最前面插一条
+`-i $INGRESS_IFACE -s $CLIENT_SUBNET --dst-type LOCAL -p tcp --dport $API_PORT -j DROP`，
+拒绝被引流网段访问控制面。副作用是**站在该网段里的操作员也连不上 `/ui/`**：
+节点 10.1.3.15 的 `client_subnet` 是 `192.168.0.0/16`，管理机
+`192.168.1.117` 落在里面，于是页面打不开而进程监听正常。
+
+这条 DROP 本来就是冗余的 —— TPROXY 链首条已是
+`-m addrtype --dst-type LOCAL -j RETURN`，目的为本机的流量不会进 mihomo。
+删掉后：网段终端 → 本机 18080 由内核本地投递，nft input 链放行，
+**不经过代理**。升级时 `purge_prerouting()` 会清掉老安装留下的 DROP。
+
+副作用：控制面在该网段内不再有网络层隔离，只剩 `api.token` 一层
+（当前为空）。这是 2026-10-19「测试期对外开放」决定的延续，内网可信前提成立。
+
+### 2. nft.conf 渲染抽成脚本（`deploy/node/render-rules.sh`）
+
+原来只在 `install.sh` 的 shell 里。现在控制面改网段后也要重渲染，
+两份实现必然漂移，所以抽成唯一实现；`install.sh` 与 API 都调它。
+脚本内置 `nft -c` 语法自检，坏模板进不了线上。
+
+### 3. 新增 `GET/PUT /api/node/network`
+
+`client_subnet` 是唯一一个改动会逃出 turnout-gateway 进程的配置字段：
+它同时被 `/etc/turnout/env`、`nft.conf`、`turnout-nft.service` 和数据面消费。
+所以保存是一个五步扇出（详见 `docs/api.md`），中途失败会返回 500 并明确
+说明「yaml 已落盘、线上规则可能仍是旧值」。
+
+渲染器新增 `SetNode`：`Renderer` 在构造时用 `WithNode` 拷贝了一份 `NodeConfig`，
+不重新灌入的话 `fb-<ip>` 分组会一直按旧网段生成 —— API 报新值、mihomo 匹配旧值。
+
+### 4. 前端「网段设置」页（`web/src/pages/Network.tsx`，`#/network`）
+
+编辑 `client_subnet`，保存前二次确认（会短暂中断代理转发），
+并在 `api_token_set=false` 时给出无鉴权告警。
+
+### 5. 新增 `GET/PUT /api/node/signal` +「节点信号」卡片
+
+`liveness_ip` / `auto_failover` / `notify_on_state_change` 也搬进控制台。
+
+三个刻意的设计点：
+
+- **保存即重启，返回值描述的是"将要发生"而非"已发生"。** watchdog 在
+  `cmd/gateway/main.go` 里构造一次，配置不重启就不生效。用
+  `systemd-run --on-active=2 --collect` 排一个**瞬态单元**来重启自己 ——
+  普通后台子进程会被本服务的 cgroup 一起杀掉。
+- **换地址时同步摘旧地址。** watchdog 只在健康翻转时挂地址，从不清理历史值，
+  留着旧 `/32` 会让它继续应答防火墙 IP-Link 探测。
+- **前端文案写明"进程崩溃不会自动摘地址"。** 这个地址由内核持有，不属于进程；
+  把 `auto_failover` 理解成"进程死了自动摘"的运维会在最需要它的时候误判。
+  实际兜底是 systemd 的 `Restart=on-failure`。
+
+> 后续讨论中确认的两个事实，都写进了代码注释与 UI：① watchdog 只能覆盖
+> **数据面**故障（mihomo 崩溃 / TPROXY 规则丢失 / 出口池全空），对自身崩溃
+> 是盲的；② `auto_failover: false` 时它只报信不动作，防火墙永远看不到 Down。
+> 所以建议路径是「先开告警观察，确认无误报后再开自动回切」。
+
+### 6. 新增「通知设置」页（`web/src/pages/Notifications.tsx`，`#/notifications`）
+
+后端五个通知端点早就存在，但前端一个都没接 —— 操作员想配飞书 webhook 只能 curl。
+这一页把 `GET /api/notifications/status`、`POST/DELETE /api/notifications/lark`、
+`POST /api/notifications/test`、`GET /api/notifications/recent` 全部接上。
+
+两个刻意的处理：
+
+- **密钥不回显。** 服务端只返回 `secret_configured: boolean`；表单留空表示「保持
+  已存密钥」，清除走单独的 DELETE（同时删 webhook 地址）。若把留空当成清空，
+  一次无心的保存就会静默停掉告警。
+- **`signature_required` 默认开启，与服务器一致。** 开启后密钥必填，前端先拦，
+  否则操作员会撞上一个莫名其妙的 400。
+
+下方「最近通知」直接读 JSONL 日志，包含投递失败的行 —— 这正是"为什么没收到告警"
+的答案来源，不依赖飞书侧可见性。

@@ -30,12 +30,14 @@ func (s *Server) handleNotificationsStatus(w http.ResponseWriter, _ *http.Reques
 }
 
 // larkConfigDTO is the request body for POST /api/notifications/lark.
-// secret is required when signature_required=true (the recommended
-// production setup); webhook_url is always required.
+// webhook_url is always required. secret is required when
+// signature_required=true AND no secret is already stored — omitting it
+// (or sending "") keeps the existing one, so re-saving the page without
+// retyping the secret does not silently disable signing.
 type larkConfigDTO struct {
-	WebhookURL        string `json:"webhook_url"`
-	Secret            string `json:"secret,omitempty"`
-	SignatureRequired *bool  `json:"signature_required,omitempty"` // pointer to disambiguate "missing" from "false"
+	WebhookURL        string  `json:"webhook_url"`
+	Secret            *string `json:"secret,omitempty"`
+	SignatureRequired *bool   `json:"signature_required,omitempty"` // pointer to disambiguate "missing" from "false"
 }
 
 func (s *Server) handleNotificationsLark(w http.ResponseWriter, r *http.Request) {
@@ -56,19 +58,31 @@ func (s *Server) handleNotificationsLark(w http.ResponseWriter, r *http.Request)
 	if dto.SignatureRequired != nil {
 		sigRequired = *dto.SignatureRequired
 	}
-	if sigRequired && dto.Secret == "" {
-		http.Error(w, "secret required when signature_required=true (default)", http.StatusBadRequest)
+	// An omitted or empty secret means "keep the stored one". Without this,
+	// re-saving the web page (which never echoes the secret) would overwrite
+	// it with "" and silently turn signing into a guaranteed 19021 error on
+	// every delivery.
+	provided := ""
+	if dto.Secret != nil {
+		provided = *dto.Secret
+	}
+	existing := s.deps.Notifier.GetStatus().SecretConfigured
+	if sigRequired && provided == "" && !existing {
+		http.Error(w, "secret required when signature_required=true (default) and none is stored", http.StatusBadRequest)
 		return
 	}
 
 	// Persist to disk: secret file (chmod 0600), then yaml (URL only).
-	secretPath := s.deps.Cfg.Notifications.Lark.SecretFile
-	if secretPath == "" {
-		secretPath = "/var/lib/turnout/lark-secret"
-	}
-	if err := writeLarkSecret(secretPath, dto.Secret); err != nil {
-		http.Error(w, "persist secret: "+err.Error(), http.StatusInternalServerError)
-		return
+	// Only rewrite the secret when one was supplied — see above.
+	if provided != "" {
+		secretPath := s.deps.Cfg.Notifications.Lark.SecretFile
+		if secretPath == "" {
+			secretPath = "/var/lib/turnout/lark-secret"
+		}
+		if err := writeLarkSecret(secretPath, provided); err != nil {
+			http.Error(w, "persist secret: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if err := s.deps.Store.Mutate(s.deps.Cfg, func(c *config.Config) error {
 		c.Notifications.Enabled = true
@@ -80,7 +94,14 @@ func (s *Server) handleNotificationsLark(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	status := s.deps.Notifier.Configure(dto.WebhookURL, dto.Secret, sigRequired)
+	// The notifier holds the secret in memory (it is never re-read from disk
+	// mid-flight), so an omitted secret must be resolved to the stored value
+	// here or Configure() would install an empty signer.
+	runtimeSecret := provided
+	if runtimeSecret == "" && existing {
+		runtimeSecret = s.deps.Notifier.CurrentSecret()
+	}
+	status := s.deps.Notifier.Configure(dto.WebhookURL, runtimeSecret, sigRequired)
 	writeJSON(w, http.StatusOK, status)
 }
 

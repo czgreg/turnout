@@ -6,7 +6,11 @@ import type {
   Active,
   Healthz,
   NodeHealth,
+  NodeNetwork,
+  NodeSignal,
   NodesHealth,
+  NotificationEntry,
+  NotificationsStatus,
   ProbeResult,
   RuleSetEntry,
   RuleSets,
@@ -405,4 +409,83 @@ export function ruleSets(wl: Whitelist = whitelist()): RuleSets {
       ip_cidr_examples: ['149.154.0.0/16', '91.108.0.0/16'],
     },
   };
+}
+
+/** GET /api/node/network — mirrors the Go handler's shape. */
+export function network(): NodeNetwork {
+  return {
+    client_subnet: '10.1.3.0/24',
+    ingress_iface: 'ens18',
+    ingress_ip: '10.1.3.15',
+    api_listen: '0.0.0.0:18080',
+    api_token_set: false,
+  };
+}
+
+/** GET /api/node/signal — mirrors the Go handler's shape. */
+export function signal(): NodeSignal {
+  return {
+    liveness_ip: '10.1.3.250',
+    liveness_iface: 'lo',
+    auto_failover: false,
+    notify_on_state_change: true,
+    ingress_ip: '10.1.3.15',
+    return_gateway: '10.1.3.1',
+  };
+}
+
+/** GET /api/watchdog/status — enough shape for the network page's signal card. */
+export function watchdogStatus(autoFailover: boolean) {
+  return {
+    state: 'healthy' as const,
+    at: new Date().toISOString(),
+    checks: [
+      { name: 'engine_alive', ok: true, detail: 'clash-api 127.0.0.1:9090 answering' },
+      { name: 'dataplane_rules', ok: true, detail: 'all 3 data-path checks passing (asserted 30s ago)' },
+      { name: 'pool_healthy', ok: true, detail: '5 alive / 14 total (need 1)' },
+    ],
+    failing: [],
+    fail_streak: 0,
+    ok_streak: 49,
+    fail_threshold: 3,
+    recover_threshold: 3,
+    liveness_ip: '10.1.3.250',
+    liveness_up: true,
+    auto_failover: autoFailover,
+    last_transition: new Date(Date.now() - 3_600_000).toISOString(),
+  };
+}
+
+/** GET /api/notifications/status — starts unconfigured like a fresh node. */
+export function notifications(): NotificationsStatus {
+  return {
+    enabled: false,
+    webhook_configured: false,
+    signature_required: true,
+    secret_configured: false,
+    local_log_path: '/var/lib/turnout/notifications.log',
+    dedup_window_sec: 300,
+    aggregation_window_sec: 30,
+    per_node_rate_limit_per_hour: 4,
+    retry_attempts: 3,
+  };
+}
+
+/** GET /api/notifications/recent — a handful of plausible JSONL rows. */
+export function notificationLog(): NotificationEntry[] {
+  const row = (minsAgo: number, outcome: string, type: string, subject: string, body = '') => ({
+    at: new Date(Date.now() - minsAgo * 60_000).toISOString(),
+    outcome,
+    severity: 'info',
+    type,
+    node: type.startsWith('node') ? 'us-04' : undefined,
+    subject,
+    body,
+  });
+  return [
+    row(3, 'delivered', 'watchdog', 'bypass node check pool_healthy: RECOVERED'),
+    row(41, 'delivered', 'pool_changed', 'pool resized 6 → 7 (tier1 supply)'),
+    row(97, 'webhook_failed', 'node_dead', 'node us-04 failed 3 consecutive probes', 'lark: HTTP 400 msg_type invalid'),
+    row(150, 'dropped_dedup_or_rate_limit', 'node_slow', 'node us-07 RTT p50 above threshold'),
+  ] as NotificationEntry[];
 }

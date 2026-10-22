@@ -150,6 +150,21 @@ func (n *Notifier) GetStatus() Status {
 	return n.statusLocked()
 }
 
+// CurrentSecret returns the runtime-only Lark signing secret.
+//
+// Exists so the control-plane API can carry an already-stored secret forward
+// when an operator re-saves the webhook configuration without retyping it:
+// the notifier keeps the secret in memory and never re-reads the 0600 file
+// mid-flight, so Configure(..., "", true) would otherwise install an empty
+// signer and every delivery would fail with a signature error.
+//
+// Never serialised: no JSON tag, no API response field.
+func (n *Notifier) CurrentSecret() string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.secret
+}
+
 func (n *Notifier) statusLocked() Status {
 	return Status{
 		Enabled:                 n.cfg.Enabled,

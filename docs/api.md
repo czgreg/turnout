@@ -37,6 +37,10 @@ token 为空时不鉴权。
 | GET | `/api/whitelist` | 白名单配置 | ✓ |
 | PUT | `/api/whitelist` | 整体替换白名单 | ✓ |
 | GET | `/api/rule-sets` | 可用 geosite/geoip catalog | ✓ |
+| GET | `/api/node/network` | 引流网段 + 入口网卡/地址 | ✓ |
+| PUT | `/api/node/network` | 修改 `client_subnet`（重建防火墙规则并重启相关单元） | ✓ |
+| GET | `/api/node/signal` | 探活地址 + watchdog 开关 | ✓ |
+| PUT | `/api/node/signal` | 修改探活地址 / `auto_failover`（重启控制面） | ✓ |
 | GET | `/api/pool/terminal?ip=X` | 查询某 terminal IP 的出口节点 + 健康 | ✓ |
 | GET | `/api/pool/transitions?limit=N` | 池组成变更审计日志 + 当前隔离名单 | ✓ |
 | POST | `/api/pool/rollback` | 回滚最近 N 次池变更 + 隔离被回滚节点 | ✓ |
@@ -61,14 +65,16 @@ token 为空时不鉴权。
 
 内置 Web 控制台（React + Arco Design，源码在 `web/`，构建产物在
 `internal/api/ui/`，用 `go:embed` 编进二进制）。总览 + 节点状态 + 订阅管理 +
-终端查询 + 池变更审计。`/ui` 会 301 到 `/ui/`；各页面地址为
-`/ui/#/overview`、`#/nodes`、`#/subs`、`#/terminal`、`#/transitions`。
+终端查询 + 池变更审计 + 网段设置 + 通知设置。`/ui` 会 301 到 `/ui/`；各页面地址为
+`/ui/#/overview`、`#/nodes`、`#/subs`、`#/whitelist`、`#/terminal`、
+`#/transitions`、`#/network`、`#/notifications`。
 
 控制台读取的端点：`/healthz`、`/api/status`、`/api/proxies/active`、
 `/api/nodes/health`、`/api/subscriptions`（含 POST / PUT / DELETE）、
 `/api/subscribe/refresh`、`/api/subscribe/refresh-interval`、
 `/api/whitelist`（含 PUT）、`/api/rule-sets`、
-`/api/pool/transitions`、`/api/pool/terminal`。改这些端点的响应结构时，
+`/api/pool/transitions`、`/api/pool/terminal`、`/api/node/network`（含 PUT）。
+改这些端点的响应结构时，
 同步改 `web/src/types.ts`，并跑 `make ui`。
 
 分流白名单页（`#/whitelist`）**整体替换**语义：页面持有的是完整白名单草稿，
@@ -395,6 +401,89 @@ curl -s http://127.0.0.1:18080/api/whitelist \
   | curl -s -X PUT -H 'Content-Type: application/json' \
       http://127.0.0.1:18080/api/whitelist -d @-
 ```
+
+---
+
+## GET / PUT /api/node/network
+
+引流网段（`node.client_subnet`）—— 防火墙 PBR 规则的 source-address。
+这是**唯一一个改动会逃出 turnout-gateway 进程**的配置：它同时被
+`/etc/turnout/env`、`nft.conf`、`turnout-nft.service` 和数据面消费。
+
+```json
+{
+  "client_subnet": "10.1.3.0/24",
+  "ingress_iface": "ens18",
+  "ingress_ip": "10.1.3.15",
+  "api_listen": "0.0.0.0:18080",
+  "api_token_set": false
+}
+```
+
+`api_token_set` 只给布尔值，**不回显 token**：控制台需要知道控制面是否无鉴权，
+但不需要拿到密钥。
+
+PUT body：`{"client_subnet": "10.1.3.0/24"}`。保存后同步执行：
+
+1. 重写 `gateway.yaml`（`Store.Mutate`）
+2. 用 `--print-env` 重新生成 `/etc/turnout/env`
+3. 执行 `/etc/turnout/render-rules.sh` 重渲染 `nft.conf`（内含 `nft -c` 语法自检）
+4. `systemctl restart turnout-nft.service` 重新下发 nft + TPROXY 规则
+5. `SetNode` 后重渲染并热重载 mihomo，按新网段重建 `fb-<ip>` 分组
+
+校验（400）：必须是 CIDR、IPv4、网络地址（主机位清零）、前缀在 /8–/31 之间，
+且必须包含 `ingress_ip`。
+
+失败语义：以上任一步失败返回 500，body 带 `persisted` / `previous` /
+`warning` —— 此时 `gateway.yaml` 已是新值而线上规则可能仍是旧值，需要修好
+报告的那一步后重存或重跑 `install.sh`。
+
+> 注意：第 4 步会短暂拆除并重建规则集，期间流量不做代理转发。所以前端
+> 保存前必须弹二次确认（`web/src/pages/Network.tsx` 已实现）。
+
+---
+
+## GET / PUT /api/node/signal
+
+watchdog 的运维旋钮 —— 探活地址（防火墙 IP-Link 的探测目标）与两个开关。
+
+```json
+{
+  "liveness_ip": "10.1.3.250",
+  "liveness_iface": "lo",
+  "auto_failover": false,
+  "notify_on_state_change": true,
+  "ingress_ip": "10.1.3.15",
+  "return_gateway": "10.1.3.1"
+}
+```
+
+与 `/api/node/network` 的差别：`liveness_ip` 只被 watchdog goroutine 消费，
+既不进 `/etc/turnout/env` 也不进 `nft.conf`，所以应用是「落盘 + 重启」而不是
+四步扇出。watchdog 在 `cmd/gateway/main.go` 里构造一次，改配置必须重启进程才生效。
+
+PUT body 四个字段均可选，只改传入的：
+
+```json
+{"liveness_ip": "10.1.3.251", "auto_failover": true}
+```
+
+保存时依次做三件事：
+
+1. 立即 `ip addr del <旧地址>/32 dev <旧网卡>` —— watchdog 只在健康状态翻转时
+   挂地址，不会清理历史值。留着旧 `/32` 会让它继续应答防火墙探测，正是这套
+   机制要防的静默故障。
+2. `systemd-run --on-active=2` 排一个瞬态单元重启 `turnout-gateway`。用瞬态单元
+   而不是后台子进程，是因为本服务 cgroup 内的子进程会随自己一起被杀。
+3. 返回 200，此时配置尚未生效。
+
+重启后 watchdog 要连续 3 轮自检全绿（约 30s）才把新地址挂上，这段时间防火墙
+看到的是 Down。**换地址时必须同步修改防火墙 IP-Link 的探测目标**，否则它会一直
+探测一个本机不再持有的 IP。
+
+校验（400）：合法 IPv4；**不得等于 `ingress_ip`**（摘掉会同时断掉 SSH 和 API，
+失去排查手段）；**不得等于 `return.gateway_ip`**（那是防火墙自己的地址）。
+与 `install.sh` precheck 的三条守卫一致。
 
 ---
 

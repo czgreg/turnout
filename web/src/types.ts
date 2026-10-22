@@ -338,3 +338,77 @@ export interface RuleSets {
   geosites: RuleSetSide;
   geoips: RuleSetSide;
 }
+
+/* ── Node network (GET /api/node/network) ────────────────────────────────
+ *
+ * client_subnet is the diverted office segment: the source address the
+ * firewall's PBR rule matches, and what iptables/nft/mihomo all key on.
+ * Editing it fans out to /etc/turnout/env, nft.conf, turnout-nft.service and
+ * the data plane, so a save is slow and briefly interrupts proxying.
+ *
+ * api_token_set is a boolean, never the token: the console needs to warn
+ * when the control plane is unauthenticated, and must not receive the secret.
+ */
+export interface NodeNetwork {
+  client_subnet: string;
+  ingress_iface?: string;
+  ingress_ip?: string;
+  api_listen?: string;
+  api_token_set: boolean;
+}
+
+/* ── Node signal (GET /api/node/signal) ──────────────────────────────────
+ *
+ * The watchdog's knobs. liveness_ip is the address bound to lo (or the
+ * ingress NIC) that the firewall's IP-Link probe watches: present = Up,
+ * absent = Down. It is consumed only by the watchdog goroutine, so a change
+ * is "persist + restart turnout-gateway" — unlike client_subnet, nothing is
+ * re-rendered into nft.conf or iptables.
+ *
+ * ingress_ip and return_gateway are surfaced so the UI can explain a
+ * rejection: the address must collide with neither.
+ */
+export interface NodeSignal {
+  liveness_ip: string;
+  liveness_iface?: string;
+  auto_failover: boolean;
+  notify_on_state_change: boolean;
+  ingress_ip?: string;
+  return_gateway?: string;
+}
+
+/* ── Notifications (GET /api/notifications/status) ───────────────────────
+ *
+ * The Lark webhook is the only outbound channel; the JSONL log at
+ * local_log_path records every attempt regardless of delivery outcome, so
+ * "why didn't I get an alert" is answerable without depending on Lark.
+ *
+ * secret_configured is a boolean on purpose — the signing secret is never
+ * returned. It lives in its own 0600 file, not in gateway.yaml.
+ */
+export interface NotificationsStatus {
+  enabled: boolean;
+  webhook_configured: boolean;
+  signature_required: boolean;
+  secret_configured: boolean;
+  local_log_path?: string;
+  dedup_window_sec?: number;
+  aggregation_window_sec?: number;
+  per_node_rate_limit_per_hour?: number;
+  retry_attempts?: number;
+}
+
+/* One JSONL row. outcome is the verdict for this attempt:
+ * queued | delivered | webhook_failed | dropped_dedup_or_rate_limit …
+ * A row exists even when delivery failed — that is the point. */
+export interface NotificationEntry {
+  at: string;
+  outcome: string;
+  severity?: string;
+  type?: string;
+  node?: string;
+  subject?: string;
+  body?: string;
+  extra?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}

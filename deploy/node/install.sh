@@ -326,33 +326,13 @@ install_nft() {
   [ -n "${TURNOUT_API_PORT:-}" ]      || fail "TURNOUT_API_PORT missing in /etc/turnout/env (re-run install_turnout)"
   [ -n "${TURNOUT_INGRESS_IFACE:-}" ] || fail "TURNOUT_INGRESS_IFACE missing in /etc/turnout/env (re-run install_turnout)"
 
-  # Render one `ip saddr <cidr> ... accept` line per api.allow_from entry.
-  # The template ends with a default accept for other sources, so these
-  # entries are additive and normally redundant.
-  # Refuse the exact diverted client subnet: those are untrusted end-user
-  # terminals and must never reach the control plane.
-  api_allow_rules=""
-  for cidr in ${TURNOUT_API_ALLOW_FROM:-}; do
-    if [ "$cidr" = "$TURNOUT_CLIENT_SUBNET" ]; then
-      fail "api.allow_from must not contain the client_subnet ($cidr) — diverted office terminals are untrusted"
-    fi
-    api_allow_rules="${api_allow_rules}    ip saddr $cidr tcp dport $TURNOUT_API_PORT accept"$'\n'
-  done
-  # Strip the trailing newline so the template's own line break is not doubled.
-  api_allow_rules="${api_allow_rules%$'\n'}"
-
-  sed -e "s|@CLIENT_SUBNET@|$TURNOUT_CLIENT_SUBNET|g" \
-      -e "s|@INGRESS_IFACE@|$TURNOUT_INGRESS_IFACE|g" \
-      -e "s|@API_PORT@|$TURNOUT_API_PORT|g" \
-      "$SCRIPT_DIR/nft.conf.tmpl" \
-    > /etc/turnout/nft.conf.stage
-  # Substitute the multi-line allowlist separately: sed's `s` can't carry
-  # embedded newlines portably, so use awk to splice at the placeholder.
-  awk -v repl="$api_allow_rules" '
-    $0 ~ /@API_ALLOW_RULES@/ { if (repl != "") print repl; next }
-    { print }
-  ' /etc/turnout/nft.conf.stage > /etc/turnout/nft.conf
-  rm -f /etc/turnout/nft.conf.stage
+  # Rendering lives in render-rules.sh, not here: the control plane re-renders
+  # after PUT /api/node/network and must not carry a second copy of this
+  # logic. Install the script + template first, then invoke it.
+  install -m 0755 "$SCRIPT_DIR/render-rules.sh" /etc/turnout/render-rules.sh
+  install -m 0644 "$SCRIPT_DIR/nft.conf.tmpl"    /etc/turnout/nft.conf.tmpl
+  /etc/turnout/render-rules.sh \
+    || fail "render-rules.sh failed — see its output above"
   log "nft.conf rendered (ingress_iface=$TURNOUT_INGRESS_IFACE, client_subnet=$TURNOUT_CLIENT_SUBNET, api_port=$TURNOUT_API_PORT, api_allow_from='${TURNOUT_API_ALLOW_FROM:-<loopback only>}')"
 
   install -m 0755 "$SCRIPT_DIR/iproute.sh" /etc/turnout/iproute.sh

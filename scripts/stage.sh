@@ -116,13 +116,14 @@ log "gateway.yaml copied from $GATEWAY_YAML"
 # 2026-06 upstream engine cleanup; only mihomo + gateway + nft units ship.
 cp deploy/node/install.sh \
    deploy/node/iproute.sh \
+   deploy/node/render-rules.sh \
    deploy/node/nft.conf.tmpl \
    deploy/node/logrotate-turnout.conf \
    deploy/node/turnout-mihomo.service \
    deploy/node/turnout-gateway.service \
    deploy/node/turnout-nft.service \
    "$STAGE_DIR/"
-chmod 0755 "$STAGE_DIR/install.sh" "$STAGE_DIR/iproute.sh"
+chmod 0755 "$STAGE_DIR/install.sh" "$STAGE_DIR/iproute.sh" "$STAGE_DIR/render-rules.sh"
 log "deploy/node/* files staged"
 
 # 6. Rule-set .mrs blobs. Pre-fetched into the tarball so mihomo can load

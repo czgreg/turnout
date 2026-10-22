@@ -38,6 +38,12 @@ function handler(): Connect.NextHandleFunction {
   let interval = 0;
   let refreshing = false;
   let wl = data.whitelist();
+  // Mutable so PUT /api/node/network can be exercised in mock mode. Starts
+  // unauthenticated (api_token_set=false) so the page's warning renders.
+  let network = data.network();
+  let signal = data.signal();
+  let notif = data.notifications();
+  let notifLog = data.notificationLog();
 
   return async (req, res, next) => {
     const url = new URL(req.url || '/', 'http://mock');
@@ -134,6 +140,96 @@ function handler(): Connect.NextHandleFunction {
       }
     }
     if (path === '/api/rule-sets') return send(res, 200, data.ruleSets(wl));
+
+    if (path === '/api/watchdog/status') return send(res, 200, data.watchdogStatus(signal.auto_failover));
+
+    if (path === '/api/notifications/status') return send(res, 200, notif);
+
+    if (path === '/api/notifications/lark') {
+      if (method === 'POST') {
+        const b = await readBody(req);
+        const url = String(b.webhook_url || '');
+        const sigRequired = b.signature_required !== undefined ? !!b.signature_required : true;
+        // Mirror the server's two guards so the UI's error path is exercised.
+        if (!url) return send(res, 400, { error: 'webhook_url required' });
+        if (sigRequired && !b.secret && !notif.secret_configured) {
+          return send(res, 400, { error: 'secret required when signature_required=true (default)' });
+        }
+        notif = {
+          ...notif,
+          enabled: true,
+          webhook_configured: true,
+          signature_required: sigRequired,
+          secret_configured: sigRequired ? true : notif.secret_configured,
+        };
+        return send(res, 200, notif);
+      }
+      if (method === 'DELETE') {
+        notif = { ...notif, enabled: false, webhook_configured: false, secret_configured: false };
+        return send(res, 200, notif);
+      }
+    }
+
+    if (path === '/api/notifications/test') {
+      if (!notif.webhook_configured) {
+        return send(res, 502, { ok: false, error: 'mock: webhook not configured' });
+      }
+      notifLog = [
+        {
+          at: new Date().toISOString(),
+          outcome: 'delivered',
+          severity: 'info',
+          type: 'test',
+          subject: 'turnout-gateway 测试消息',
+          body: '如果看到这条消息，说明 webhook 配置正确。',
+        },
+        ...notifLog,
+      ];
+      return send(res, 200, { ok: true });
+    }
+
+    if (path === '/api/notifications/recent') {
+      return send(res, 200, { entries: notifLog, limit: notifLog.length });
+    }
+
+    if (path === '/api/node/signal') {
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        if (b.liveness_ip !== undefined) {
+          const ip = String(b.liveness_ip).trim();
+          if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+            return send(res, 400, { error: `liveness_ip ${JSON.stringify(ip)} is not a valid IPv4 address` });
+          }
+          if (ip === signal.ingress_ip) {
+            return send(res, 400, { error: 'liveness_ip must not equal ingress_ip — withdrawing it would also drop SSH and the API' });
+          }
+          signal = { ...signal, liveness_ip: ip };
+        }
+        if (b.auto_failover !== undefined) signal = { ...signal, auto_failover: !!b.auto_failover };
+        if (b.notify_on_state_change !== undefined) {
+          signal = { ...signal, notify_on_state_change: !!b.notify_on_state_change };
+        }
+        // The real handler returns before the restart it schedules.
+        return send(res, 200, { restart: 'scheduled', note: 'mock: no actual restart' });
+      }
+      return send(res, 200, signal);
+    }
+
+    if (path === '/api/node/network') {
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        const next = String(b.client_subnet || '');
+        // Same guard the server applies first: a CIDR, network address, /8../31.
+        if (!/^\d{1,3}(\.\d{1,3}){3}\/([89]|[12]\d|3[01])$/.test(next)) {
+          return send(res, 400, { error: `client_subnet ${JSON.stringify(next)} is not a usable CIDR` });
+        }
+        await sleep(2500); // env + nft.conf + turnout-nft restart + mihomo reload
+        const previous = network.client_subnet;
+        network = { ...network, client_subnet: next };
+        return send(res, 200, { client_subnet: next, previous, applied: true });
+      }
+      return send(res, 200, network);
+    }
 
     return send(res, 404, { error: 'mock: no handler for ' + method + ' ' + path });
   };

@@ -76,6 +76,11 @@ type Renderer interface {
 	// Synced on every PUT /api/whitelist so the renderer emits the updated
 	// nameserver-policy without a separate config reload.
 	SetFakeIPSkip(suffixes []string)
+	// SetNode re-seats the node role info (client_subnet, ingress address,
+	// egress iface). Synced on every PUT /api/node/network so per-terminal
+	// fb-<ip> groups follow the new subnet instead of the one captured at
+	// construction.
+	SetNode(n config.NodeConfig)
 	// AssignmentForIP returns the HRW-ordered routing members assigned to
 	// one terminal IP. ([primary, secondary, ...], true) when the IP is
 	// inside the configured client_subnet AND the routing pool is non-empty,
@@ -113,6 +118,18 @@ func NewServer(deps Deps) *Server {
 	mux.HandleFunc("PUT /api/whitelist", s.auth(s.handleWhitelistPut))
 
 	mux.HandleFunc("GET /api/rule-sets", s.auth(s.handleRuleSetsGet))
+
+	// Node network — the diverted office segment. Editing client_subnet
+	// escapes this process: it fans out to /etc/turnout/env, nft.conf,
+	// turnout-nft.service and the data plane. See network.go.
+	mux.HandleFunc("GET /api/node/network", s.auth(s.handleNodeNetworkGet))
+	mux.HandleFunc("PUT /api/node/network", s.auth(s.handleNodeNetworkPut))
+
+	// Watchdog knobs — the liveness address the firewall's IP-Link probe
+	// watches. Consumed only by the watchdog goroutine, so applying is
+	// "persist + restart". See signal.go.
+	mux.HandleFunc("GET /api/node/signal", s.auth(s.handleNodeSignalGet))
+	mux.HandleFunc("PUT /api/node/signal", s.auth(s.handleNodeSignalPut))
 
 	mux.HandleFunc("GET /api/subscriptions", s.auth(s.handleSubscriptionsGet))
 	mux.HandleFunc("POST /api/subscriptions", s.auth(s.handleSubscriptionsPost))

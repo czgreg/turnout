@@ -168,16 +168,23 @@ tproxy_up() {
     # live and the /16 terminals still un-intercepted.
     purge_prerouting
 
-    # Block diverted office terminals from reaching the gateway API before
-    # the generic TPROXY jump. Without this early drop, mihomo can accept a
-    # terminal's connection to our own API port before the inet/turnout input
-    # chain sees it, bypassing the source deny in nft.conf.
+    # No API-port DROP here any more (removed 2026-10-22).
     #
-    # Note the source match is the configured subnet rather than a hardcoded
-    # one (upstream hardcoded its VPN pool).
-    iptables -t mangle -I PREROUTING 1 -i "$INGRESS_IFACE" \
-        -s "$CLIENT_SUBNET" -m addrtype --dst-type LOCAL \
-        -p tcp --dport "$API_PORT" -j DROP
+    # It used to deny client_subnet -> this node's API port so terminals
+    # could not reach the control plane. That made the management UI
+    # unreachable from exactly the segment operators sit in: when
+    # client_subnet was 192.168.0.0/16, the admin laptop was inside it and
+    # got silently dropped while the process listened fine (seen on
+    # 10.1.3.15). Operators then had to tunnel over ssh just to look at
+    # /ui/.
+    #
+    # The DROP was also redundant: the TPROXY chain's first rule returns on
+    # `--dst-type LOCAL`, so packets addressed to this host never reach
+    # mihomo in the first place. Local-destined traffic is delivered by the
+    # kernel; nft's input chain accepts tcp dport $API_PORT.
+    #
+    # purge_prerouting() above still removes stale DROP rules left by older
+    # installs, so upgrading cleans them up.
 
     # Attach to PREROUTING: apply TPROXY only to traffic that arrived FROM
     # the firewall on the ingress interface, from the diverted segment.

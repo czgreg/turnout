@@ -19,7 +19,11 @@
 import type {
   Active,
   Healthz,
+  NodeNetwork,
+  NodeSignal,
   NodesHealth,
+  NotificationEntry,
+  NotificationsStatus,
   RefreshInterval,
   RuleSets,
   Status,
@@ -151,3 +155,61 @@ export const getWhitelist = () => request<Whitelist>('/api/whitelist');
 export const putWhitelist = (wl: Whitelist) =>
   request<Whitelist>('/api/whitelist', { method: 'PUT', ...json(wl) });
 export const getRuleSets = () => request<RuleSets>('/api/rule-sets');
+
+/**
+ * Node network — the diverted office segment.
+ *
+ * putNodeNetwork is NOT a plain config write: the node re-renders nft.conf,
+ * restarts turnout-nft.service (a short gap where traffic is not proxied)
+ * and hot-reloads mihomo. The caller confirms before saving; a 500 carries
+ * `persisted` because gateway.yaml may hold the new value while the live
+ * rules are still the old ones.
+ */
+export const getNodeNetwork = () => request<NodeNetwork>('/api/node/network');
+export const putNodeNetwork = (clientSubnet: string) =>
+  request<{ client_subnet: string; previous: string; applied: boolean }>('/api/node/network', {
+    method: 'PUT',
+    ...json({ client_subnet: clientSubnet }),
+  });
+
+/**
+ * Watchdog knobs (liveness_ip / auto_failover / notify_on_state_change).
+ *
+ * putNodeSignal returns before the change takes effect: turnout-gateway
+ * schedules its own restart a couple of seconds out, so the POST-save state
+ * is only visible once the console's next poll succeeds. The caller should
+ * expect a failed poll or two rather than treat them as an error.
+ */
+export const getNodeSignal = () => request<NodeSignal>('/api/node/signal');
+export const putNodeSignal = (patch: {
+  liveness_ip?: string;
+  liveness_iface?: string;
+  auto_failover?: boolean;
+  notify_on_state_change?: boolean;
+}) => request<{ restart: string; removed_old?: string; note?: string }>('/api/node/signal', {
+  method: 'PUT',
+  ...json(patch),
+});
+
+/**
+ * Lark notification channel.
+ *
+ * setLark persists the webhook URL to gateway.yaml and the signing secret to
+ * its own 0600 file — the secret never comes back from the API, only
+ * `secret_configured: boolean`. signature_required defaults to TRUE on the
+ * server, so a secret is mandatory unless the caller explicitly disables
+ * signing; the UI mirrors that default rather than letting the operator
+ * discover it as a 400.
+ */
+export const getNotificationsStatus = () =>
+  request<NotificationsStatus>('/api/notifications/status');
+export const setLark = (body: { webhook_url: string; secret?: string; signature_required?: boolean }) =>
+  request<NotificationsStatus>('/api/notifications/lark', { method: 'POST', ...json(body) });
+export const clearLark = () =>
+  request<NotificationsStatus>('/api/notifications/lark', { method: 'DELETE' });
+export const testNotification = () =>
+  request<{ ok: boolean }>('/api/notifications/test', { method: 'POST' });
+export const getNotificationLog = (limit = 50) =>
+  request<{ entries: NotificationEntry[]; limit: number }>(
+    '/api/notifications/recent?limit=' + limit,
+  );

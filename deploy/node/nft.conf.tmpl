@@ -33,19 +33,18 @@ table inet turnout {
     # preserving the original client sourceIP so per-terminal routing works.
   }
 
-  # turnout-gateway API access — deny the diverted office segment, allow the
-  # rest. This chain's policy is `accept`, so an `accept` rule alone grants
-  # nothing; a deny is what actually protects the control plane.
+  # turnout-gateway API access. This chain decides which sources may open a
+  # connection to the control plane's TCP port.
   #
-  # The office-segment deny is enforced at the application layer (api.listen
-  # defaults to loopback) and in iproute.sh before TPROXY, where the original
-  # destination can still be distinguished as node-local. Do NOT repeat that
-  # deny in this input chain: TPROXY makes remote destinations look locally
-  # delivered here, so a port-only source deny would also block remote
-  # servers' TCP/18080 connections.
+  # Local-destined traffic is never proxied: TPROXY's chain returns on
+  # `--dst-type LOCAL`, so anything addressed to this host is delivered by
+  # the kernel and graded here. (Until 2026-10-22 an iptables DROP in mangle
+  # PREROUTING denied client_subnet -> API_PORT first; it was removed so
+  # operators can reach /ui/ from the segment they sit in — see iproute.sh.)
   #
-  # The final accept makes 18080 reachable from other routed networks by
-  # default. api.allow_from remains an additive accept list.
+  # The final accept makes 18080 reachable from every source by default.
+  # api.allow_from remains an additive accept list, useful only when that
+  # default is narrowed later.
   # install.sh substitutes @API_ALLOW_RULES@ with an awk substring match
   # (sed can't splice embedded newlines portably).
   chain input {

@@ -165,6 +165,18 @@ func (r *Renderer) WithPools(pools []config.PoolConfig) *Renderer {
 	return r
 }
 
+// SetNode re-seats the node role info (diverted subnet, ingress address,
+// egress iface) after an API edit. WithNode runs once at construction, so
+// without this a client_subnet change would leave per-terminal groups
+// (fb-<ip>) rendered against the old subnet — the API would report the new
+// one while mihomo still matched the old. Guarded by stateMu, same race
+// concern as SetSubscriptions.
+func (r *Renderer) SetNode(n config.NodeConfig) {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	r.node = n
+}
+
 // SetSubscriptions replaces the subscription order in place. Used by API
 // handlers that mutate the config and need a re-render with the new state.
 // Guarded by stateMu so a concurrent render reading r.subs sees a coherent

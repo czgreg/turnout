@@ -1,6 +1,8 @@
 import type {
   Active,
   Healthz,
+  NodeNetwork,
+  NodeSignal,
   NodesHealth,
   RefreshInterval,
   RuleSets,
@@ -35,6 +37,10 @@ export interface Snapshot {
   wl: Slot<Whitelist>;
   ruleSets: Slot<RuleSets>;
   trans: Slot<Transitions>;
+  /** Diverted office segment. The network page edits client_subnet from here. */
+  network: Slot<NodeNetwork>;
+  /** Watchdog knobs — liveness address + failover/notify switches. */
+  signal: Slot<NodeSignal>;
   /**
    * Watchdog health. Same shape as healthz rather than Slot<T>: the endpoint
    * answers 503 WITH a full body when the verdict is unhealthy, so the body
@@ -53,4 +59,6 @@ export const emptySnapshot: Snapshot = {
   wl: {},
   ruleSets: {},
   trans: {},
+  network: {},
+  signal: {},
 };
