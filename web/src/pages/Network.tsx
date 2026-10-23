@@ -23,7 +23,7 @@ const { Row, Col } = Grid;
  * This page is the only place in the console that edits something the Node
  * process does not own: client_subnet reaches iptables (TPROXY jump, DNS
  * hijack), nft (nft.conf), systemd (turnout-nft.service) and the data plane
- * (fb-<ip> groups). A save therefore restarts a unit and briefly interrupts
+ * (per-terminal pair groups). A save therefore restarts a unit and briefly interrupts
  * proxying, which is why it sits behind an explicit confirm that names the
  * old and new value.
  *
@@ -86,7 +86,7 @@ export default function NetworkPage({ snap, reload }: { snap: Snapshot; reload: 
           <p className="small">
             保存后会依次：重写 gateway.yaml 与 /etc/turnout/env、重新渲染 nft.conf、重启
             turnout-nft.service、热重载 mihomo。重启期间有几秒不做代理转发；
-            所有 per-terminal 分组（fb-&lt;ip&gt;）会按新网段重建。
+            所有 per-terminal 分组会按新网段重建（按节点对复用，不再是每 IP 一组）。
           </p>
           <p className="small">请确认该值与防火墙 PBR 规则的 source-address 一致，否则终端流量不会到达本机。</p>
         </div>
@@ -194,7 +194,7 @@ export default function NetworkPage({ snap, reload }: { snap: Snapshot; reload: 
             },
             {
               label: 'mihomo',
-              value: 'per-terminal 分组 fb-<ip> 按网段切分；网段过大时按地址块聚合，不按单主机',
+              value: 'per-terminal 分组按网段切分（同一节点对共用一组）；网段过大时按地址块聚合，不按单主机',
             },
             {
               label: '本机 18080',

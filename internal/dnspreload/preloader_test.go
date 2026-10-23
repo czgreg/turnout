@@ -72,6 +72,40 @@ func TestPreloader_DispatchesQueriesToConfiguredAddr(t *testing.T) {
 		2*len(domains), hits.Load())
 }
 
+// Warm is the reload hook: it must return immediately (the caller is the
+// reload path) and still get the queries out.
+func TestPreloader_WarmDispatchesWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	addr, hits, stop := startUDPCounter(t)
+	defer stop()
+
+	p := New(addr, []string{"warm.test.invalid"}, time.Hour)
+	if p == nil {
+		t.Fatal("New returned nil")
+	}
+
+	start := time.Now()
+	p.Warm()
+	if d := time.Since(start); d > 100*time.Millisecond {
+		t.Errorf("Warm blocked for %v; it must be asynchronous", d)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hits.Load() >= 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("Warm sent no query to %s", addr)
+}
+
+func TestPreloader_WarmNilReceiver(t *testing.T) {
+	t.Parallel()
+	var p *Preloader
+	p.Warm() // must not panic — preload disabled means a nil preloader
+}
+
 // startUDPCounter binds a UDP socket on a random localhost port, increments
 // hits on every packet received, and returns the addr + counter + stop fn.
 func startUDPCounter(t *testing.T) (addr string, hits *atomic.Int64, stop func()) {

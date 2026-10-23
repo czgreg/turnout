@@ -246,7 +246,7 @@ if [ -f /var/lib/turnout/mihomo/config.yaml ]; then
   # deployment as "per-terminal disabled".
   pt_rules=$(grep -cE 'SRC-IP-(CIDR|SUFFIX)' /var/lib/turnout/mihomo/config.yaml 2>/dev/null)
   if [ "${pt_cfg:-0}" -gt 0 ] && [ "${pt_rules:-0}" -eq 0 ]; then
-    fail "per_terminal 已开启但没有渲染出任何 fb-<ip> 组 —— 客户端网段过大，所有终端共用同一出口"
+    fail "per_terminal 已开启但没有渲染出任何 per-terminal 分组 —— 客户端网段过大，所有终端共用同一出口"
     fix "检查是否有一台都渲染不出来：make nodes NODE=... 看池；规则数应为 1024"
   elif [ "${pt_rules:-0}" -gt 0 ]; then
     pass "per-terminal 分组已渲染（$pt_rules 条 SRC-IP-(CIDR|SUFFIX) 规则）"

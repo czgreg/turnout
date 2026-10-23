@@ -69,6 +69,13 @@ type Controller struct {
 	// SystemdUnit is the systemd service name to restart on Reload.
 	// Defaults to "turnout-mihomo.service".
 	SystemdUnit string
+
+	// OnReload, when non-nil, runs after a successful reload (hot reload or
+	// systemctl fallback). Set by main to re-warm state the reload clears:
+	// mihomo recreates its DNS resolver on every ApplyConfig, so the cache
+	// is empty afterwards. Called synchronously; hooks are expected to
+	// return quickly (dnspreload.Preloader.Warm spawns its own goroutine).
+	OnReload func()
 }
 
 func NewController(api config.ClashAPIConfig) *Controller {
@@ -87,6 +94,7 @@ func NewController(api config.ClashAPIConfig) *Controller {
 func (c *Controller) Reload(ctx context.Context, configPath string) error {
 	if configPath != "" && c.api.ExternalController != "" {
 		if err := c.hotReload(ctx, configPath); err == nil {
+			c.notifyReload()
 			return nil
 		} else {
 			slog.Warn("dataplane: clash-api hot-reload failed, falling back to systemctl restart",
@@ -112,7 +120,17 @@ func (c *Controller) Reload(ctx context.Context, configPath string) error {
 	// Logged because the warning above plus silence is indistinguishable in
 	// the journal from the warning above plus a fallback that never ran.
 	slog.Info("dataplane: restarted via systemctl fallback", "unit", c.SystemdUnit)
+	c.notifyReload()
 	return nil
+}
+
+// notifyReload invokes the reload hook, if any. A restart drops more state
+// than a hot reload (listeners, DNS, connection pools), so the hook is at
+// least as relevant on this path.
+func (c *Controller) notifyReload() {
+	if c.OnReload != nil {
+		c.OnReload()
+	}
 }
 
 // hotReload PUTs to mihomo's clash-api /configs?force=true endpoint with

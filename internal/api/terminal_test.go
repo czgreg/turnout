@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,8 +75,8 @@ func TestPoolTerminal_ReportsClassPools(t *testing.T) {
 	if p.Pool != "ai-pool" {
 		t.Errorf("pool = %q, want ai-pool", p.Pool)
 	}
-	if p.GroupName != "fb-ai-pool-10.1.2.42" {
-		t.Errorf("group_name = %q, want fb-ai-pool-10.1.2.42", p.GroupName)
+	if !strings.HasPrefix(p.GroupName, "fb-ai-pool-p-") {
+		t.Errorf("group_name = %q, want an fb-ai-pool-p-<pair> group", p.GroupName)
 	}
 	if p.Primary == nil || p.Primary.Name != "us1" {
 		t.Errorf("primary = %+v, want us1", p.Primary)

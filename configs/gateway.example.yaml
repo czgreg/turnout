@@ -176,6 +176,34 @@ data_plane:
       - "corp.example.com"
       - "internal.example.com"
 
+    # [新] 预热白名单域名的 DNS 缓存（预加载，不是解析策略）。
+    #
+    # 为什么需要：白名单域名经 proxy_doh 跨境解析，冷查 0.24–1.2s，缓存
+    # 命中 ~0ms；而 mihomo 的每一次 PUT /configs（评分器换池、订阅刷新）
+    # 都会重建 resolver，缓存清零。没有预热时，终端每次重载后第一次访问
+    # 每个域名都要重新付这段延迟 —— 这正是"第一次连接很慢"的主要来源。
+    #
+    # 行为：启动后每 preload_interval 查一遍；且每次热重载成功后立即补查
+    # 一次（turnout-gateway 的重载钩子）。留空 = 关闭预热。
+    # preload_interval 缺省 5m。
+    preload_domains:
+      - "claude.ai"
+      - "api.anthropic.com"
+      - "console.anthropic.com"
+      - "chatgpt.com"
+      - "api.openai.com"
+      - "auth.openai.com"
+      - "gemini.google.com"
+      - "generativelanguage.googleapis.com"
+      - "aistudio.google.com"
+      - "github.com"
+      - "api.github.com"
+      - "raw.githubusercontent.com"
+      - "google.com"
+      - "www.google.com"
+      - "www.gstatic.com"
+    preload_interval: "5m"
+
 # ─────────────────────────────────────────────────────────────
 # 出口池 —— [不变] 完全沿用上游
 # ─────────────────────────────────────────────────────────────

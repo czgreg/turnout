@@ -209,14 +209,20 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 		return out
 	}
 
-	// Per-terminal fallback groups (fb-<ip>): one fallback group per
-	// terminal IP, each containing [primary, secondary] from HRW. The
-	// SRC-IP-CIDR rules in sub-rules.perterm route each terminal to its
-	// fb-<ip> group, and mihomo's fallback type handles the alive-bit
-	// failover from primary to secondary when primary dies. Empty list
-	// (e.g. fewer than 2 routing members) skips the per-terminal groups
-	// entirely; rules.go's perterm logic already handles the fallback to
-	// MATCH,default-pool in that case.
+	// Per-terminal fallback groups (fb-p-<hash>): one fallback group per
+	// distinct [primary, secondary] pair drawn from HRW assignment. The
+	// SRC-IP-CIDR / SRC-IP-SUFFIX rules in sub-rules.perterm route each
+	// terminal to the group carrying its pair, and mihomo's fallback type
+	// handles the alive-bit failover from primary to secondary when primary
+	// dies. Empty list (e.g. fewer than 2 routing members) skips the
+	// per-terminal groups entirely; rules.go's perterm logic already handles
+	// the fallback to MATCH,default-pool in that case.
+	//
+	// Keying by pair rather than by terminal unit is what keeps the group
+	// count at K(K-1) ordered pairs instead of one per bucket: mihomo runs
+	// a health check for every group the instant the config is applied, so
+	// a /16 with 1024 buckets × 2 classes used to fire ~4k dials per reload
+	// and take 6-7s. See perterminal.go.
 	if r.perTerminal && r.node.ClientSubnet != "" {
 		fbGroups := r.perTerminalFallbackGroups(outbounds, probeURL, intervalSec)
 		groups = append(groups, fbGroups...)

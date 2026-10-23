@@ -114,6 +114,24 @@ func main() {
 
 	dpCtl := dataplane.NewController(cfg.DataPlane.ClashAPI)
 	dpCtl.SystemdUnit = "turnout-mihomo.service"
+
+	// DNS preloader: keeps overseas-bound DNS records warm in mihomo's
+	// DNS cache so the first office client to access claude.ai (or any
+	// configured domain) doesn't pay the ~400ms cross-border DoH cold-
+	// resolve cost. Disabled when preload_domains is empty.
+	//
+	// Constructed before the scorer/controller so it can be installed as
+	// their reload hook: every PUT /configs rebuilds mihomo's resolver with
+	// an empty cache, so a periodic sweep alone can leave a multi-minute
+	// window in which the first lookup of every domain is cold.
+	var dnsPre *dnspreload.Preloader
+	if dnsAddr := dnsListenAddr(cfg); dnsAddr != "" {
+		dnsPre = dnspreload.New(dnsAddr, cfg.DataPlane.DNS.PreloadDomains, cfg.DataPlane.DNS.PreloadInterval)
+	}
+	if dnsPre != nil {
+		dpCtl.OnReload = dnsPre.Warm
+	}
+
 	store := configstore.New(*cfgPath)
 
 	// UA auto-discovery fires when a subscription returns 5xx or 0 nodes on
@@ -159,6 +177,11 @@ func main() {
 			"interval", cfg.NodeQualify.ScoringInterval,
 			"max_rtt_p50", cfg.NodeQualify.MaxRTTP50Ms,
 		)
+		if dnsPre != nil {
+			// The scorer reloads through its own clash-api client, not
+			// dpCtl, so its hot reload needs the hook too.
+			ns.SetReloadHook(dnsPre.Warm)
+		}
 	}
 
 	// Notification subsystem (Lark webhook + local JSONL audit log).
@@ -370,14 +393,12 @@ func main() {
 	go sched.Run(ctx)
 	go ni.Run(ctx)
 
-	// DNS preloader: keeps overseas-bound DNS records warm in mihomo's
-	// DNS cache so the first office client to access claude.ai (or any
-	// configured domain) doesn't pay the ~400ms cross-border DoH cold-
-	// resolve cost. Disabled when preload_domains is empty.
-	if dnsAddr := dnsListenAddr(cfg); dnsAddr != "" {
-		if pre := dnspreload.New(dnsAddr, cfg.DataPlane.DNS.PreloadDomains, cfg.DataPlane.DNS.PreloadInterval); pre != nil {
-			go pre.Run(ctx)
-		}
+	// DNS preloader: warm now that the data plane is up. It was constructed
+	// above so it could be wired as the reload hook; Run blocks until ctx is
+	// cancelled and waits 3s before its first sweep so mihomo's DNS server
+	// has time to listen.
+	if dnsPre != nil {
+		go dnsPre.Run(ctx)
 	}
 
 	// Best-effort fetch of the two infra rule-sets (geosite-cn / geoip-cn)

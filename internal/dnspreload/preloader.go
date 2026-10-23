@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +28,11 @@ type Preloader struct {
 	dnsAddr  string
 	domains  []string
 	interval time.Duration
+
+	// warming serializes Warm calls. The periodic sweep runs on its own
+	// cadence; a reload-triggered sweep must not stack on top of one that
+	// is already in flight (each sweep is bounded by 5s per domain).
+	warming atomic.Bool
 }
 
 // New builds a Preloader that targets dnsAddr (host:port — typically
@@ -76,6 +82,32 @@ func (p *Preloader) Run(ctx context.Context) {
 			p.sweep(ctx)
 		}
 	}
+}
+
+// Warm runs one sweep immediately, asynchronously. Intended as a data-plane
+// reload hook: mihomo rebuilds its resolver on every PUT /configs
+// (executor.ApplyConfig → updateDNS → dns.NewResolver), which starts with an
+// empty cache, so without this the first lookup of every preloaded domain
+// after each reload pays the full cross-border DoH cost again. Measured on
+// 10.100.6.15 (2026-10-23): 243ms-1.2s cold, 0ms cached, and the pool churn
+// reloaded every 5 minutes.
+//
+// No-op when a sweep is already running, so a reload burst (scorer pools +
+// subscription refresh arriving together) does not multiply DNS traffic.
+func (p *Preloader) Warm() {
+	if p == nil {
+		return
+	}
+	if !p.warming.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer p.warming.Store(false)
+		// Background, not the caller's ctx: the reload that triggered this
+		// can return (and cancel its request context) before the lookups
+		// finish. sweep applies its own 5s per-lookup budget.
+		p.sweep(context.Background())
+	}()
 }
 
 // sweep fires every preload domain once through a goroutine pool. Each

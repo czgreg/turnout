@@ -1271,8 +1271,12 @@ func TestRenderer_PoolAssignmentForIP(t *testing.T) {
 			t.Errorf("assignment member %q is not in ai-pool", n)
 		}
 	}
-	if name := PoolPerTerminalGroupName("ai-pool", "10.1.2.42", "10.1.2.0/24"); name != "fb-ai-pool-10.1.2.42" {
-		t.Errorf("group name = %q, want fb-ai-pool-10.1.2.42", name)
+	wantName := poolGroupPrefix("ai-pool") + pairGroupSuffix(got)
+	if name := PoolPerTerminalGroupName("ai-pool", "10.1.2.42", "10.1.2.0/24", got); name != wantName {
+		t.Errorf("group name = %q, want %q", name, wantName)
+	}
+	if wantName[:len("fb-ai-pool-"+pairGroupInfix)] != "fb-ai-pool-"+pairGroupInfix {
+		t.Errorf("group name %q is not pair-keyed", wantName)
 	}
 	if _, ok := r.PoolAssignmentForIP("192.168.1.1", "ai-pool", sampleOutbounds()); ok {
 		t.Error("assignment must be false for an IP outside client_subnet")

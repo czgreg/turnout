@@ -1,17 +1,36 @@
 // perterminal.go — "one terminal, one egress, with automatic failover".
 //
-// Each terminal IP gets a dedicated `fallback` proxy-group named "fb-<ip>"
-// containing two members in HRW order: [primary, secondary]. SRC-IP-CIDR
-// rules in the perterm sub-rule route the terminal to its fb-<ip> group.
-// mihomo's fallback type tries members in order and uses the first one
-// whose alive bit is true — so when primary dies, traffic auto-routes to
-// secondary within mihomo's url-test interval, no turnout-gateway intervention.
+// Each terminal IP is assigned two members in HRW order: [primary,
+// secondary]. SRC-IP-CIDR / SRC-IP-SUFFIX rules in the perterm sub-rule
+// route the terminal to a `fallback` proxy-group that holds exactly that
+// pair. mihomo's fallback type tries members in order and uses the first
+// one whose alive bit is true — so when primary dies, traffic auto-routes
+// to secondary within mihomo's url-test interval, no turnout-gateway
+// intervention.
+//
+// Groups are keyed by the PAIR, not by the terminal. This matters at
+// scale: a /16 in suffix mode has 1024 terminal units but only K(K-1)
+// distinct ordered pairs (56 for an 8-member routing pool; both orders of
+// a node pair occur, and order is semantic — it selects the primary).
+// Emitting one group per unit meant ~2k fallback groups per deployment,
+// and mihomo starts a health check for EVERY group the moment the config
+// is applied (provider/healthcheck.go: the `go hc.check()` in process() is
+// unconditional; `lazy` only skips later ticks). One PUT /configs then
+// fired ~4k concurrent dials at 8 nodes — each node sat in 250-500
+// groups — and took 6.1-7.5s. Measured on 10.100.6.15 (2026-10-23):
+// identical config with the per-unit groups removed reloads in 0.48s and
+// uses 215MB instead of 665MB RSS.
+//
+// Pair-keyed groups are semantically identical: mihomo's alive bit lives
+// on the shared proxy object, not on the group, so N groups containing the
+// same node see the same liveness. Deduplicating them only removes
+// duplicate health checks.
 //
 // Why not bare-node SRC-IP-CIDR (the previous design): SRC-IP-CIDR is a
 // hard route — when its target proxy is alive=false, mihomo just fails
 // the connection (no fallback). Per-terminal fallback groups give us
 // mihomo's native alive-bit failover while preserving the per-terminal
-// stable identity (same fb-<ip> group → same primary by default; only
+// stable identity (the same pair group → the same primary by default; only
 // when primary is down does the egress IP change).
 //
 // HRW (rendezvous hashing) properties carry over: when the routing pool
@@ -50,10 +69,13 @@ import (
 )
 
 const (
-	// maxPerTerminalUnits caps the number of per-terminal rules / fb-*
-	// groups emitted. Subnets with more hosts than this are bucketed by
-	// address suffix instead (see perTerminalUnits), so the config stays
-	// bounded (/16 would otherwise be 65k rules) without dropping pinning.
+	// maxPerTerminalUnits caps the number of per-terminal RULE units, and
+	// therefore the maximum number of fallback groups (one group per
+	// distinct pair, at most one per unit). Subnets with more hosts than
+	// this are bucketed by address suffix instead (see perTerminalUnits),
+	// so the config stays bounded (/16 would otherwise be 65k rules)
+	// without dropping pinning. In steady state groups are far fewer:
+	// K(K-1) ordered pairs for the routing pool (56 for 8 nodes), not 1024.
 	maxPerTerminalUnits = 1024
 
 	// suffixBits is log2(maxPerTerminalUnits): the low address bits that
@@ -61,22 +83,48 @@ const (
 	suffixBits = 10
 
 	// perTerminalFallbackDepth is the number of HRW-ordered members
-	// included in each fb-<ip> fallback group. 2 = [primary, secondary]
-	// is the minimum useful redundancy; larger values trade per-flap
-	// rotation count for breadth (more candidates means more potential
-	// IP changes during a multi-node failure).
+	// included in each fallback group. 2 = [primary, secondary] is the
+	// minimum useful redundancy; larger values trade per-flap rotation
+	// count for breadth (more candidates means more potential IP changes
+	// during a multi-node failure).
 	perTerminalFallbackDepth = 2
 
 	// perTerminalGroupPrefix is the proxy-group naming convention. Operators
 	// + the /api/pool/terminal endpoint rely on this prefix to enumerate
-	// + look up terminal-specific groups.
+	// and look up terminal-specific groups.
 	perTerminalGroupPrefix = "fb-"
+
+	// pairGroupInfix separates pair-keyed group names (fb-p-<hash>) from
+	// the pre-2026-10-23 per-terminal-unit names (fb-<ip> / fb-s<bucket>).
+	// A distinct infix makes a stale bookmark/log line obviously stale
+	// instead of silently referring to a different terminal's group.
+	pairGroupInfix = "p-"
 )
+
+// pairGroupSuffix returns the deterministic group-name suffix for an
+// HRW-ordered member list, or "" when there are fewer than
+// perTerminalFallbackDepth members (callers then emit no group at all).
+//
+// The hash covers the ordered pair, so [A,B] and [B,A] are different
+// groups — fallback order is semantic (primary first), not a set. Names
+// must stay stable across renders: a name change has no effect on routing
+// but makes operator-facing diffing noise, and the API derives the same
+// name from the same pair.
+func pairGroupSuffix(members []string) string {
+	if len(members) < perTerminalFallbackDepth {
+		return ""
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(members[0]))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(members[1]))
+	return fmt.Sprintf("%s%012x", pairGroupInfix, splitmix64(h.Sum64())&0xffffffffffff)
+}
 
 // perTerminalMembers returns the routing-member pool used for per-terminal
 // HRW assignment. Both perTerminalSlices and perTerminalFallbackGroups must
 // call this so they always operate on the same set — if they diverge, rules
-// can reference fb-<ip> groups that were never emitted (or vice versa),
+// can reference pair groups that were never emitted (or vice versa),
 // causing mihomo to reject the config with "proxy not found".
 func (r *Renderer) perTerminalMembers(outbounds []subscribe.Outbound) []string {
 	members := r.intersectWithPresent(r.routingMembers, outbounds)
@@ -86,9 +134,9 @@ func (r *Renderer) perTerminalMembers(outbounds []subscribe.Outbound) []string {
 	return members
 }
 
-// perTerminalSlices returns the `perterm` sub-rule body. Every host in the
-// client subnet maps to its dedicated fb-<ip> fallback group, and the
-// MATCH fallback at the end catches sources outside the subnet.
+// perTerminalSlices returns the `perterm` sub-rule body. Every unit in the
+// client subnet maps to the fallback group that carries its HRW pair, and
+// the MATCH fallback at the end catches sources outside the subnet.
 //
 // Returns nil when there are no candidate routing members (validate path
 // with empty outbounds, or unconfigured perTerminal); the caller then
@@ -98,10 +146,14 @@ func (r *Renderer) perTerminalSlices(outbounds []subscribe.Outbound) []string {
 }
 
 // perTerminalSlicesFor is the generalized body of a per-term sub-rule: one
-// SRC-IP rule per terminal unit pointing at groupPrefix+key, then a fallback
-// for sources outside client_subnet. Used by the default class (prefix
-// "fb-", fallback default-pool) and by class pools (prefix "fb-<pool>-",
-// fallback <pool>).
+// SRC-IP rule per terminal unit pointing at the pair group its HRW
+// assignment resolves to, then a fallback for sources outside
+// client_subnet. Used by the default class (prefix "fb-", fallback
+// default-pool) and by class pools (prefix "fb-<pool>-", fallback <pool>).
+//
+// One rule per UNIT (up to 1024), but only one GROUP per distinct
+// [primary, secondary] pair — many units share a pair and therefore share
+// a group. Rules are cheap; health-checked groups are not.
 func (r *Renderer) perTerminalSlicesFor(members []string, groupPrefix, fallbackGroup string) []string {
 	// Need at least perTerminalFallbackDepth members to form a useful
 	// fallback chain. Callers check the same condition before emitting the
@@ -115,29 +167,33 @@ func (r *Renderer) perTerminalSlicesFor(members []string, groupPrefix, fallbackG
 	}
 	rules := make([]string, 0, len(units)+1)
 	for _, u := range units {
-		rules = append(rules, fmt.Sprintf("%s,%s,%s%s", u.ruleType, u.match, groupPrefix, u.key))
+		suffix := pairGroupSuffix(hrwTopN(u.key, members, perTerminalFallbackDepth))
+		rules = append(rules, fmt.Sprintf("%s,%s,%s%s", u.ruleType, u.match, groupPrefix, suffix))
 	}
 	rules = append(rules, "MATCH,"+fallbackGroup)
 	return rules
 }
 
 // perTerminalFallbackGroups returns the fallback proxy-group definitions
-// for every host in the client subnet. Each group has [primary, secondary]
-// (HRW top-2) drawn from the routing-member pool. Returns nil when the
-// pool is empty or the subnet can't be enumerated.
+// for every distinct [primary, secondary] pair drawn from the routing
+// pool. Returns nil when the pool is empty or the subnet can't be
+// enumerated.
 //
 // The probe URL + interval mirror url_test config so all groups share
 // the same liveness signal. lazy=true means the group only probes when
 // it has active flows — keeps probe traffic proportional to actual
-// terminal activity rather than the static subnet size.
+// terminal activity rather than the static subnet size. Note that mihomo
+// still runs one check at group creation (see the package comment), which
+// is exactly why the group count must stay bounded by K(K-1) ordered
+// pairs.
 func (r *Renderer) perTerminalFallbackGroups(outbounds []subscribe.Outbound, probeURL string, intervalSec int) []map[string]any {
 	return r.perTerminalFallbackGroupsFor(r.perTerminalMembers(outbounds), perTerminalGroupPrefix, probeURL, intervalSec)
 }
 
-// perTerminalFallbackGroupsFor emits one fallback group per terminal unit
-// named groupPrefix+key, each containing [primary, secondary] in HRW order
-// drawn from members. Shared by the default class and class pools so their
-// failover semantics stay identical.
+// perTerminalFallbackGroupsFor emits one fallback group per distinct
+// [primary, secondary] pair named groupPrefix+p-<hash>, each containing
+// its two members in HRW order. Shared by the default class and class
+// pools so their failover semantics stay identical.
 func (r *Renderer) perTerminalFallbackGroupsFor(members []string, groupPrefix, probeURL string, intervalSec int) []map[string]any {
 	if len(members) < perTerminalFallbackDepth {
 		// Need at least perTerminalFallbackDepth members to form a useful
@@ -150,11 +206,25 @@ func (r *Renderer) perTerminalFallbackGroupsFor(members []string, groupPrefix, p
 	if len(units) == 0 {
 		return nil
 	}
-	out := make([]map[string]any, 0, len(units))
+	// Upper bound is K(K-1) ordered pairs; starting at the unit count would
+	// allocate 1024 entries for ~56 groups. K is small by design
+	// (pool_sizing), but fall back to the unit count if members is
+	// unexpectedly huge.
+	capacity := len(members) * (len(members) - 1)
+	if capacity > len(units) {
+		capacity = len(units)
+	}
+	out := make([]map[string]any, 0, capacity)
+	seen := make(map[string]bool, capacity)
 	for _, u := range units {
 		ranked := hrwTopN(u.key, members, perTerminalFallbackDepth)
+		suffix := pairGroupSuffix(ranked)
+		if suffix == "" || seen[suffix] {
+			continue
+		}
+		seen[suffix] = true
 		out = append(out, map[string]any{
-			"name":     groupPrefix + u.key,
+			"name":     groupPrefix + suffix,
 			"type":     "fallback",
 			"proxies":  ranked,
 			"url":      probeURL,
@@ -200,15 +270,22 @@ func (r *Renderer) AssignmentForIP(ip string, outbounds []subscribe.Outbound) ([
 }
 
 // PerTerminalGroupName is the fb-* proxy-group that carries traffic from
-// ip under the given client_subnet, or "" when ip is outside it. Exported
-// so the API reports the same name the renderer emits — they must agree,
-// and both derive it from perTerminalKey.
-func PerTerminalGroupName(ip, clientSubnet string) string {
+// ip under the given client_subnet, or "" when ip is outside it or the
+// assignment has fewer than two members (no group is rendered then).
+//
+// assigned is the HRW-ordered result from AssignmentForIP; the group is
+// keyed by its first two entries, matching perTerminalFallbackGroupsFor.
+// Exported so the API reports the same name the renderer emits — they must
+// agree, and both derive it from pairGroupSuffix.
+func PerTerminalGroupName(ip, clientSubnet string, assigned []string) string {
 	if !ipInSubnet(ip, clientSubnet) {
 		return ""
 	}
-	if k := perTerminalKey(ip, clientSubnet); k != "" {
-		return perTerminalGroupPrefix + k
+	if perTerminalKey(ip, clientSubnet) == "" {
+		return ""
+	}
+	if s := pairGroupSuffix(assigned); s != "" {
+		return perTerminalGroupPrefix + s
 	}
 	return ""
 }
@@ -221,14 +298,18 @@ func poolGroupPrefix(pool string) string {
 }
 
 // PoolPerTerminalGroupName is the fb-<pool>-* group for a class pool, or ""
-// when the terminal is outside client_subnet. Mirrors PerTerminalGroupName
-// for named pools; the API uses it so its report matches the renderer.
-func PoolPerTerminalGroupName(pool, ip, clientSubnet string) string {
+// when the terminal is outside client_subnet or the pool assignment has
+// fewer than two members. Mirrors PerTerminalGroupName for named pools; the
+// API uses it so its report matches the renderer.
+func PoolPerTerminalGroupName(pool, ip, clientSubnet string, assigned []string) string {
 	if !ipInSubnet(ip, clientSubnet) {
 		return ""
 	}
-	if k := perTerminalKey(ip, clientSubnet); k != "" {
-		return poolGroupPrefix(pool) + k
+	if perTerminalKey(ip, clientSubnet) == "" {
+		return ""
+	}
+	if s := pairGroupSuffix(assigned); s != "" {
+		return poolGroupPrefix(pool) + s
 	}
 	return ""
 }

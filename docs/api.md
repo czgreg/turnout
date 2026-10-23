@@ -436,7 +436,8 @@ PUT body：`{"client_subnet": "10.1.3.0/24"}`。保存后同步执行：
 2. 用 `--print-env` 重新生成 `/etc/turnout/env`
 3. 执行 `/etc/turnout/render-rules.sh` 重渲染 `nft.conf`（内含 `nft -c` 语法自检）
 4. `systemctl restart turnout-nft.service` 重新下发 nft + TPROXY 规则
-5. `SetNode` 后重渲染并热重载 mihomo，按新网段重建 `fb-<ip>` 分组
+5. `SetNode` 后重渲染并热重载 mihomo，按新网段重建 per-terminal 分组
+   （`fb-p-<pair>`，同一 HRW 节点对共享一组）
 
 校验（400）：必须是 CIDR、IPv4、网络地址（主机位清零）、前缀在 /8–/31 之间，
 且必须包含 `ingress_ip`。
@@ -615,7 +616,7 @@ curl -H "Authorization: Bearer ..." \
   "ip": "10.1.2.42",
   "subnet": "10.1.2.0/24",
   "in_subnet": true,
-  "group_name": "fb-10.1.2.42",
+  "group_name": "fb-p-1a2b3c4d5e6f",
   "pool_mode": "auto",
   "active_node": "primary",
   "primary": {
@@ -655,8 +656,8 @@ curl -H "Authorization: Bearer ..." \
 字段：
 - `ip` — 入参 IP。回显方便日志。
 - `subnet` — 节点配置的 `client_subnet`（如 `10.1.2.0/24`）。
-- `in_subnet` — `false` 表示该 IP 不在 client_subnet，会走 `MATCH,default-pool` 兜底，**没有**专属的 fb-<ip> 组。下面的 primary/secondary 字段缺省。
-- `group_name` — mihomo 中对应的 fallback 组名（`fb-<ip>` 形式）。可以直接用于 mihomo clash-api 调试。
+- `in_subnet` — `false` 表示该 IP 不在 client_subnet，会走 `MATCH,default-pool` 兜底，**没有**专属的 per-terminal fallback 组。下面的 primary/secondary 字段缺省。
+- `group_name` — mihomo 中对应的 fallback 组名（`fb-p-<pair-hash>` 形式；同一个 HRW [primary, secondary] 对共享一组，不再按 IP 一一命名）。可以直接用于 mihomo clash-api 调试。
 - `pool_mode` — 当前 `node_qualify.pool_mode`。
 - `active_node` — `primary` / `secondary` / `""`（都不可用）。系统按 mihomo fallback 语义判断：primary alive=true 时返回 primary，否则 secondary 替补。
 - `primary.name` — HRW top-1 节点名。
@@ -664,7 +665,7 @@ curl -H "Authorization: Bearer ..." \
 - `primary.health` — 完整 NodeHealth 嵌入：rtt_p50/p95、jitter、fail_rate、probe_count、命名探针每个目标的最近一次状态、被动连接生命周期统计（`passive`）。
 - `secondary.*` — 同 primary，HRW top-2。当前实现固定每个 fb 组 2 个成员。
 - `pools` — 仅列出 `per_terminal: true` 的分类池（如 `ai-pool`）。每项含
-  `pool`、`group_name`（`fb-<pool>-<ip>`）、`primary` / `secondary` /
+  `pool`、`group_name`（`fb-<pool>-p-<hash>`）、`primary` / `secondary` /
   `active_node`。顶层 `primary` / `secondary` 仍描述默认「其他」类；`pools`
   描述每个分类自己的稳定出口：
 
@@ -672,7 +673,7 @@ curl -H "Authorization: Bearer ..." \
 "pools": [
   {
     "pool": "ai-pool",
-    "group_name": "fb-ai-pool-10.1.2.42",
+    "group_name": "fb-ai-pool-p-6f5e4d3c2b1a",
     "active_node": "primary",
     "primary": {"name": "hutao/美国_BGP_E", "alive": true, "health": {"...": "..."}},
     "secondary": {"name": "momo/🇺🇸美国07_WD", "alive": true, "health": {"...": "..."}}
@@ -981,7 +982,23 @@ curl -s $BASE/api/whitelist \
 
 ## 接入变更日志（前端 / 控制平台）
 
-### 2026-10-17（旁挂角色改造）— 当前版本
+### 2026-10-23（per-terminal 组按节点对收敛 + 重载后 DNS 预热）— 当前版本
+
+**变更（字段语义，非 breaking）**：
+
+- `GET /api/pool/terminal` 的 `group_name` 从 `fb-<ip>` / `fb-<bucket>` 变为
+  `fb-p-<pair-hash>`（分类池为 `fb-<pool>-p-<hash>`）。组不再按终端单元
+  一一创建，而是按 HRW 的 [primary, secondary] **有序对**去重：/16 的 1024
+  个桶只产生 K(K-1) 个组（8 节点 = 56），分类池同理。
+- 分流语义不变：同一终端仍是同一个 [primary, secondary]，fallback 顺序
+  不变；mihomo 的 alive 状态本来就挂在共享节点对象上。
+- 影响：每次 `PUT /configs` 的健康检查拨号从 ~4096 降到 ~136，重载耗时
+  从 6.1–7.5s 降到 ~0.6s（10.100.6.15 实测）。
+- 新增 `data_plane.dns.preload_domains` + `preload_interval`；预热器在每次
+  热重载成功后立即补查一轮（mihomo 每次 ApplyConfig 都会重建 DNS 解析器，
+  缓存清零）。留空 = 关闭。
+
+### 2026-10-17（旁挂角色改造）
 
 **Breaking — 删除 1 个端点**：
 

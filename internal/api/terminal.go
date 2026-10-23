@@ -19,7 +19,7 @@ type TerminalAssignment struct {
 	Primary    *terminalNodeView `json:"primary,omitempty"`     // current default egress for this terminal
 	Secondary  *terminalNodeView `json:"secondary,omitempty"`   // mihomo fallback target when primary is alive=false
 	ActiveNode string            `json:"active_node,omitempty"` // which one is actually carrying traffic right now ("primary" | "secondary" | "")
-	GroupName  string            `json:"group_name,omitempty"`  // e.g. fb-10.1.2.42 — present when InSubnet
+	GroupName  string            `json:"group_name,omitempty"`  // e.g. fb-p-1a2b3c4d5e6f — present when InSubnet
 	PoolMode   string            `json:"pool_mode"`             // "manual" | "auto" | other
 	Hint       string            `json:"hint,omitempty"`        // operator-facing diagnostic note
 	// Pools lists per-class egresses for class pools configured with
@@ -51,7 +51,7 @@ type terminalNodeView struct {
 
 // handlePoolTerminal answers GET /api/pool/terminal?ip=10.1.2.42
 //
-// Resolves: terminal IP → fb-<ip> group → [primary, secondary] HRW
+// Resolves: terminal IP → pair fallback group → [primary, secondary] HRW
 // assignment → each node's NodeHealth + alive bit. Decides "active_node"
 // by inspecting primary's alive bit (mihomo's fallback semantics use the
 // first alive member).
@@ -95,13 +95,19 @@ func (s *Server) handlePoolTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(assigned) == 0 {
-		resp.Hint = "routing pool is empty — no fb-<ip> group rendered"
+		resp.Hint = "routing pool is empty — no per-terminal fallback group rendered"
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	// Large subnets pin per address block, not per host — the renderer
-	// owns that mapping, so ask it rather than rebuilding "fb-" + ip.
-	resp.GroupName = mihomo.PerTerminalGroupName(ip, s.deps.Cfg.Node.ClientSubnet)
+	// owns that mapping, so ask it rather than rebuilding the name. The
+	// group is keyed by the (primary, secondary) pair assigned above.
+	// Only report a name when per-terminal groups are actually rendered;
+	// with per_terminal off, traffic goes through default-pool and the
+	// name would refer to a group that does not exist.
+	if s.deps.Cfg.LoadBalance.PerTerminal {
+		resp.GroupName = mihomo.PerTerminalGroupName(ip, s.deps.Cfg.Node.ClientSubnet, assigned)
+	}
 
 	snap := s.deps.NodeScorer.GetSnapshot()
 	byName := make(map[string]*nodescorer.NodeHealth, len(snap.Nodes))
@@ -146,16 +152,14 @@ func (s *Server) handlePoolTerminal(w http.ResponseWriter, r *http.Request) {
 		if !p.PerTerminalEnabled() {
 			continue
 		}
-		pa := TerminalPoolAssignment{
-			Pool:      p.Name,
-			GroupName: mihomo.PoolPerTerminalGroupName(p.Name, ip, s.deps.Cfg.Node.ClientSubnet),
-		}
+		pa := TerminalPoolAssignment{Pool: p.Name}
 		classAssigned, ok := s.deps.Renderer.PoolAssignmentForIP(ip, p.Name, outbounds)
 		if !ok || len(classAssigned) == 0 {
 			pa.Hint = "no members rendered for this class yet (scorer has not published pool membership)"
 			resp.Pools = append(resp.Pools, pa)
 			continue
 		}
+		pa.GroupName = mihomo.PoolPerTerminalGroupName(p.Name, ip, s.deps.Cfg.Node.ClientSubnet, classAssigned)
 		pa.Primary = makeView(classAssigned[0])
 		if len(classAssigned) > 1 {
 			pa.Secondary = makeView(classAssigned[1])

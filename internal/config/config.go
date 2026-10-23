@@ -555,6 +555,17 @@ type DNSConfig struct {
 	NodeResolverSuffixes []string `yaml:"node_resolver_suffixes,omitempty"`
 	// PreloadDomains is the list of overseas domains turnout-gateway will
 	// keep warm in mihomo's DNS cache.
+	//
+	// Two things clear that cache: TTL expiry, and every PUT /configs
+	// (mihomo rebuilds its resolver in ApplyConfig → updateDNS). The second
+	// is why the preloader also runs a sweep right after each hot reload —
+	// without it, pool churn can leave the cache cold for the whole
+	// preload_interval, and the first lookup of each domain costs
+	// 0.24-1.2s (measured 2026-10-23) instead of ~0ms.
+	//
+	// Curate this from what the office actually opens first (the whitelist's
+	// high-traffic destinations); each sweep is one A query per domain.
+	// Empty disables the preloader entirely.
 	PreloadDomains []string `yaml:"preload_domains,omitempty"`
 	// PreloadInterval is how often each preloaded domain is re-queried.
 	// Default 5m. 0 disables preload (regardless of PreloadDomains).

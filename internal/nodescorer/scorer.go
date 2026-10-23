@@ -257,6 +257,13 @@ type Scorer struct {
 	// rather than firing a fresh reload each time.
 	lastHotReload time.Time
 
+	// reloadHook, when non-nil, runs after each successful hot reload.
+	// Set once at startup via SetReloadHook and read on every reload; the
+	// scorer owns its own clash-api client (reloadHTTPc), so it does not go
+	// through dataplane.Controller and needs its own hook. Used by main to
+	// re-warm the DNS cache that every PUT /configs clears.
+	reloadHook func()
+
 	// Emergency state (manual mode only). The "effective pool" is what
 	// mihomo currently routes through; it equals cfg.PoolMembers minus
 	// auto-evicted entries plus auto-promoted entries from
@@ -407,6 +414,17 @@ func New(
 			Transport: &http.Transport{Proxy: http.ProxyURL(probeProxy)},
 		},
 	}
+}
+
+// SetReloadHook registers a callback fired after each successful hot
+// reload. main.go wires this to dnspreload.Preloader.Warm: mihomo rebuilds
+// its DNS resolver on every PUT /configs, so without re-warming the first
+// lookup of each domain after a reload pays the cross-border DoH cost
+// again. The hook must return quickly (Warm is asynchronous).
+func (s *Scorer) SetReloadHook(h func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reloadHook = h
 }
 
 // probesEnabled reports whether any configured pool gates on probes (i.e.
@@ -2202,6 +2220,19 @@ func (s *Scorer) hotReload(ctx context.Context, defaultPool, routingMembers []st
 		"default_pool", len(defaultPool), "routing", len(routingMembers),
 		"named_pools", len(poolMembers),
 		"duration", time.Since(start).Round(time.Millisecond))
+
+	// Every PUT /configs rebuilds mihomo's DNS resolver with an empty
+	// cache (executor.ApplyConfig → updateDNS → dns.NewResolver). Re-warm
+	// now rather than waiting for the preloader's periodic sweep: with
+	// pool churn this reload may fire again well before that sweep, and
+	// the first lookup of each domain after a reload is 0.24-1.2s cold
+	// versus ~0ms cached (measured 2026-10-23).
+	s.mu.RLock()
+	hook := s.reloadHook
+	s.mu.RUnlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 func (s *Scorer) mihomoHotReload(ctx context.Context) error {

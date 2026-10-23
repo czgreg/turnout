@@ -268,7 +268,7 @@ PLAN.md P3 第 2 条的表格已按此更新。
 说明「yaml 已落盘、线上规则可能仍是旧值」。
 
 渲染器新增 `SetNode`：`Renderer` 在构造时用 `WithNode` 拷贝了一份 `NodeConfig`，
-不重新灌入的话 `fb-<ip>` 分组会一直按旧网段生成 —— API 报新值、mihomo 匹配旧值。
+不重新灌入的话 per-terminal 分组（`fb-p-<pair>`）会一直按旧网段生成 —— API 报新值、mihomo 匹配旧值。
 
 ### 4. 前端「网段设置」页（`web/src/pages/Network.tsx`，`#/network`）
 

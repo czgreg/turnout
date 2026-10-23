@@ -226,10 +226,10 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 
 	// Per-terminal: build the perterm sub-rule once. domainTarget below
 	// dispatches domain whitelist hits into it. Each rule routes the
-	// terminal to its dedicated fb-<ip> fallback group, which mihomo's
-	// fallback type backs with [primary, secondary] from the routing pool.
-	// One terminal → one egress at any given time, with automatic primary
-	// → secondary failover when the primary fails mihomo's url-test.
+	// terminal to the fallback group carrying its [primary, secondary] HRW
+	// pair, which mihomo backs with those two nodes. One terminal → one
+	// egress at any given time, with automatic primary → secondary failover
+	// when the primary fails mihomo's url-test.
 	perterm := r.perTerminal && r.node.ClientSubnet != ""
 	if perterm {
 		slices := r.perTerminalSlices(outbounds)

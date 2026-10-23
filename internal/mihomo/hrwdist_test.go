@@ -230,10 +230,18 @@ func TestPerTerminalUnits_SuffixModeForLargeSubnets(t *testing.T) {
 	if a, b := perTerminalKey("192.168.0.5", "192.168.0.0/16"), perTerminalKey("192.168.4.5", "192.168.0.0/16"); a != b {
 		t.Errorf("1024-apart addresses must share a bucket: %s vs %s", a, b)
 	}
-	if g := PerTerminalGroupName("192.168.1.126", "192.168.0.0/16"); g != "fb-s0.0.1.126" {
-		t.Errorf("group = %q", g)
+	// The group is keyed by the HRW pair, not by the terminal unit: the
+	// name must match the suffix derived from the assigned members.
+	pool := []string{"n1", "n2", "n3", "n4"}
+	assigned := hrwTopN(perTerminalKey("192.168.1.126", "192.168.0.0/16"), pool, perTerminalFallbackDepth)
+	want := perTerminalGroupPrefix + pairGroupSuffix(assigned)
+	if g := PerTerminalGroupName("192.168.1.126", "192.168.0.0/16", assigned); g != want {
+		t.Errorf("group = %q, want %q", g, want)
 	}
-	if g := PerTerminalGroupName("10.0.0.1", "192.168.0.0/16"); g != "" {
+	if want[:len(perTerminalGroupPrefix+pairGroupInfix)] != perTerminalGroupPrefix+pairGroupInfix {
+		t.Errorf("group name %q is not pair-keyed", want)
+	}
+	if g := PerTerminalGroupName("10.0.0.1", "192.168.0.0/16", assigned); g != "" {
 		t.Errorf("out-of-subnet ip must have no group, got %q", g)
 	}
 }
@@ -269,8 +277,13 @@ func TestPerTerminalUnits_HostModeUnchanged(t *testing.T) {
 	if units[0].ruleType != "SRC-IP-CIDR" || units[0].match != "10.1.3.1/32" || units[0].key != "10.1.3.1" {
 		t.Errorf("host unit = %+v", units[0])
 	}
-	if g := PerTerminalGroupName("10.1.3.42", "10.1.3.0/24"); g != "fb-10.1.3.42" {
-		t.Errorf("group = %q, want fb-10.1.3.42", g)
+	// Subnets that fit stay per-host for RULE unit selection; the group
+	// name is pair-keyed regardless.
+	pool := []string{"n1", "n2", "n3"}
+	assigned := hrwTopN(perTerminalKey("10.1.3.42", "10.1.3.0/24"), pool, perTerminalFallbackDepth)
+	want := perTerminalGroupPrefix + pairGroupSuffix(assigned)
+	if g := PerTerminalGroupName("10.1.3.42", "10.1.3.0/24", assigned); g != want {
+		t.Errorf("group = %q, want %q", g, want)
 	}
 	// /22 = 1022 hosts still fits.
 	if n := len(perTerminalUnits("192.168.0.0/22")); n != 1022 {
