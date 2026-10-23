@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
@@ -17,6 +18,7 @@ func TestPoolsGet(t *testing.T) {
 		Size:         4,
 		PerTerminal:  &perTerm,
 		RuleSets:     []string{"geosite-openai", "geosite-anthropic"},
+		RuleLists:    []config.RuleListConfig{{Tag: "gemini", URL: "https://yfamilys.com/rule/Gemini.list"}},
 		DomainSuffix: []string{"gemini.google.com"},
 	}}}}}
 
@@ -41,5 +43,15 @@ func TestPoolsGet(t *testing.T) {
 	}
 	if len(p.DomainSuffix) != 1 || p.DomainSuffix[0] != "gemini.google.com" {
 		t.Errorf("domain_suffix = %v", p.DomainSuffix)
+	}
+	if len(p.RuleLists) != 1 || p.RuleLists[0].Tag != "gemini" {
+		t.Errorf("rule_lists = %v", p.RuleLists)
+	}
+	// The console reads l.tag / l.url; Go's default field names would be
+	// "Tag"/"URL" and silently render as undefined.
+	for _, want := range []string{`"tag":"gemini"`, `"url":"https://yfamilys.com/rule/Gemini.list"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("body missing %s: %s", want, rec.Body.String())
+		}
 	}
 }

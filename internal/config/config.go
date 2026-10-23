@@ -1078,11 +1078,12 @@ type PoolConfig struct {
 type RuleListConfig struct {
 	// Tag is the rule-provider name and the RULE-SET argument. It is also
 	// the on-disk filename stem (<tag>.list), so it must be a safe path
-	// component: [A-Za-z0-9][A-Za-z0-9._-]*.
-	Tag string `yaml:"tag"`
+	// component: [A-Za-z0-9][A-Za-z0-9._-]*. The json tags keep
+	// GET /api/pools lowercase for the console.
+	Tag string `yaml:"tag" json:"tag"`
 	// URL is the upstream list. Only scripts/stage.sh reads it; the
 	// renderer references the staged file by Tag alone.
-	URL string `yaml:"url"`
+	URL string `yaml:"url" json:"url"`
 }
 
 // IsClassPool reports whether the pool declares class semantics (own
