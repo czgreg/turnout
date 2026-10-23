@@ -131,18 +131,20 @@ func TestComputePoolMembers_ClassPattern(t *testing.T) {
 		"us2": {Long: ewmaPoint{Value: 200, UpdatedAt: now}},
 		"us3": {Long: ewmaPoint{Value: 300, UpdatedAt: now}},
 		"jp1": {Long: ewmaPoint{Value: 50, UpdatedAt: now}},
+		"us5": {Long: ewmaPoint{Value: 10, UpdatedAt: now}}, // best score, but dead
 	}
 	nodes := []NodeHealth{
-		{Name: "us1", Qualified: true},
-		{Name: "us2", Qualified: true},
-		{Name: "us3", Qualified: true},
-		{Name: "jp1", Qualified: true},
-		{Name: "us4", Qualified: false}, // not qualified → never a member
+		{Name: "us1", Qualified: true, Alive: true},
+		{Name: "us2", Qualified: true, Alive: true},
+		{Name: "us3", Qualified: true, Alive: true},
+		{Name: "jp1", Qualified: true, Alive: true},
+		{Name: "us4", Qualified: false, Alive: true}, // not qualified → never a member
+		{Name: "us5", Qualified: true, Alive: false}, // dead → never a member
 	}
 	got := s.computePoolMembers(nodes, map[string]bool{"jp1": true}, 8)
 	members := got["ai-pool"]
 	if len(members) != 2 || members[0] != "us1" || members[1] != "us2" {
-		t.Fatalf("ai-pool members = %v, want [us1 us2] (pattern + size + EWMA rank)", members)
+		t.Fatalf("ai-pool members = %v, want [us1 us2] (pattern + alive + size + EWMA rank)", members)
 	}
 }
 
@@ -166,9 +168,9 @@ func TestComputePoolMembers_ClassSticky(t *testing.T) {
 	}
 	s.poolMembers = map[string][]string{"ai-pool": {"us2", "us3"}}
 	nodes := []NodeHealth{
-		{Name: "us1", Qualified: true},
-		{Name: "us2", Qualified: true},
-		{Name: "us3", Qualified: true},
+		{Name: "us1", Qualified: true, Alive: true},
+		{Name: "us2", Qualified: true, Alive: true},
+		{Name: "us3", Qualified: true, Alive: true},
 	}
 	got := s.computePoolMembers(nodes, nil, 0)["ai-pool"]
 	if len(got) != 2 || got[0] != "us2" || got[1] != "us3" {

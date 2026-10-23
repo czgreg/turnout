@@ -1689,7 +1689,16 @@ func (s *Scorer) computePoolMembers(nodes []NodeHealth, usPool map[string]bool, 
 		eligible := make([]NodeHealth, 0, len(nodes))
 		for i := range nodes {
 			h := &nodes[i]
-			if !h.Qualified {
+			if !h.Qualified || !h.Alive {
+				// Qualified is a diagnostic bit (any successful probe in
+				// the window); it does NOT mean mihomo can dial the node.
+				// A class pool carries production traffic, so never select
+				// a node mihomo marks alive=false. Observed 2026-10-23:
+				// hutao BGP_B/C were qualified with fail_rate 0.2 but
+				// alive=false; the ai-pool's HRW top-2 picked both and every
+				// ChatGPT dial timed out. The renderer's pattern baseline
+				// keeps the pool populated for probing; this filter applies
+				// once mihomo has an alive bit.
 				continue
 			}
 			if pattern != nil && !pattern.MatchString(h.Name) {
