@@ -14,8 +14,10 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -1062,6 +1064,25 @@ type PoolConfig struct {
 	// before rule_sets and the global whitelist, so a specific domain can
 	// override a broader geosite hit (e.g. Gemini inside geosite-google).
 	DomainSuffix []string `yaml:"domain_suffix"`
+	// RuleLists adds operator-supplied rule lists fetched verbatim from a
+	// URL (e.g. a vendor's Gemini.list) to this pool's routing. Unlike
+	// RuleSets — MetaCubeX geosite tags converted to .mrs — these files are
+	// Clash "classical" text: one full rule per line, so DOMAIN-KEYWORD
+	// survives. scripts/stage.sh fetches each into
+	// <rule_sets_dir>/<tag>.list; the renderer declares it as a classical
+	// text rule-provider.
+	RuleLists []RuleListConfig `yaml:"rule_lists"`
+}
+
+// RuleListConfig is one external classical rule list claimed by a pool.
+type RuleListConfig struct {
+	// Tag is the rule-provider name and the RULE-SET argument. It is also
+	// the on-disk filename stem (<tag>.list), so it must be a safe path
+	// component: [A-Za-z0-9][A-Za-z0-9._-]*.
+	Tag string `yaml:"tag"`
+	// URL is the upstream list. Only scripts/stage.sh reads it; the
+	// renderer references the staged file by Tag alone.
+	URL string `yaml:"url"`
 }
 
 // IsClassPool reports whether the pool declares class semantics (own
@@ -1077,10 +1098,35 @@ func (p PoolConfig) PerTerminalEnabled() bool {
 	return p.PerTerminal != nil && *p.PerTerminal
 }
 
+// ruleListTagPattern keeps a rule-list tag filename-safe: it becomes
+// <rule_sets_dir>/<tag>.list, so separators and traversal must be impossible.
+var ruleListTagPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
 // validatePools enforces invariants the renderer and scorer rely on. Run at
 // load time so a bad yaml never reaches a render or the live mihomo process.
 func (c *Config) validatePools() error {
 	seen := make(map[string]bool, len(c.Pools))
+	// used maps every provider tag the renderer may already declare (rule-set
+	// providers shared between the whitelist and pools, plus each pool's own
+	// tags) to its owner. A rule_list reusing one of those tags would silently
+	// replace its provider — a geosite .mrs and a classical text list are not
+	// interchangeable — so that collision fails closed. Sharing a plain
+	// rule_set between the whitelist and a pool stays legal: buildRuleProviders
+	// emits it once and both rule lines point at it.
+	used := make(map[string]string)
+	for _, tag := range c.DataPlane.Route.Whitelist.Geosites {
+		used[tag] = "data_plane.route.whitelist.geosites"
+	}
+	for _, tag := range c.DataPlane.Route.Whitelist.Geoips {
+		used[tag] = "data_plane.route.whitelist.geoips"
+	}
+	for _, p := range c.Pools {
+		for _, tag := range p.RuleSets {
+			if _, ok := used[tag]; !ok {
+				used[tag] = "pools[" + p.Name + "].rule_sets"
+			}
+		}
+	}
 	for i := range c.Pools {
 		p := &c.Pools[i]
 		if p.Name == "" {
@@ -1104,6 +1150,28 @@ func (c *Config) validatePools() error {
 		for _, d := range p.DomainSuffix {
 			if d == "" {
 				return fmt.Errorf("pools[%s]: empty domain_suffix entry", p.Name)
+			}
+		}
+		for _, rl := range p.RuleLists {
+			owner := "pools[" + p.Name + "].rule_lists"
+			switch {
+			case rl.Tag == "":
+				return fmt.Errorf("%s: tag is required", owner)
+			case !ruleListTagPattern.MatchString(rl.Tag) || strings.Contains(rl.Tag, ".."):
+				return fmt.Errorf("%s: invalid tag %q (want [A-Za-z0-9][A-Za-z0-9._-]*, no \"..\")", owner, rl.Tag)
+			case strings.HasPrefix(rl.Tag, "geoip-"):
+				// Behavior is inferred from this prefix elsewhere (rule
+				// providers, DNS policy); a domain list must not look like
+				// an IP set.
+				return fmt.Errorf("%s: tag %q must not use the geoip- prefix", owner, rl.Tag)
+			}
+			if prev, ok := used[rl.Tag]; ok {
+				return fmt.Errorf("%s: tag %q already claimed by %s", owner, rl.Tag, prev)
+			}
+			used[rl.Tag] = owner
+			u, err := url.Parse(rl.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("%s: tag %q: url must be an absolute http(s) URL, got %q", owner, rl.Tag, rl.URL)
 			}
 		}
 	}

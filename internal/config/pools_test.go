@@ -50,6 +50,70 @@ pools:
   - name: ai-pool
     domain_suffix: [""]
 `, "empty domain_suffix"},
+		{"rule list without tag", `
+node: {client_subnet: "10.1.2.0/24"}
+pools:
+  - name: ai-pool
+    rule_lists:
+      - url: "https://example.com/x.list"
+`, "tag is required"},
+		{"rule list tag escapes dir", `
+node: {client_subnet: "10.1.2.0/24"}
+pools:
+  - name: ai-pool
+    rule_lists:
+      - tag: "../gemini"
+        url: "https://example.com/x.list"
+`, "invalid tag"},
+		{"rule list tag looks like geoip", `
+node: {client_subnet: "10.1.2.0/24"}
+pools:
+  - name: ai-pool
+    rule_lists:
+      - tag: geoip-gemini
+        url: "https://example.com/x.list"
+`, "must not use the geoip- prefix"},
+		{"rule list bad url", `
+node: {client_subnet: "10.1.2.0/24"}
+pools:
+  - name: ai-pool
+    rule_lists:
+      - tag: gemini
+        url: "yfamilys.com/rule/Gemini.list"
+`, "absolute http(s) URL"},
+		{"rule list collides with whitelist", `
+node: {client_subnet: "10.1.2.0/24"}
+data_plane:
+  route:
+    whitelist:
+      geosites: [gemini]
+pools:
+  - name: ai-pool
+    rule_lists:
+      - tag: gemini
+        url: "https://example.com/x.list"
+`, "already claimed"},
+		{"rule list collides with pool rule_sets", `
+node: {client_subnet: "10.1.2.0/24"}
+pools:
+  - name: ai-pool
+    rule_sets: [gemini]
+    rule_lists:
+      - tag: gemini
+        url: "https://example.com/x.list"
+`, "already claimed"},
+		{"duplicate rule list tags", `
+node: {client_subnet: "10.1.2.0/24"}
+pools:
+  - name: ai-pool
+    rule_lists:
+      - tag: gemini
+        url: "https://example.com/a.list"
+  - name: other-pool
+    rule_lists:
+      - tag: gemini
+        url: "https://example.com/b.list"
+`, "already claimed"},
 	}
 	for _, tc := range cases {
 		_, err := loadPoolYAML(t, tc.yaml)
@@ -62,12 +126,19 @@ pools:
 func TestPoolsValidation_OK(t *testing.T) {
 	_, err := loadPoolYAML(t, `
 node: {client_subnet: "10.1.2.0/24"}
+data_plane:
+  route:
+    whitelist:
+      geosites: [geosite-openai]
 pools:
   - name: ai-pool
     node_pattern: "美国|\\bUS"
     size: 4
     per_terminal: true
     rule_sets: [geosite-openai]
+    rule_lists:
+      - tag: gemini
+        url: "https://yfamilys.com/rule/Gemini.list"
     domain_suffix: [gemini.google.com]
 `)
 	if err != nil {

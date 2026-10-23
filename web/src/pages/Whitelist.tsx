@@ -433,6 +433,9 @@ export default function WhitelistPage({
                 {(p.rule_sets || []).map((r) => (
                   <Tag key={r} size="small" style={{ marginRight: 4 }}>{shortTag(r)}</Tag>
                 ))}
+                {(p.rule_lists || []).map((l) => (
+                  <Tag key={l.tag} size="small" style={{ marginRight: 4 }}>{l.tag}（外部列表）</Tag>
+                ))}
                 {(p.domain_suffix || []).map((d) => (
                   <Tag key={d} size="small" style={{ marginRight: 4 }}>{d}</Tag>
                 ))}

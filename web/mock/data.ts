@@ -383,6 +383,7 @@ export function pools(): Pools {
       size: 4,
       per_terminal: true,
       rule_sets: ['geosite-openai', 'geosite-anthropic', 'geosite-category-ai-!cn', 'geosite-perplexity'],
+      rule_lists: [{ tag: 'gemini', url: 'https://yfamilys.com/rule/Gemini.list' }],
       domain_suffix: ['gemini.google.com', 'generativelanguage.googleapis.com'],
     },
   ];

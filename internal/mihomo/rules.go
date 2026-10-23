@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
@@ -68,6 +69,23 @@ func (r *Renderer) poolRuleSets() []string {
 	return out
 }
 
+// poolRuleLists returns every external classical list claimed by any pool,
+// deduped by tag. config.validatePools already rejects duplicate tags; the
+// dedupe here keeps the renderer safe for configs assembled in tests.
+func (r *Renderer) poolRuleLists() []config.RuleListConfig {
+	seen := map[string]bool{}
+	var out []config.RuleListConfig
+	for _, p := range r.pools {
+		for _, rl := range p.RuleLists {
+			if !seen[rl.Tag] {
+				seen[rl.Tag] = true
+				out = append(out, rl)
+			}
+		}
+	}
+	return out
+}
+
 // buildRuleProviders emits `rule-providers:` — one provider per rule-set tag
 // that the route table refers to. CN infra (geosite-cn / geoip-cn) always
 // emitted; whitelist tags only emitted in whitelist mode; pool rule_sets
@@ -114,6 +132,16 @@ func (r *Renderer) buildRuleProviders() map[string]any {
 		}
 		rp[tag] = ruleProvider(behavior, "mrs", filepath.Join(dir, tag+".mrs"))
 	}
+	// Pool rule_lists — operator-supplied classical lists (one full rule per
+	// line, e.g. the vendor Gemini.list). `classical` + `text` is what keeps
+	// DOMAIN-KEYWORD lines meaningful; a `domain` provider would read them as
+	// literal hostnames and silently match nothing.
+	for _, rl := range r.poolRuleLists() {
+		if _, ok := rp[rl.Tag]; ok {
+			continue
+		}
+		rp[rl.Tag] = ruleProviderClassical(filepath.Join(dir, rl.Tag+".list"))
+	}
 	return rp
 }
 
@@ -124,6 +152,13 @@ func ruleProvider(behavior, format, path string) map[string]any {
 		"behavior": behavior,
 		"path":     path,
 	}
+}
+
+// ruleProviderClassical declares a text rule list whose lines are complete
+// rules ("DOMAIN-SUFFIX,x", "DOMAIN-KEYWORD,y", ...). mihomo parses each text
+// line with the normal rule parser for this behavior.
+func ruleProviderClassical(path string) map[string]any {
+	return ruleProvider("classical", "text", path)
 }
 
 // buildRules emits the `rules:` array. Order matters — first match wins.
@@ -242,7 +277,9 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 	// named load-balance group.
 	//
 	// Emitted before the whitelist so a class can claim a specific domain
-	// (e.g. Gemini inside geosite-google) ahead of a broader tag.
+	// (e.g. Gemini inside geosite-google) ahead of a broader tag. A pool's
+	// rule_lists (external classical lists) are dispatched exactly like its
+	// domain rule_sets.
 	poolRouted := map[string]bool{}
 	var classTags, classDefaultPool []string
 	classResolved := false
@@ -291,6 +328,20 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 				}
 				poolRouted[tag] = true
 			}
+			// External classical lists (e.g. the Gemini list) are domain
+			// rules, so they follow the same perterm dispatch as domain
+			// rule_sets — no no-resolve.
+			for _, rl := range p.RuleLists {
+				if poolRouted[rl.Tag] {
+					continue
+				}
+				if classPerTerm {
+					rules = append(rules, "SUB-RULE,(RULE-SET,"+rl.Tag+"),"+subName)
+				} else {
+					rules = append(rules, "RULE-SET,"+rl.Tag+","+p.Name)
+				}
+				poolRouted[rl.Tag] = true
+			}
 			continue
 		}
 		// Legacy pool (probe-gated subset of default-pool).
@@ -312,6 +363,17 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 				rules = append(rules, "RULE-SET,"+tag+","+p.Name+noResolve)
 			}
 			poolRouted[tag] = true
+		}
+		for _, rl := range p.RuleLists {
+			if poolRouted[rl.Tag] {
+				continue
+			}
+			if perterm {
+				rules = append(rules, domainRule("RULE-SET,"+rl.Tag))
+			} else {
+				rules = append(rules, "RULE-SET,"+rl.Tag+","+p.Name)
+			}
+			poolRouted[rl.Tag] = true
 		}
 	}
 

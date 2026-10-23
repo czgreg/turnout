@@ -248,6 +248,13 @@ func (r *Renderer) proxiedDomainRuleSets() []string {
 	for _, tag := range r.poolRuleSets() {
 		add(tag)
 	}
+	// Pool rule_lists are domain lists too (DOMAIN/DOMAIN-SUFFIX/
+	// DOMAIN-KEYWORD lines), so their names must resolve through proxyDoH in
+	// whitelist mode — mihomo's nameserver-policy matches `rule-set:<tag>`
+	// against classical providers via MatchDomain.
+	for _, rl := range r.poolRuleLists() {
+		add(rl.Tag)
+	}
 	return out
 }
 

@@ -67,6 +67,13 @@ pools:
       - geosite-anthropic
       - geosite-category-ai-!cn
       - geosite-perplexity
+    # Vendor lists in Clash classical text format. stage.sh fetches each into
+    # <rule_sets_dir>/<tag>.list; mihomo loads it behavior=classical
+    # format=text, so DOMAIN-KEYWORD lines survive (an .mrs conversion only
+    # supports domain/ipcidr and would drop them).
+    rule_lists:
+      - tag: gemini
+        url: "https://yfamilys.com/rule/Gemini.list"
     domain_suffix:
       - claude.ai
       - gemini.google.com
@@ -85,9 +92,11 @@ pools:
 ## Implementation
 
 - `internal/config/config.go` — `PoolConfig` gains `NodePattern`, `Size`,
-  `PerTerminal *bool`, `DomainSuffix`; `IsClassPool()` / `PerTerminalEnabled()`;
-  `validatePools()` rejects invalid regexes, duplicate names, negative sizes,
-  and `per_terminal` without `client_subnet`.
+  `PerTerminal *bool`, `DomainSuffix`, `RuleLists`; `IsClassPool()` /
+  `PerTerminalEnabled()`; `validatePools()` rejects invalid regexes, duplicate
+  names, negative sizes, `per_terminal` without `client_subnet`, unsafe /
+  duplicate rule-list tags, non-http(s) rule-list URLs, and a rule-list tag
+  that collides with an existing rule-set/provider tag.
 - `internal/nodescorer/scorer.go` — candidate discovery is the union of the
   global pattern and every pool pattern; `computePoolMembers` selects class
   members from all qualified nodes by pattern, ranks by long EWMA, caps at
@@ -103,7 +112,12 @@ pools:
   per-terminal fallback groups. An empty pool renders a `select [DIRECT]`
   stub so mihomo never sees an empty group.
 - `internal/mihomo/rules.go` — class pools dispatch to `perterm-<pool>` or
-  their shared group; exact domains are emitted first.
+  their shared group; exact domains are emitted first; `rule_lists` become
+  `behavior: classical` / `format: text` providers (a `domain` provider would
+  treat `DOMAIN-KEYWORD,...` lines as literal hostnames).
+- `scripts/stage.sh` — parses `pools[].rule_lists` and fetches each URL
+  verbatim to `rule-sets/<tag>.list`; a declared list that cannot be fetched
+  fails the stage rather than silently falling through to the default class.
 - `internal/mihomo/perterminal.go` — generalized `perTerminalSlicesFor` /
   `perTerminalFallbackGroupsFor`; `PoolAssignmentForIP` and
   `PoolPerTerminalGroupName` for the API.

@@ -511,6 +511,12 @@ func runValidate(cfg *config.Config, r api.Renderer) error {
 				return fmt.Errorf("validate: pool %q rule_set %q: .mrs not found at %s — run scripts/stage.sh", pool.Name, tag, p)
 			}
 		}
+		for _, rl := range pool.RuleLists {
+			p := filepath.Join(cfg.DataPlane.RuleSetsDir, rl.Tag+".list")
+			if _, err := os.Stat(p); err != nil {
+				return fmt.Errorf("validate: pool %q rule_list %q: file not found at %s — run scripts/stage.sh", pool.Name, rl.Tag, p)
+			}
+		}
 	}
 
 	return nil

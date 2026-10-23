@@ -208,6 +208,14 @@ pools:
   #   domain_suffix:          # 精确域名，先于 whitelist 生效
   #     - gemini.google.com
   #     - generativelanguage.googleapis.com
+  #   rule_lists:             # 外部 classical 规则列表（URL 由 stage.sh 抓取）
+  #     # 每行一条完整规则：DOMAIN / DOMAIN-SUFFIX / DOMAIN-KEYWORD。
+  #     # 落地为 <rule_sets_dir>/<tag>.list，mihomo 以 behavior=classical
+  #     # + format=text 加载——DOMAIN-KEYWORD 因此能生效（.mrs 只支持
+  #     # domain/ipcidr，会把关键字规则丢掉）。
+  #     # tag 必须全局唯一且是安全文件名（[A-Za-z0-9][A-Za-z0-9._-]*）。
+  #     - tag: gemini
+  #       url: "https://yfamilys.com/rule/Gemini.list"
   []
 
 load_balance:

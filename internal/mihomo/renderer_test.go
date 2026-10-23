@@ -1004,6 +1004,7 @@ func TestRenderer_ClassPoolPerTerminal(t *testing.T) {
 		Size:         2,
 		PerTerminal:  poolBool(true),
 		RuleSets:     []string{"geosite-openai"},
+		RuleLists:    []config.RuleListConfig{{Tag: "gemini", URL: "https://yfamilys.com/rule/Gemini.list"}},
 		DomainSuffix: []string{"gemini.google.com"},
 	}}).WithLoadBalance(true)
 	r.node.ClientSubnet = "10.1.2.0/29" // 6 hosts keeps the YAML small
@@ -1073,9 +1074,24 @@ func TestRenderer_ClassPoolPerTerminal(t *testing.T) {
 		t.Error("no default fb-* groups emitted")
 	}
 
+	// The external list must land as a classical text provider: `domain`
+	// behavior would read "DOMAIN-KEYWORD,..." lines as literal hostnames.
+	rp, _ := doc["rule-providers"].(map[string]any)
+	gem, _ := rp["gemini"].(map[string]any)
+	if gem == nil {
+		t.Fatal("rule-providers missing gemini")
+	}
+	if gem["behavior"] != "classical" || gem["format"] != "text" {
+		t.Errorf("gemini provider = %v, want behavior=classical format=text", gem)
+	}
+	if p, _ := gem["path"].(string); !strings.HasSuffix(p, "/gemini.list") {
+		t.Errorf("gemini provider path = %q, want .../gemini.list", p)
+	}
+
 	rules, _ := doc["rules"].([]any)
 	want := map[string]bool{
 		"SUB-RULE,(RULE-SET,geosite-openai),perterm-ai-pool":         false,
+		"SUB-RULE,(RULE-SET,gemini),perterm-ai-pool":                 false,
 		"SUB-RULE,(DOMAIN-SUFFIX,gemini.google.com),perterm-ai-pool": false,
 		"SUB-RULE,(RULE-SET,geosite-google),perterm":                 false,
 		"SUB-RULE,(RULE-SET,geosite-youtube),perterm":                false,

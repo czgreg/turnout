@@ -263,6 +263,41 @@ for tag in "${POOL_TAGS[@]:-}"; do
   esac
 done
 
+# Tags + URLs from gateway.yaml pools[].rule_lists — external classical lists
+# (one full rule per line, e.g. DOMAIN-SUFFIX,x / DOMAIN-KEYWORD,y). Stored
+# verbatim as <tag>.list: the renderer declares them behavior=classical
+# format=text, so no .mrs conversion is possible or wanted (mrs only covers
+# domain/ipcidr and would drop the keyword lines).
+#
+# Expected shape (block style, keys tag then url):
+#   rule_lists:
+#     - tag: gemini
+#       url: "https://yfamilys.com/rule/Gemini.list"
+RULE_LIST_TAGS=()
+while IFS=$'\t' read -r rl_tag rl_url; do
+  [ -n "$rl_tag" ] && [ -n "$rl_url" ] || continue
+  RULE_LIST_TAGS+=("$rl_tag")
+  RULESET_ENTRIES+=("${rl_tag}.list|${rl_url}")
+done < <(awk '
+  function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+  function flush() {
+    if (tag != "" && url != "") print tag "\t" url
+    tag = ""; url = ""
+  }
+  /^[[:space:]]*rule_lists:[[:space:]]*$/ { inrl = 1; flush(); next }
+  inrl && /^[[:space:]]*-[[:space:]]*tag:/ {
+    flush()
+    t = $0; sub(/^.*tag:[[:space:]]*/, "", t); gsub(/["'"'"']/, "", t)
+    tag = trim(t); next
+  }
+  inrl && /^[[:space:]]*url:/ {
+    u = $0; sub(/^[[:space:]]*url:[[:space:]]*/, "", u); gsub(/["'"'"']/, "", u)
+    url = trim(u); next
+  }
+  inrl && /^[[:space:]]*[a-zA-Z_-]+:/ { flush(); inrl = 0 }
+  END { flush() }
+' "$GATEWAY_YAML")
+
 # Dedupe by save_name|url tuple (bash 3.2 has no associative arrays).
 DEDUPED_ENTRIES=()
 SEEN=$'\n'
@@ -316,6 +351,15 @@ done
 for f in category-ads-all.mrs anti-ad.txt cname-ads.txt; do
   [ -s "$STAGE_DIR/rule-sets/$f" ] \
     || fail "$f missing — ad blocking would silently match nothing; check network or the STAGE_CACHE/rule-sets copy"
+done
+
+# Pool rule_lists get the same hard gate. A missing file makes mihomo log
+# "no such file" and keep serving, so the domains would quietly fall through
+# to the default class — the exact routing the operator asked to override.
+for tag in "${RULE_LIST_TAGS[@]:-}"; do
+  [ -n "$tag" ] || continue
+  [ -s "$STAGE_DIR/rule-sets/$tag.list" ] \
+    || fail "$tag.list missing — pool rule_lists would silently route through the default class; check network or the STAGE_CACHE/rule-sets copy"
 done
 
 # 7. Tarball.

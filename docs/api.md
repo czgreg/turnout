@@ -582,6 +582,7 @@ pattern 见 `active_proxy.pool_filter`）。
     "size": 4,
     "per_terminal": true,
     "rule_sets": ["geosite-openai", "geosite-anthropic", "geosite-category-ai-!cn", "geosite-perplexity"],
+    "rule_lists": [{"tag": "gemini", "url": "https://yfamilys.com/rule/Gemini.list"}],
     "domain_suffix": ["gemini.google.com", "generativelanguage.googleapis.com"]
   }
 ]
@@ -595,6 +596,7 @@ pattern 见 `active_proxy.pool_filter`）。
 | `per_terminal` | 是否每终端固定出口（生成 `fb-<pool>-<ip>`） |
 | `requires_passing` | 额外的站点探针门槛（可选） |
 | `rule_sets` | 该分类 claim 的 geosite/geoip 标签 |
+| `rule_lists` | 该分类 claim 的外部 classical 规则列表：`tag` 是 provider 名，也是 `<tag>.list` 文件名；`url` 只由 `scripts/stage.sh` 抓取 |
 | `domain_suffix` | 该分类的精确域名（先于 rule_sets / whitelist 生效） |
 
 ---

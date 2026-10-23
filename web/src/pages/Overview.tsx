@@ -311,6 +311,9 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
                         {(cfg.rule_sets || []).map((r) => (
                           <Tag key={r} size="small" style={{ marginRight: 4 }}>{shortTag(r)}</Tag>
                         ))}
+                        {(cfg.rule_lists || []).map((l) => (
+                          <Tag key={l.tag} size="small" style={{ marginRight: 4 }}>{l.tag}</Tag>
+                        ))}
                         {!!cfg.domain_suffix?.length && <Tag size="small">+{cfg.domain_suffix.length} 域名</Tag>}
                       </span>
                     );

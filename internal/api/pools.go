@@ -1,18 +1,23 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
+)
 
 // poolConfigDTO is the read-only view of one named pool from gateway.yaml.
 // The console uses it to show which groups exist and which rule sets each
 // one claims. Pools are operator-owned yaml; there is no PUT endpoint.
 type poolConfigDTO struct {
-	Name            string   `json:"name"`
-	NodePattern     string   `json:"node_pattern"`
-	Size            int      `json:"size"`
-	PerTerminal     bool     `json:"per_terminal"`
-	RequiresPassing []string `json:"requires_passing,omitempty"`
-	RuleSets        []string `json:"rule_sets,omitempty"`
-	DomainSuffix    []string `json:"domain_suffix,omitempty"`
+	Name            string                  `json:"name"`
+	NodePattern     string                  `json:"node_pattern"`
+	Size            int                     `json:"size"`
+	PerTerminal     bool                    `json:"per_terminal"`
+	RequiresPassing []string                `json:"requires_passing,omitempty"`
+	RuleSets        []string                `json:"rule_sets,omitempty"`
+	RuleLists       []config.RuleListConfig `json:"rule_lists,omitempty"`
+	DomainSuffix    []string                `json:"domain_suffix,omitempty"`
 }
 
 // handlePoolsGet answers GET /api/pools: the configured class pools, without
@@ -28,6 +33,7 @@ func (s *Server) handlePoolsGet(w http.ResponseWriter, _ *http.Request) {
 			PerTerminal:     p.PerTerminalEnabled(),
 			RequiresPassing: append([]string{}, p.RequiresPassing...),
 			RuleSets:        append([]string{}, p.RuleSets...),
+			RuleLists:       append([]config.RuleListConfig{}, p.RuleLists...),
 			DomainSuffix:    append([]string{}, p.DomainSuffix...),
 		})
 	}

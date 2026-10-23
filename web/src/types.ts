@@ -96,6 +96,8 @@ export interface PoolConfig {
   requires_passing?: string[];
   /** geosite-/geoip- tags this class claims. */
   rule_sets?: string[];
+  /** 外部 classical 规则列表（URL 由 stage.sh 抓取为 <tag>.list）。 */
+  rule_lists?: { tag: string; url: string }[];
   /** Exact domains routed to this class. */
   domain_suffix?: string[];
 }

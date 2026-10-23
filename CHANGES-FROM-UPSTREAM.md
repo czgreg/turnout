@@ -383,3 +383,9 @@ rules:
 - **2026-10-23 后续命名**：默认池 `us-pool` 更名为 `default-pool`（代码常量、
   mihomo 组名、`MATCH,default-pool`、API/UI/文档）。上面的上游对照表仍写
   `us-pool`，那是上游的历史名称。
+- **2026-10-23 外部规则列表**：`PoolConfig` 新增 `rule_lists: [{tag,url}]`，
+  把厂商提供的 Clash classical 文本列表（如 `Gemini.list`）并入分类池。
+  `scripts/stage.sh` 原样抓取为 `<rule_sets_dir>/<tag>.list`，渲染为
+  `behavior=classical` + `format=text` provider——不用 `.mrs`，因为 mrs 只
+  支持 domain/ipcidr，会丢掉 `DOMAIN-KEYWORD` 行。声明了却抓不到时 stage
+  直接失败，避免规则静默落回默认类。
