@@ -80,6 +80,28 @@ export interface ActivePool {
   nodes?: PoolMember[];
 }
 
+/**
+ * Read-only class-pool config from GET /api/pools (gateway.yaml `pools:`).
+ * Live members are not here — they come from ActivePool.nodes, joined by
+ * name. The default `us-pool` is not in this list; it is the ActivePool with
+ * active=true and its pattern is `active_proxy.pool_filter`.
+ */
+export interface PoolConfig {
+  name: string;
+  /** Go RE2; empty means "inherit the global url_test.node_pattern". */
+  node_pattern: string;
+  /** 0 = use the global K target. */
+  size: number;
+  per_terminal: boolean;
+  requires_passing?: string[];
+  /** geosite-/geoip- tags this class claims. */
+  rule_sets?: string[];
+  /** Exact domains routed to this class. */
+  domain_suffix?: string[];
+}
+
+export type Pools = PoolConfig[];
+
 export interface Active {
   node?: {
     hostname?: string;
@@ -225,6 +247,20 @@ export interface TerminalNode {
   health?: NodeHealth;
 }
 
+/**
+ * Per-class egress for one terminal. Present for class pools configured with
+ * per_terminal=true (e.g. ai-pool); the top-level primary/secondary on
+ * TerminalAssignment describe the default "other" class.
+ */
+export interface TerminalPoolAssignment {
+  pool: string;
+  group_name?: string;
+  primary?: TerminalNode;
+  secondary?: TerminalNode;
+  active_node?: '' | 'primary' | 'secondary';
+  hint?: string;
+}
+
 export interface TerminalAssignment {
   ip: string;
   subnet: string;
@@ -235,6 +271,7 @@ export interface TerminalAssignment {
   group_name?: string;
   pool_mode: string;
   hint?: string;
+  pools?: TerminalPoolAssignment[];
 }
 
 /* ── Watchdog (GET /api/watchdog/status) ─────────────────────────────────

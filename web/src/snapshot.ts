@@ -4,6 +4,7 @@ import type {
   NodeNetwork,
   NodeSignal,
   NodesHealth,
+  Pools,
   RefreshInterval,
   RuleSets,
   Status,
@@ -26,6 +27,8 @@ export interface Snapshot {
   healthz?: { httpStatus: number; body: Healthz | null } | null;
   status: Slot<Status>;
   active: Slot<Active>;
+  /** Read-only class-pool config; members come from active.pools[].nodes. */
+  pools: Slot<Pools>;
   health: Slot<NodesHealth>;
   subs: Slot<Subscription[]>;
   interval: Slot<RefreshInterval>;
@@ -53,6 +56,7 @@ export interface Snapshot {
 export const emptySnapshot: Snapshot = {
   status: {},
   active: {},
+  pools: {},
   health: {},
   subs: {},
   interval: {},

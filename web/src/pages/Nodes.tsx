@@ -21,13 +21,34 @@ import ProbeTags from '../components/ProbeTags';
 
 const num = (v?: number) => (v ? v : Infinity); // 0 = no measurement → sort last
 
+// ai-pool → AI, openai-pool → OPENAI. The tag is the operator's name; this is
+// just a compact badge label.
+const classLabel = (tag: string) => tag.replace(/-pool$/, '').toUpperCase();
+
 export default function Nodes({ snap }: { snap: Snapshot }) {
   const [q, setQ] = useState('');
   const [poolOnly, setPoolOnly] = useState(false);
   const [sub, setSub] = useState<string | undefined>();
+  const [classPool, setClassPool] = useState<string | undefined>();
   const health = snap.health.data;
   const nodes = health?.nodes || [];
   const th = health?.thresholds || {};
+
+  // Named class pools (ai-pool etc.) are not members of `out`, so their
+  // members do not appear in NodeHealth.in_pool. Join by tag from the active
+  // snapshot so a node in a class pool is not mislabeled "不在池".
+  const activePools = snap.active.data?.active_proxy?.pools || [];
+  const classPools = useMemo(() => activePools.filter((p) => !p.active), [activePools]);
+  const nodePools = useMemo(() => {
+    const m: Record<string, string[]> = {};
+    activePools.forEach((p) => {
+      if (p.active) return;
+      (p.nodes || []).forEach((n) => {
+        (m[n.tag] = m[n.tag] || []).push(p.tag);
+      });
+    });
+    return m;
+  }, [activePools]);
 
   const subs = useMemo(() => Array.from(new Set(nodes.map((n) => n.sub || '').filter(Boolean))).sort(), [nodes]);
 
@@ -48,13 +69,13 @@ export default function Nodes({ snap }: { snap: Snapshot }) {
   const list = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return nodes
-      .filter((n) => !poolOnly || n.in_pool)
+      .filter((n) => (classPool ? (nodePools[n.name] || []).includes(classPool) : !poolOnly || n.in_pool))
       .filter((n) => !sub || n.sub === sub)
       .filter((n) => !needle || (n.name + ' ' + (n.sub || '')).toLowerCase().includes(needle))
       .slice()
       // In-pool first, then p95 ascending — the order an operator scans in.
       .sort((a, b) => (a.in_pool !== b.in_pool ? (a.in_pool ? -1 : 1) : num(a.rtt_p95_ms) - num(b.rtt_p95_ms)));
-  }, [nodes, q, poolOnly, sub]);
+  }, [nodes, q, poolOnly, sub, classPool, nodePools]);
 
   const columns: TableColumnProps<NodeHealth>[] = [
     {
@@ -70,6 +91,9 @@ export default function Nodes({ snap }: { snap: Snapshot }) {
             <Space size={4} className="node-meta">
               <span className="node-sub">{n.sub || '—'}</span>
               {n.in_pool ? <Tag color="arcoblue" size="small">在池</Tag> : <Tag size="small">不在池</Tag>}
+              {(nodePools[n.name] || []).map((p) => (
+                <Tag key={p} color="purple" size="small">{classLabel(p)}</Tag>
+              ))}
               {n.qualified ? (
                 <Tag color="green" size="small">合格</Tag>
               ) : (
@@ -211,8 +235,18 @@ export default function Nodes({ snap }: { snap: Snapshot }) {
               options={subs.map((s) => ({ label: s, value: s }))}
             />
             <Checkbox checked={poolOnly} onChange={setPoolOnly}>
-              只看在池
+              只看默认池
             </Checkbox>
+            {classPools.length > 0 && (
+              <Select
+                allowClear
+                placeholder="全部分类池"
+                value={classPool}
+                onChange={setClassPool}
+                style={{ width: 170 }}
+                options={classPools.map((p) => ({ label: classLabel(p.tag), value: p.tag }))}
+              />
+            )}
           </Space>
         }
       >

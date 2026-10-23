@@ -12,6 +12,7 @@ import type {
   NodesHealth,
   NotificationEntry,
   NotificationsStatus,
+  Pools,
   ProbeResult,
   RuleSetEntry,
   RuleSets,
@@ -202,6 +203,7 @@ export function healthz(): Healthz {
 }
 
 export function active(subs: Subscription[]): Active {
+  const aiMembers = poolMembers().slice(0, 4);
   return {
     node: {
       hostname: 'turnout-node-a',
@@ -247,6 +249,17 @@ export function active(subs: Subscription[]): Active {
             checked_at: iso(90_000),
           },
           nodes: poolMembers().map((n) => ({
+            tag: n.name,
+            delay_ms: (n.rtt_last_ms || 0) + 8,
+            last_check: iso(20_000),
+            fail_rate: n.fail_rate ?? 0,
+          })),
+        },
+        {
+          tag: 'ai-pool',
+          pool_size: aiMembers.length,
+          active: false,
+          nodes: aiMembers.map((n) => ({
             tag: n.name,
             delay_ms: (n.rtt_last_ms || 0) + 8,
             last_check: iso(20_000),
@@ -331,6 +344,9 @@ export function terminal(ip: string): TerminalAssignment {
   const h = ip.split('.').reduce((a, o) => (a * 31 + Number(o)) >>> 0, 7);
   const p = pool[h % pool.length];
   const s = pool[(h >>> 3) % pool.length] === p ? pool[(h + 1) % pool.length] : pool[(h >>> 3) % pool.length];
+  const ai = pool.slice(0, 4);
+  const ap = ai[h % ai.length];
+  const as = ai[(h >>> 5) % ai.length] === ap ? ai[(h + 2) % ai.length] : ai[(h >>> 5) % ai.length];
   return {
     ip,
     subnet: SUBNET,
@@ -340,6 +356,17 @@ export function terminal(ip: string): TerminalAssignment {
     active_node: p.alive ? 'primary' : s.alive ? 'secondary' : '',
     primary: { name: p.name, alive: p.alive, health: p },
     secondary: { name: s.name, alive: s.alive, health: s },
+    pools: ai.length
+      ? [
+          {
+            pool: 'ai-pool',
+            group_name: 'fb-ai-pool-' + ip,
+            active_node: ap.alive ? 'primary' : as.alive ? 'secondary' : '',
+            primary: { name: ap.name, alive: ap.alive, health: ap },
+            secondary: { name: as.name, alive: as.alive, health: as },
+          },
+        ]
+      : [],
   };
 }
 
@@ -348,6 +375,19 @@ export function terminal(ip: string): TerminalAssignment {
  * representative slice of internal/rulesets/catalog.json — enough categories
  * and one uninstalled entry so the "未下载" path is visible in mock mode.
  */
+export function pools(): Pools {
+  return [
+    {
+      name: 'ai-pool',
+      node_pattern: '美国|🇺🇸|\\bUS',
+      size: 4,
+      per_terminal: true,
+      rule_sets: ['geosite-openai', 'geosite-anthropic', 'geosite-category-ai-!cn', 'geosite-perplexity'],
+      domain_suffix: ['gemini.google.com', 'generativelanguage.googleapis.com'],
+    },
+  ];
+}
+
 export function whitelist(): Whitelist {
   return {
     mode: 'whitelist',

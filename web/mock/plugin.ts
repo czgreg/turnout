@@ -55,6 +55,7 @@ function handler(): Connect.NextHandleFunction {
     if (path === '/healthz') return send(res, 200, data.healthz());
     if (path === '/api/status') return send(res, 200, data.status(subs));
     if (path === '/api/proxies/active') return send(res, 200, data.active(subs));
+    if (path === '/api/pools') return send(res, 200, data.pools());
     if (path === '/api/nodes/health') return send(res, 200, data.nodesHealth());
     if (path === '/api/pool/transitions') return send(res, 200, data.transitions());
     if (path === '/api/pool/terminal') {

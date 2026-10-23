@@ -122,6 +122,10 @@ func NewServer(deps Deps) *Server {
 	mux.HandleFunc("GET /api/proxies/active", s.auth(s.handleProxiesActive))
 	mux.HandleFunc("POST /api/proxies/select", s.auth(s.handleProxiesSelect))
 
+	// Read-only class-pool config (gateway.yaml `pools:`). Live members are
+	// in /api/proxies/active's pools[]; the console joins the two by name.
+	mux.HandleFunc("GET /api/pools", s.auth(s.handlePoolsGet))
+
 	mux.HandleFunc("GET /api/whitelist", s.auth(s.handleWhitelistGet))
 	mux.HandleFunc("PUT /api/whitelist", s.auth(s.handleWhitelistPut))
 

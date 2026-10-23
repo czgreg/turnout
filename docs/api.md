@@ -27,6 +27,7 @@ token 为空时不鉴权。
 | GET | `/api/nodes/health` | NodeScorer 评分 + probe + passive stats | ✓ |
 | GET | `/api/proxies/active` | 数据面活跃状态快照 | ✓ |
 | POST | `/api/proxies/select` | 手动切换 selector 成员 | ✓ |
+| GET | `/api/pools` | 分类池只读配置（gateway.yaml `pools:`） | ✓ |
 | GET | `/api/subscriptions` | 订阅列表 | ✓ |
 | POST | `/api/subscriptions` | 新增订阅 | ✓ |
 | PUT | `/api/subscriptions/{name}` | 修改订阅 | ✓ |
@@ -542,6 +543,38 @@ PUT body：`{"enabled": true}`。变更走「落盘 → 重渲染 → 热重载 
 ```
 
 `geosite-cn` / `geoip-cn` 是路由基建，不在 catalog 中。
+
+---
+
+## GET /api/pools
+
+分类池的**只读**配置，来自 `gateway.yaml` 的 `pools:`。没有 PUT：池配置是运维资产，
+编辑走 yaml。当前成员节点不在这里，用 `/api/proxies/active` 的 `pools[].nodes` 按
+`name` 关联；默认 `us-pool` 不在这个列表里（它是 `active=true` 的那个，
+pattern 见 `active_proxy.pool_filter`）。
+
+```json
+[
+  {
+    "name": "ai-pool",
+    "node_pattern": "momo/.*(香港|新加坡)",
+    "size": 4,
+    "per_terminal": true,
+    "rule_sets": ["geosite-openai", "geosite-anthropic", "geosite-category-ai-!cn", "geosite-perplexity"],
+    "domain_suffix": ["gemini.google.com", "generativelanguage.googleapis.com"]
+  }
+]
+```
+
+| 字段 | 说明 |
+|---|---|
+| `name` | 组名，与 `/api/proxies/active` 的 `pools[].tag` 对应 |
+| `node_pattern` | Go RE2；空 = 继承全局 `data_plane.url_test.node_pattern` |
+| `size` | 按 long-EWMA 取的 top-N；0 = 使用全局 K |
+| `per_terminal` | 是否每终端固定出口（生成 `fb-<pool>-<ip>`） |
+| `requires_passing` | 额外的站点探针门槛（可选） |
+| `rule_sets` | 该分类 claim 的 geosite/geoip 标签 |
+| `domain_suffix` | 该分类的精确域名（先于 rule_sets / whitelist 生效） |
 
 ---
 

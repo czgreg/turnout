@@ -25,6 +25,7 @@ import type {
   NodesHealth,
   NotificationEntry,
   NotificationsStatus,
+  Pools,
   RefreshInterval,
   RuleSets,
   Status,
@@ -121,6 +122,8 @@ export async function getWatchdogStatus(): Promise<{ httpStatus: number; body: W
 
 export const getStatus = () => request<Status>('/api/status');
 export const getActive = () => request<Active>('/api/proxies/active');
+/** Read-only class-pool config (gateway.yaml `pools:`); members are in Active. */
+export const getPools = () => request<Pools>('/api/pools');
 export const getNodesHealth = () => request<NodesHealth>('/api/nodes/health');
 export const getSubscriptions = () => request<Subscription[]>('/api/subscriptions');
 export const getRefreshInterval = () => request<RefreshInterval>('/api/subscribe/refresh-interval');
