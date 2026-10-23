@@ -9,9 +9,10 @@
 #      git remote add gitlab http://<gitlab>/czgreg/turnout-gateway.git
 #
 # This pipeline tests and builds only — it does NOT deploy. Deployment is
-# operator-driven from a workstation: `make deploy-92` (binary swap) or
-# `make redeploy-92` (full reinstall, pulls the node's yaml first). No
-# DEPLOY_SSH_KEY variable is needed; the runner never touches a node.
+# operator-driven from a workstation: `make deploy NODE=<user>@<host>`
+# (binary swap) or `make redeploy NODE=<user>@<host>` (full reinstall, pulls
+# the node's yaml first). No DEPLOY_SSH_KEY variable is needed; the runner
+# never touches a node.
 
 stages:
   - test
@@ -66,13 +67,14 @@ build:
 #
 # This file used to end with two deploy jobs. deploy-staging auto-deployed
 # every main commit to node 89, which was decommissioned 2026-08-31.
-# deploy-production was manual-only against 92. Both were removed once 89
-# went away and the operator confirmed CI deploys are no longer wanted:
-# shipping to production stays a local, deliberate `make deploy-92` /
-# `make redeploy-92`, not a button in a web UI. redeploy-92 in particular
-# pulls the node's own gateway.yaml before staging, which is what keeps a
-# deploy from overwriting per-node `subscriptions:` (see CLAUDE.md) — a CI
-# job building from repo state has no equivalent safeguard.
+# deploy-production was manual-only against the production node. Both were
+# removed once 89 went away and the operator confirmed CI deploys are no
+# longer wanted: shipping to production stays a local, deliberate
+# `make deploy NODE=<user>@<host>` / `make redeploy NODE=<user>@<host>`,
+# not a button in a web UI. `redeploy` in particular pulls the node's own
+# gateway.yaml before staging, which is what keeps a deploy from overwriting
+# per-node `subscriptions:` (see CLAUDE.md) — a CI job building from repo
+# state has no equivalent safeguard.
 #
 # To restore CI deploys, re-add a `deploy` stage plus a job with its own
 # host variable and a DEPLOY_SSH_KEY masked variable.

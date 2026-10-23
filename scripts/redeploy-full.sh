@@ -5,8 +5,9 @@
 # never accidentally clobber the on-node config with a stale local one),
 # stages a fresh tarball, ships it, runs install.sh, verifies version +
 # services. Intended for full-stack reinstalls (new service files, new
-# install.sh, schema migration). For pure binary swaps use `make deploy-92`
-# / `scripts/deploy.sh` — they're faster and don't touch the unit files.
+# install.sh, schema migration). For pure binary swaps use
+# `make deploy NODE=<user>@<host>` — it's faster and doesn't touch the unit
+# files.
 #
 # Usage:
 #   scripts/redeploy-full.sh <host>
