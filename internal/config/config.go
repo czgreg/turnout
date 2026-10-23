@@ -720,6 +720,14 @@ type NodeQualifyConfig struct {
 	// transient flap mihomo's already filtering doesn't cascade into
 	// an unnecessary scorer-driven hot-reload.
 	ScoringInterval time.Duration `yaml:"scoring_interval"`
+	// TrialDuration is how long a newly measured node stays out of the
+	// legacy K-gated routing pool (promotion) after its first successful
+	// measurement. Default 24h. A deliberate region/pattern migration
+	// needs a shorter value (e.g. 15m): with the 24h default the new
+	// region cannot enter the routing pool for a day even though mihomo
+	// already probes it. Only the legacy K-gated path reads this;
+	// sizing_mode=eligibility uses its admission gate instead.
+	TrialDuration time.Duration `yaml:"trial_duration"`
 	// MaxRTTP50Ms: p50 RTT ceiling in ms. Default 500.
 	MaxRTTP50Ms int `yaml:"max_rtt_p50_ms"`
 	// MaxRTTP95Ms: p95 RTT ceiling in ms. Default 800.
@@ -1313,6 +1321,9 @@ func (c *NodeQualifyConfig) applyDefaults() {
 	if c.ScoringInterval == 0 {
 		c.ScoringInterval = 5 * time.Minute
 		c.Enabled = true
+	}
+	if c.TrialDuration == 0 {
+		c.TrialDuration = 24 * time.Hour
 	}
 	if c.MaxRTTP50Ms == 0 {
 		c.MaxRTTP50Ms = 500

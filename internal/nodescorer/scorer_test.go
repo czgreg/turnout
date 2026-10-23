@@ -204,6 +204,30 @@ func TestFilterCandidates_MultiPattern(t *testing.T) {
 	}
 }
 
+// TestInTrialConfigurable pins the trial_duration knob: a deliberate
+// region migration needs a shorter trial than the 24h default, while zero
+// must keep the historical behavior.
+func TestInTrialConfigurable(t *testing.T) {
+	s := newTestScorer(defaultCfg())
+	now := time.Now()
+	s.ewma = map[string]*nodeEWMA{
+		"n": {FirstSeenAt: now.Add(-10 * time.Minute)},
+	}
+	s.cfg.TrialDuration = 15 * time.Minute
+	if !s.inTrial("n", now) {
+		t.Error("10m-old node must be in a 15m trial")
+	}
+	s.cfg.TrialDuration = 5 * time.Minute
+	if s.inTrial("n", now) {
+		t.Error("10m-old node must be past a 5m trial")
+	}
+	// Zero falls back to the 24h constant.
+	s.cfg.TrialDuration = 0
+	if !s.inTrial("n", now) {
+		t.Error("zero TrialDuration must fall back to the 24h default")
+	}
+}
+
 func TestPoolMembersEqual(t *testing.T) {
 	a := map[string][]string{"p": {"x", "y"}}
 	if !poolMembersEqual(a, map[string][]string{"p": {"y", "x"}}) {
