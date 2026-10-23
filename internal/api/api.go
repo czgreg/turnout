@@ -13,8 +13,8 @@ import (
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
 	"github.com/turnout-gateway/turnout-gateway/internal/configstore"
 	"github.com/turnout-gateway/turnout-gateway/internal/dataplane"
-	"github.com/turnout-gateway/turnout-gateway/internal/nodescorer"
 	"github.com/turnout-gateway/turnout-gateway/internal/nodeinfo"
+	"github.com/turnout-gateway/turnout-gateway/internal/nodescorer"
 	"github.com/turnout-gateway/turnout-gateway/internal/notify"
 	"github.com/turnout-gateway/turnout-gateway/internal/rulesets"
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
@@ -89,6 +89,11 @@ type Renderer interface {
 	// inside the configured client_subnet AND the routing pool is non-empty,
 	// (nil, false) otherwise. Used by /api/pool/terminal.
 	AssignmentForIP(ip string, outbounds []subscribe.Outbound) ([]string, bool)
+	// PoolAssignmentForIP returns the same HRW ordering for a named class
+	// pool (e.g. ai-pool). (nil, false) when the pool has no rendered
+	// members or the IP is outside client_subnet. Used by
+	// /api/pool/terminal to report per-class egresses.
+	PoolAssignmentForIP(ip, pool string, outbounds []subscribe.Outbound) ([]string, bool)
 }
 
 type Server struct {
@@ -117,6 +122,10 @@ func NewServer(deps Deps) *Server {
 	mux.HandleFunc("GET /api/proxies/active", s.auth(s.handleProxiesActive))
 	mux.HandleFunc("POST /api/proxies/select", s.auth(s.handleProxiesSelect))
 
+	// Read-only class-pool config (gateway.yaml `pools:`). Live members are
+	// in /api/proxies/active's pools[]; the console joins the two by name.
+	mux.HandleFunc("GET /api/pools", s.auth(s.handlePoolsGet))
+
 	mux.HandleFunc("GET /api/whitelist", s.auth(s.handleWhitelistGet))
 	mux.HandleFunc("PUT /api/whitelist", s.auth(s.handleWhitelistPut))
 
@@ -144,7 +153,6 @@ func NewServer(deps Deps) *Server {
 	mux.HandleFunc("POST /api/subscriptions", s.auth(s.handleSubscriptionsPost))
 	mux.HandleFunc("PUT /api/subscriptions/{name}", s.auth(s.handleSubscriptionsPut))
 	mux.HandleFunc("DELETE /api/subscriptions/{name}", s.auth(s.handleSubscriptionsDelete))
-
 
 	// Node health scoring — mihomo only, shows per-node RTT stats +
 	// passive throughput + qualified/in-pool state.
@@ -268,7 +276,7 @@ func (s *Server) handleWatchdogStatus(w http.ResponseWriter, _ *http.Request) {
 		// empty card.
 		writeJSON(w, http.StatusOK, map[string]any{
 			"enabled": false,
-			"detail": "watchdog not running — set watchdog.enabled and watchdog.liveness_ip in gateway.yaml",
+			"detail":  "watchdog not running — set watchdog.enabled and watchdog.liveness_ip in gateway.yaml",
 		})
 		return
 	}

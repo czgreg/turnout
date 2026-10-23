@@ -105,7 +105,7 @@ func (s *Scorer) probeSweep(ctx context.Context) {
 }
 
 // probeCandidates returns the node tags worth probing: the union of the
-// current us-pool qualified set and any node already in the snapshot. We
+// current default-pool qualified set and any node already in the snapshot. We
 // probe even non-qualified nodes so a node that recovers RTT-wise AND
 // passes its site probe can be admitted to a pool without delay.
 func (s *Scorer) probeCandidates() []string {

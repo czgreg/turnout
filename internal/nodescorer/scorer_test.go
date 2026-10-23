@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 func buildProxyEntry(alive bool, probeURL string, delays []int) map[string]interface{} {
@@ -50,7 +51,7 @@ func newTestScorer(cfg config.NodeQualifyConfig) *Scorer {
 }
 
 // TestComputePoolMembers verifies probe-gated named-pool membership: only
-// us-pool nodes that pass ALL of a pool's required probes are members; a
+// default-pool nodes that pass ALL of a pool's required probes are members; a
 // node missing any required probe result (or failing it) is excluded.
 func TestComputePoolMembers(t *testing.T) {
 	s := newTestScorer(defaultCfg())
@@ -90,9 +91,9 @@ func TestComputePoolMembers(t *testing.T) {
 			"chatgpt.com": {true},
 		},
 	}
-	usPool := map[string]bool{"nodeA": true, "nodeB": true, "nodeC": true}
+	defaultPool := map[string]bool{"nodeA": true, "nodeB": true, "nodeC": true}
 
-	got := s.computePoolMembers(usPool)
+	got := s.computePoolMembers(nil, defaultPool, 0)
 	members := got["openai-pool"]
 	if len(members) != 1 || members[0] != "nodeA" {
 		t.Errorf("openai-pool members = %v, want [nodeA]", members)
@@ -100,13 +101,145 @@ func TestComputePoolMembers(t *testing.T) {
 }
 
 // TestComputePoolMembers_NoGating: a pool with empty RequiresPassing is not
-// included in the explicit member map (renderer falls back to full us-pool).
+// included in the explicit member map (renderer falls back to full default-pool).
 func TestComputePoolMembers_NoGating(t *testing.T) {
 	s := newTestScorer(defaultCfg())
 	s.pools = []config.PoolConfig{{Name: "plain-pool", RuleSets: []string{"geosite-x"}}}
-	got := s.computePoolMembers(map[string]bool{"nodeA": true})
+	got := s.computePoolMembers(nil, map[string]bool{"nodeA": true}, 0)
 	if _, ok := got["plain-pool"]; ok {
-		t.Error("ungated pool should not appear in poolMembers (renderer falls back to us-pool)")
+		t.Error("ungated pool should not appear in poolMembers (renderer falls back to default-pool)")
+	}
+}
+
+// TestComputePoolMembers_ClassPattern verifies a class pool takes only the
+// nodes matching its own node_pattern, ranked by long EWMA and capped at
+// Size. The global default-pool set is irrelevant for class pools.
+func TestComputePoolMembers_ClassPattern(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.SwapThresholdScore = 400
+	s := newTestScorer(cfg)
+	s.pools = []config.PoolConfig{{
+		Name:        "ai-pool",
+		NodePattern: `^us`,
+		Size:        2,
+		RuleSets:    []string{"geosite-openai"},
+	}}
+	s.poolMembers = map[string][]string{}
+	now := time.Now()
+	s.ewma = map[string]*nodeEWMA{
+		"us1": {Long: ewmaPoint{Value: 100, UpdatedAt: now}},
+		"us2": {Long: ewmaPoint{Value: 200, UpdatedAt: now}},
+		"us3": {Long: ewmaPoint{Value: 300, UpdatedAt: now}},
+		"jp1": {Long: ewmaPoint{Value: 50, UpdatedAt: now}},
+		"us5": {Long: ewmaPoint{Value: 10, UpdatedAt: now}}, // best score, but dead
+	}
+	nodes := []NodeHealth{
+		{Name: "us1", Qualified: true, Alive: true},
+		{Name: "us2", Qualified: true, Alive: true},
+		{Name: "us3", Qualified: true, Alive: true},
+		{Name: "jp1", Qualified: true, Alive: true},
+		{Name: "us4", Qualified: false, Alive: true}, // not qualified → never a member
+		{Name: "us5", Qualified: true, Alive: false}, // dead → never a member
+	}
+	got := s.computePoolMembers(nodes, map[string]bool{"jp1": true}, 8)
+	members := got["ai-pool"]
+	if len(members) != 2 || members[0] != "us1" || members[1] != "us2" {
+		t.Fatalf("ai-pool members = %v, want [us1 us2] (pattern + alive + size + EWMA rank)", members)
+	}
+}
+
+// TestComputePoolMembers_ClassSticky pins the anti-flap rule: an incumbent
+// keeps its slot unless a challenger beats the worst incumbent's long EWMA
+// by SwapThresholdScore.
+func TestComputePoolMembers_ClassSticky(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.SwapThresholdScore = 400
+	s := newTestScorer(cfg)
+	s.pools = []config.PoolConfig{{
+		Name:        "ai-pool",
+		NodePattern: `^us`,
+		Size:        2,
+	}}
+	now := time.Now()
+	s.ewma = map[string]*nodeEWMA{
+		"us1": {Long: ewmaPoint{Value: 100, UpdatedAt: now}},
+		"us2": {Long: ewmaPoint{Value: 200, UpdatedAt: now}},
+		"us3": {Long: ewmaPoint{Value: 300, UpdatedAt: now}},
+	}
+	s.poolMembers = map[string][]string{"ai-pool": {"us2", "us3"}}
+	nodes := []NodeHealth{
+		{Name: "us1", Qualified: true, Alive: true},
+		{Name: "us2", Qualified: true, Alive: true},
+		{Name: "us3", Qualified: true, Alive: true},
+	}
+	got := s.computePoolMembers(nodes, nil, 0)["ai-pool"]
+	if len(got) != 2 || got[0] != "us2" || got[1] != "us3" {
+		t.Fatalf("sticky members = %v, want [us2 us3] (us1 cannot beat the 400 margin)", got)
+	}
+
+	// Margin zero: the best challenger replaces the worst incumbent.
+	s.cfg.SwapThresholdScore = 0
+	got = s.computePoolMembers(nodes, nil, 0)["ai-pool"]
+	if len(got) != 2 || got[0] != "us1" || got[1] != "us2" {
+		t.Fatalf("members after margin=0 = %v, want [us1 us2]", got)
+	}
+}
+
+// TestFilterCandidates_MultiPattern checks the union discovery used to find
+// class-pool nodes outside the global pattern's region.
+func TestFilterCandidates_MultiPattern(t *testing.T) {
+	outbounds := []subscribe.Outbound{
+		{"tag": "hutao/美国_A"},
+		{"tag": "hutao/日本_A"},
+		{"tag": "momo/🇸🇬新加坡1"},
+	}
+	proxies := map[string]map[string]interface{}{
+		"hutao/美国_A":  {},
+		"hutao/日本_A":  {},
+		"momo/🇸🇬新加坡1": {},
+	}
+	got := filterCandidates(outbounds, []string{`美国`, `日本`}, proxies)
+	if len(got) != 2 || got[0] != "hutao/美国_A" || got[1] != "hutao/日本_A" {
+		t.Fatalf("filterCandidates = %v, want [hutao/美国_A hutao/日本_A]", got)
+	}
+}
+
+func TestFilterByNodePattern(t *testing.T) {
+	nodes := []NodeHealth{
+		{Name: "asia/hk-01", Qualified: true},
+		{Name: "us/lax-01", Qualified: true},
+		{Name: "asia/dead", Qualified: false},
+	}
+	got := filterByNodePattern(nodes, `^asia/`)
+	if len(got) != 1 || got[0].Name != "asia/hk-01" {
+		t.Fatalf("filterByNodePattern(^asia/) kept %d nodes, want only asia/hk-01", len(got))
+	}
+	if got := filterByNodePattern(nodes, ""); len(got) != 2 {
+		t.Fatalf("empty pattern must keep all qualified nodes, got %d", len(got))
+	}
+}
+
+// TestInTrialConfigurable pins the trial_duration knob: a deliberate
+// region migration needs a shorter trial than the 24h default, while zero
+// must keep the historical behavior.
+func TestInTrialConfigurable(t *testing.T) {
+	s := newTestScorer(defaultCfg())
+	now := time.Now()
+	s.ewma = map[string]*nodeEWMA{
+		"n": {FirstSeenAt: now.Add(-10 * time.Minute)},
+	}
+	s.cfg.TrialDuration = 15 * time.Minute
+	if !s.inTrial("n", now) {
+		t.Error("10m-old node must be in a 15m trial")
+	}
+	s.cfg.TrialDuration = 5 * time.Minute
+	if s.inTrial("n", now) {
+		t.Error("10m-old node must be past a 5m trial")
+	}
+	// Zero falls back to the 24h constant.
+	s.cfg.TrialDuration = 0
+	if !s.inTrial("n", now) {
+		t.Error("zero TrialDuration must fall back to the 24h default")
 	}
 }
 

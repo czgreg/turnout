@@ -70,7 +70,7 @@ func (s *Server) handleWhitelistPut(w http.ResponseWriter, r *http.Request) {
 	// breaks cross-border routing the moment the next render fires.
 	// Caught in production 2026-06-09 when an automated test sent `{}`.
 	// "overseas" mode legitimately has no match lists (everything routes
-	// via the us-pool selector), so that's the only path through this
+	// via the default-pool selector), so that's the only path through this
 	// guard for an otherwise-empty body.
 	if strings.ToLower(strings.TrimSpace(dto.Mode)) != "overseas" {
 		empty := len(dto.Geosites) == 0 &&

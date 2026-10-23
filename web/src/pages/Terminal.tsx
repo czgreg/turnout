@@ -42,7 +42,7 @@ export default function Terminal({ snap }: { snap: Snapshot }) {
           <div>
             <h3>按终端 IP 查出口</h3>
             <p className="dim">
-              输入终端 IP，直接看到它的 primary / secondary 出口及其健康数据，判断问题出在机场端还是终端端。
+              输入终端 IP，查看默认类与各分类（如 AI）的 primary / secondary 出口及其健康数据，判断问题出在机场端还是终端端。
               {subnet && (
                 <>
                   {' '}本机办公网段（client_subnet）<span className="mono">{subnet}</span>。
@@ -105,6 +105,42 @@ export default function Terminal({ snap }: { snap: Snapshot }) {
               <EgressCard label="SECONDARY" sub="HRW top-2 · mihomo fallback" node={result.secondary} active={result.active_node === 'secondary'} />
             </Col>
           </Row>
+
+          {!!result.pools?.length && (
+            <>
+              <Alert
+                type="info"
+                className="mb"
+                content="顶层 PRIMARY/SECONDARY 是默认「其他」类；下面是各分类的独立每终端出口。"
+              />
+              {result.pools.map((p) => (
+                <Card
+                  key={p.pool}
+                  bordered={false}
+                  className="mb"
+                  title={'分类出口 · ' + p.pool}
+                  extra={<span className="mono dim">{p.group_name || '—'}</span>}
+                >
+                  <Space className="mb" size={12}>
+                    {p.active_node ? (
+                      <Tag color="green">当前 {p.active_node.toUpperCase()}</Tag>
+                    ) : (
+                      <Tag color="red">两个备份都不可用</Tag>
+                    )}
+                  </Space>
+                  {p.hint && <Alert type={p.active_node ? 'info' : 'error'} content={p.hint} className="mb" />}
+                  <Row gutter={16}>
+                    <Col xs={24} lg={12}>
+                      <EgressCard label="PRIMARY" sub="HRW top-1" node={p.primary} active={p.active_node === 'primary'} />
+                    </Col>
+                    <Col xs={24} lg={12}>
+                      <EgressCard label="SECONDARY" sub="HRW top-2 · mihomo fallback" node={p.secondary} active={p.active_node === 'secondary'} />
+                    </Col>
+                  </Row>
+                </Card>
+              ))}
+            </>
+          )}
         </>
       )}
 

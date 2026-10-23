@@ -13,7 +13,7 @@
 //   connection straight to the real IP, never touching mihomo's DNS. The
 //   sniffer still extracts the SNI and routing works regardless.
 //
-//   It also stabilizes egress: us-pool's consistent-hashing keys by
+//   It also stabilizes egress: default-pool's consistent-hashing keys by
 //   destination. Keyed by raw IP, a single Google session's many parallel
 //   flows hit many Google IPs and spread across many proxy nodes — Google
 //   sees one session from multiple ASNs and trips its session-anomaly

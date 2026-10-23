@@ -21,10 +21,12 @@ import {
   IconExclamationCircle,
 } from '@arco-design/web-react/icon';
 import type { Snapshot } from '../snapshot';
-import type { PoolMember } from '../types';
+import type { ActivePool, PoolMember } from '../types';
 import { ago, fmtMs, fmtRate, fmtTime, fmtUptime, splitNode } from '../format';
 
 const { Row, Col } = Grid;
+
+const shortTag = (name: string) => name.replace(/^geosite-/, '').replace(/^geoip-/, '');
 
 /**
  * WatchdogCard renders the bypass role's health reporter — the thing that
@@ -163,8 +165,10 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
   const ac = snap.active.data;
   const health = snap.health.data;
   const hz = snap.healthz?.body;
-  const pool = ac?.active_proxy?.pools?.find((p) => p.active) || ac?.active_proxy?.pools?.[0];
-  const eg = pool?.egress;
+  const groups = ac?.active_proxy?.pools || [];
+  const defaultPool = groups.find((p) => p.active) || groups[0];
+  const eg = defaultPool?.egress;
+  const poolCfg = new Map((snap.pools.data || []).map((p) => [p.name, p]));
   const stab = st?.pool_stability_24h;
   const dead = health ? health.nodes.filter((n) => !n.alive).length : undefined;
 
@@ -189,7 +193,7 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
             title="在池节点"
             value={st?.pool_size ?? '—'}
             suffix={st?.pool_total != null ? ` / ${st.pool_total}` : undefined}
-            note={`活着且可达 ${st?.pool_eligible ?? '—'} · 候选 ${st?.pool_total ?? '—'}`}
+            note={`活着且可达 ${st?.pool_eligible ?? '—'} · 候选 ${st?.pool_total ?? '—'} · ${groups.length} 组`}
             onClick={() => onNavigate('nodes')}
           />
         </Col>
@@ -260,10 +264,10 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
           <WatchdogCard snap={snap} />
 
           <Card
-            title="在池节点"
+            title="出口分组"
             extra={
               <span className="dim">
-                {ac?.active_proxy?.active_group || '—'} · 最近变更 {ago(ac?.active_proxy?.last_swap_at) || '—'}
+                {groups.length} 组 · {ac?.active_proxy?.active_group || '—'} 默认 · 最近变更 {ago(ac?.active_proxy?.last_swap_at) || '—'}
               </span>
             }
             bordered={false}
@@ -274,36 +278,84 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
               size="small"
               pagination={false}
               border={false}
-              data={pool?.nodes || []}
-              noDataElement={<Empty description="无池成员数据" />}
+              data={groups}
+              noDataElement={<Empty description="无出口分组数据" />}
+              expandedRowRender={(g: ActivePool) => <MemberTable nodes={g.nodes || []} />}
               columns={[
                 {
-                  title: '节点',
+                  title: '组名',
                   dataIndex: 'tag',
-                  render: (t: string) => {
-                    const { sub, node } = splitNode(t);
+                  width: 180,
+                  render: (t: string, g: ActivePool) => (
+                    <span>
+                      <span className="mono">{t}</span>
+                      {g.active ? (
+                        <Tag color="arcoblue" size="small" style={{ marginLeft: 6 }}>默认</Tag>
+                      ) : (
+                        <Tag size="small" style={{ marginLeft: 6 }}>分类</Tag>
+                      )}
+                    </span>
+                  ),
+                },
+                {
+                  title: '规则',
+                  dataIndex: 'tag',
+                  render: (t: string, g: ActivePool) => {
+                    if (g.active) {
+                      return <span className="mono dim">{ac?.active_proxy?.pool_filter || '全局'}</span>;
+                    }
+                    const cfg = poolCfg.get(t);
+                    if (!cfg) return <span className="dim">—</span>;
                     return (
                       <span>
-                        <span className="node-name">{node}</span>
-                        {sub && <span className="node-sub">{sub}</span>}
+                        {(cfg.rule_sets || []).map((r) => (
+                          <Tag key={r} size="small" style={{ marginRight: 4 }}>{shortTag(r)}</Tag>
+                        ))}
+                        {!!cfg.domain_suffix?.length && <Tag size="small">+{cfg.domain_suffix.length} 域名</Tag>}
                       </span>
                     );
                   },
                 },
                 {
-                  title: 'url-test 延迟',
-                  dataIndex: 'delay_ms',
-                  width: 220,
-                  render: (v: number) => <DelayBar ms={v} />,
+                  title: '成员',
+                  dataIndex: 'nodes',
+                  render: (_: unknown, g: ActivePool) => {
+                    const ns = g.nodes || [];
+                    if (!ns.length) return <span className="dim">—</span>;
+                    return (
+                      <span>
+                        {ns.slice(0, 8).map((n) => (
+                          <Tooltip key={n.tag} content={n.tag}>
+                            <Tag size="small" style={{ marginRight: 4 }}>{splitNode(n.tag).node}</Tag>
+                          </Tooltip>
+                        ))}
+                        {ns.length > 8 && <Tag size="small">+{ns.length - 8}</Tag>}
+                      </span>
+                    );
+                  },
                 },
                 {
-                  title: '探针失败率',
-                  dataIndex: 'fail_rate',
-                  width: 120,
+                  title: '当前出口',
+                  dataIndex: 'egress',
+                  width: 170,
+                  render: (_: unknown, g: ActivePool) =>
+                    g.egress?.ip ? (
+                      <span>
+                        <span className="mono">{g.egress.ip}</span>
+                        <span className="node-sub"> {[g.egress.country, g.egress.region].filter(Boolean).join(' · ')}</span>
+                      </span>
+                    ) : (
+                      <Tooltip content="分类池没有独立出口探测；展开看成员节点，或用「终端查询」看实际分配">
+                        <span className="dim">未单独探测</span>
+                      </Tooltip>
+                    ),
+                },
+                {
+                  title: '成员数',
+                  dataIndex: 'pool_size',
+                  width: 90,
                   align: 'right',
-                  render: (v: number, r: PoolMember) => (
-                    <span className={v >= 0.5 ? 'v-bad' : v > 0.1 ? 'v-warn' : ''}>{fmtRate(r.fail_rate)}</span>
-                  ),
+                  render: (v: number) => <span className="num">{v}</span>,
                 },
               ]}
             />
@@ -330,6 +382,9 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
                     { label: '探测于', value: ago(eg.checked_at) || '—' },
                   ]}
                 />
+                {groups.length > 1 && (
+                  <div className="dim small mt">分类出口见上方「出口分组」；分类池暂无独立出口探测。</div>
+                )}
               </>
             ) : (
               <Empty description="出口信息不可用" />
@@ -485,6 +540,51 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
         </Col>
       </Row>
     </div>
+  );
+}
+
+// Expanded row of the "出口分组" table: the members mihomo currently carries
+// for that group. Same columns as the old single-pool table.
+function MemberTable({ nodes }: { nodes: PoolMember[] }) {
+  return (
+    <Table
+      rowKey="tag"
+      size="small"
+      pagination={false}
+      border={false}
+      data={nodes}
+      noDataElement={<Empty description="无成员节点" />}
+      columns={[
+        {
+          title: '节点',
+          dataIndex: 'tag',
+          render: (t: string) => {
+            const { sub, node } = splitNode(t);
+            return (
+              <span>
+                <span className="node-name">{node}</span>
+                {sub && <span className="node-sub">{sub}</span>}
+              </span>
+            );
+          },
+        },
+        {
+          title: 'url-test 延迟',
+          dataIndex: 'delay_ms',
+          width: 220,
+          render: (v: number) => <DelayBar ms={v} />,
+        },
+        {
+          title: '探针失败率',
+          dataIndex: 'fail_rate',
+          width: 120,
+          align: 'right',
+          render: (v: number, r: PoolMember) => (
+            <span className={v >= 0.5 ? 'v-bad' : v > 0.1 ? 'v-warn' : ''}>{fmtRate(r.fail_rate)}</span>
+          ),
+        },
+      ]}
+    />
   );
 }
 

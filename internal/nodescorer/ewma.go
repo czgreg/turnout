@@ -95,9 +95,9 @@ const (
 // EWMA as zero, which behaves like "no signal yet" and falls back to
 // raw compositeScore).
 type nodeEWMA struct {
-	Short        ewmaPoint `json:"short"`
-	Long         ewmaPoint `json:"long"`
-	FirstSeenAt  time.Time `json:"first_seen_at,omitempty"`
+	Short       ewmaPoint `json:"short"`
+	Long        ewmaPoint `json:"long"`
+	FirstSeenAt time.Time `json:"first_seen_at,omitempty"`
 }
 
 // ewmaPoint is one window's smoothed metric value + when it was last
@@ -174,7 +174,11 @@ func (s *Scorer) inTrial(name string, now time.Time) bool {
 	if e.FirstSeenAt.IsZero() {
 		return true
 	}
-	return now.Sub(e.FirstSeenAt) < trialDuration
+	trial := s.cfg.TrialDuration
+	if trial <= 0 {
+		trial = trialDuration
+	}
+	return now.Sub(e.FirstSeenAt) < trial
 }
 
 // nodeLongEWMA returns the long-window smoothed compositeScore for

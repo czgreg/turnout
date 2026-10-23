@@ -46,11 +46,11 @@ import NotificationsPage from './pages/Notifications';
 const REFRESH_MS = 10000;
 
 const VIEWS = [
-  { key: 'overview', title: '总览', desc: '数据通路、出口与池规模', icon: <IconDashboard /> },
-  { key: 'nodes', title: '节点状态', desc: '候选节点打分与站点探针', icon: <IconStorage /> },
+  { key: 'overview', title: '总览', desc: '数据通路、默认/分类出口分组与池规模', icon: <IconDashboard /> },
+  { key: 'nodes', title: '节点状态', desc: '候选节点打分、默认池与分类池成员', icon: <IconStorage /> },
   { key: 'subs', title: '订阅管理', desc: '机场订阅与周期刷新', icon: <IconLink /> },
-  { key: 'whitelist', title: '分流白名单', desc: '哪些域名/应用走海外池，其余一律交回防火墙', icon: <IconSafe /> },
-  { key: 'terminal', title: '终端查询', desc: '按员工 IP 查出口 —— 报「慢 / 打不开」时的第一入口', icon: <IconSearch /> },
+  { key: 'whitelist', title: '分流白名单', desc: '哪些域名/应用走默认池或分类池，其余一律交回防火墙', icon: <IconSafe /> },
+  { key: 'terminal', title: '终端查询', desc: '按员工 IP 查默认与分类出口 —— 报「慢 / 打不开」时的第一入口', icon: <IconSearch /> },
   { key: 'network', title: '网段设置', desc: '被引流的办公网段 —— 改完会重建防火墙规则', icon: <IconSettings /> },
   { key: 'notifications', title: '通知设置', desc: '飞书机器人与此前的推送记录', icon: <IconNotification /> },
   { key: 'transitions', title: '池变更审计', desc: '池成员变更历史与隔离名单', icon: <IconHistory /> },
@@ -98,10 +98,11 @@ export default function App() {
     const slot = <T,>(p: Promise<T>) =>
       p.then((data) => ({ data }), (e: Error) => ({ err: e.message, status: (e as ApiError).status }));
 
-    const [healthz, status, active, health, subs, interval, wl, ruleSets, trans, network, signal, watchdog] = await Promise.all([
+    const [healthz, status, active, pools, health, subs, interval, wl, ruleSets, trans, network, signal, watchdog] = await Promise.all([
       api.getHealthz().catch(() => null),
       slot(api.getStatus()),
       slot(api.getActive()),
+      slot(api.getPools()),
       slot(api.getNodesHealth()),
       slot(api.getSubscriptions()),
       slot(api.getRefreshInterval()),
@@ -125,7 +126,7 @@ export default function App() {
       setAuthError(status.err);
       return;
     }
-    setSnap({ healthz, status, active, health, subs, interval, wl, ruleSets, trans, network, signal, watchdog, updatedAt: new Date() });
+    setSnap({ healthz, status, active, pools, health, subs, interval, wl, ruleSets, trans, network, signal, watchdog, updatedAt: new Date() });
   }, []);
 
   useEffect(() => {

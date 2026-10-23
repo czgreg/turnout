@@ -228,6 +228,23 @@ export default function WhitelistPage({
     : 0;
   const emptyWhitelist = draft?.mode !== 'overseas' && matchCount === 0;
 
+  // Class pools claim rule sets before the whitelist is rendered. Show that
+  // mapping read-only and warn when an edit removes a claimed tag — the
+  // backend still routes it (the pool's provider is emitted), so the operator
+  // must not believe removal changes the class.
+  const pools = snap.pools.data || [];
+  const classOf = useMemo(() => {
+    const m: Record<string, string> = {};
+    pools.forEach((p) => (p.rule_sets || []).forEach((r) => (m[r] = p.name)));
+    return m;
+  }, [pools]);
+  const removedClassRules = useMemo(() => {
+    if (!draft || !base) return [] as string[];
+    const claimed = new Set<string>();
+    pools.forEach((p) => (p.rule_sets || []).forEach((r) => claimed.add(r)));
+    return Array.from(claimed).filter((r) => base.geosites.includes(r) && !draft.geosites.includes(r));
+  }, [pools, draft, base]);
+
   const patch = (p: Partial<Whitelist>) => {
     setDraft((cur) => (cur ? { ...cur, ...p } : cur));
     setDirty(true);
@@ -387,6 +404,48 @@ export default function WhitelistPage({
         )}
       </Card>
 
+      {pools.length > 0 && (
+        <Card
+          bordered={false}
+          className="mb"
+          title="出口分组（gateway.yaml）"
+          extra={<span className="dim">只读 · 修改请编辑 pools</span>}
+        >
+          <p className="dim small mb">
+            分类池优先 claim 下列规则集/域名；白名单命中它们时走对应分类，不再走默认「其他」类。
+          </p>
+          {pools.map((p) => (
+            <div key={p.name} className="wl-field">
+              <label>
+                <span className="mono">{p.name}</span>{' '}
+                <Tag size="small">{p.per_terminal ? '每终端固定 IP' : '共享出口'}</Tag>{' '}
+                <Tag size="small">size {p.size || '全局 K'}</Tag>
+              </label>
+              <div className="dim small">
+                node_pattern: <span className="mono">{p.node_pattern || '继承全局'}</span>
+              </div>
+              <div>
+                {(p.rule_sets || []).map((r) => (
+                  <Tag key={r} size="small" style={{ marginRight: 4 }}>{shortTag(r)}</Tag>
+                ))}
+                {(p.domain_suffix || []).map((d) => (
+                  <Tag key={d} size="small" style={{ marginRight: 4 }}>{d}</Tag>
+                ))}
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {removedClassRules.length > 0 && (
+        <Alert
+          type="warning"
+          className="mb"
+          title="分类池规则被移出白名单"
+          content={`${removedClassRules.map(shortTag).join('、')} 由分类池 claim；移出白名单不会改变分组路由（后端仍会为分类池的 rule_sets 发 provider）。要改分组请编辑 gateway.yaml 的 pools。`}
+        />
+      )}
+
       <AdBlockCard />
 
       <Card
@@ -411,6 +470,7 @@ export default function WhitelistPage({
                   <Select.Option key={it.name} value={it.name}>
                     <span className="wl-opt">
                       <span className="mono">{shortTag(it.name)}</span>
+                      {classOf[it.name] && <span className="wl-opt-flag">{classOf[it.name]}</span>}
                       {!it.installed && <span className="wl-opt-flag">未下载</span>}
                     </span>
                   </Select.Option>

@@ -158,7 +158,7 @@ func compositeScore(h NodeHealth) float64 {
 	return score
 }
 
-// computeK returns the target us-pool size from the operator's pool-sizing
+// computeK returns the target default-pool size from the operator's pool-sizing
 // config and the current Tier-1 supply. K-gating is always on (legacy
 // TActive=0 mode is removed; applyDefaults ensures TActive >= 1).
 //

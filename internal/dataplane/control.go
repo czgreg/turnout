@@ -30,7 +30,7 @@ import (
 //   - TurnoutInternalProxyPort: rulesets.Manager / subscribe / etc. dial
 //     through this so .srs / domain-list fetches transit the airport
 //     (raw.githubusercontent and friends are GFW-blocked from inside CN).
-//     Behind mihomo's "out" selector → us-pool by default.
+//     Behind mihomo's "out" selector → default-pool by default.
 //
 // TurnoutInternalProxyURL is the http:// URL form, ready to pass to
 // http.Transport.Proxy or to turnouthttp.NewClient.

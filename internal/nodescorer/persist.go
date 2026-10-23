@@ -32,7 +32,7 @@ type stateFileV3 struct {
 	Transitions        []PoolTransition          `json:"transitions,omitempty"`
 	RollbackQuarantine map[string]time.Time      `json:"rollback_quarantine,omitempty"`
 	EWMA               map[string]*nodeEWMA      `json:"ewma,omitempty"`
-	// PoolSet is the current us-pool membership. Persisted so the anti-flap
+	// PoolSet is the current default-pool membership. Persisted so the anti-flap
 	// hysteresis state survives a restart: without it, loadState leaves
 	// s.poolSet empty and the next round runs the bootstrap path
 	// (scorer.go), which bypasses the swap gate + readmit throttle and

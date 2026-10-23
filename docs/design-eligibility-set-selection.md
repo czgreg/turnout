@@ -120,7 +120,7 @@
   top-K(`scorer.go:1079-1085`)。`fb-<ip>=hrwTopN(ip,E,2)`,`perterminal.go`
   完全不动。
 - **K 只以"下限"存活**:`min_pool_size = 3`(低于 2 时 per-terminal top-2
-  静默失效退化成裸 `MATCH,us-pool`,`perterminal.go:83,108` → consistent-
+  静默失效退化成裸 `MATCH,default-pool`,`perterminal.go:83,108` → consistent-
   hashing 按目的地把单终端流量拆到多节点,违反单出口不变量)。`|E| < 3`
   时从 best-by-EWMA 补到 3,**且粘住在位填充者**(现有网 `scorer.go:837-863`
   每轮按 EWMA 重挑,floor-bound 时会在下限内造 mini 乒乓——这是守门 fork
@@ -260,7 +260,7 @@ Hutao 死了第 7 槽又落 ash),convergent 生效后回退 12。走不走看你
     - `k_max` 作为"检测面上限"的角色**放松**——合格集大一点不伤检测,
       每终端仍只呈现一个 IP。`k_max` 只留作防失控的宽松安全阀。
     - **下限 4 必须硬守**:跌破 per-terminal 的 2-成员门会退化成裸
-      `MATCH,us-pool`(load-balance + consistent-hashing),那会**按目的地
+      `MATCH,default-pool`(load-balance + consistent-hashing),那会**按目的地
       把单终端流量拆到多节点**,直接违反单出口不变量。
     - **fallback 翻动必须阻尼**(实测 BGP_E↔BGP_C on .144):不死也换
       出口 = 违反单出口。primary 的 eligibility 要稳(incumbency + 迟滞),

@@ -8,7 +8,7 @@
 //     consumed.
 //  3. Compares each node against the configured NodeQualify thresholds.
 //  4. If the qualified set has changed, re-renders mihomo's config.yaml with
-//     the updated us-pool member list and calls PUT /configs (mihomo hot-reload).
+//     the updated default-pool member list and calls PUT /configs (mihomo hot-reload).
 //     Existing connections drain naturally; new connections use the new config.
 //
 // The scorer also exposes NodeHealth state for /api/nodes/health.
@@ -99,12 +99,12 @@ type Snapshot struct {
 	Nodes          []NodeHealth `json:"nodes"`
 	// PoolSizing surfaces the K-gating computation. KTarget=0 means
 	// K-gating is disabled (legacy mode). KCurrent is the actual rendered
-	// us-pool size (may differ from KTarget during hysteresis transitions).
+	// default-pool size (may differ from KTarget during hysteresis transitions).
 	// SupplyLimited=true when |Tier1| was the binding ceiling — operator
 	// should consider raising the acceptance bar or adding subscriptions.
 	PoolSizing PoolSizingSnapshot `json:"pool_sizing"`
 	// RoutingPool is the top-K subset actually rendered into mihomo's
-	// us-pool (routingMembers). Empty when K-gating is disabled (full
+	// default-pool (routingMembers). Empty when K-gating is disabled (full
 	// qualified set is routed) or before the first scoring round.
 	RoutingPool []string `json:"routing_pool"`
 	// PoolMode mirrors node_qualify.pool_mode ("auto" | "manual").
@@ -162,13 +162,13 @@ const (
 // Renderer is the subset of the mihomo renderer used by NodeScorer to
 // rebuild config.yaml when the pool membership changes.
 type Renderer interface {
-	// RenderWithPools is the production render entry. usPool = the full
+	// RenderWithPools is the production render entry. defaultPool = the full
 	// probing set (all currently-qualified nodes; mihomo url-test probes
-	// these to keep ranking signal fresh). routingMembers ⊆ usPool is the
+	// these to keep ranking signal fresh). routingMembers ⊆ defaultPool is the
 	// subset that actually carries traffic via per-terminal HRW (top-K
-	// when K-gating active; nil falls back to usPool — legacy behavior).
-	// poolMembers gates named pools (us-pool ∩ probe-passing).
-	RenderWithPools(outbounds []subscribe.Outbound, usPool, routingMembers []string, poolMembers map[string][]string) ([]byte, error)
+	// when K-gating active; nil falls back to defaultPool — legacy behavior).
+	// poolMembers gates named pools (default-pool ∩ probe-passing).
+	RenderWithPools(outbounds []subscribe.Outbound, defaultPool, routingMembers []string, poolMembers map[string][]string) ([]byte, error)
 	// Path returns the on-disk path of the config file.
 	Path() string
 }
@@ -187,19 +187,19 @@ type Scorer struct {
 	mu      sync.RWMutex
 	state   map[string]*nodeState // keyed by node tag
 	snap    Snapshot
-	poolSet map[string]bool // current us-pool qualified set in config
+	poolSet map[string]bool // current default-pool qualified set in config
 
-	// lastUsPoolRendered is the us-pool (PROBING) set most recently asked for
+	// lastDefaultPoolRendered is the default-pool (PROBING) set most recently asked for
 	// in a render. poolSet above is the ROUTING set; the two differ, and only
 	// poolSet was ever compared to decide whether to hot-reload. That made
 	// candidate discovery useless on its own: a newly-discovered node changes
 	// the probing set but not necessarily the routing set (it cannot enter
 	// routing until it has measurements), so no render fired, so it never
-	// entered mihomo's us-pool, so mihomo never url-tested it, so it never got
+	// entered mihomo's default-pool, so mihomo never url-tested it, so it never got
 	// measurements — refused forever while looking healthy.
 	//
 	// Compared against our own last INTENT rather than against mihomo's
-	// current us-pool: usPoolMembers intersects with nodeTags(AllOutbounds),
+	// current default-pool: defaultPoolMembers intersects with nodeTags(AllOutbounds),
 	// so a candidate present in /proxies but absent from AllOutbounds would
 	// never appear in the rendered group, and a "mihomo differs from desired"
 	// trigger would then fire a reload every single round. Comparing intent is
@@ -208,10 +208,10 @@ type Scorer struct {
 	// Not persisted: on restart it starts nil, so the first round renders once
 	// and re-establishes it. That is correct — the process may have missed
 	// subscription changes while down.
-	lastUsPoolRendered map[string]bool
+	lastDefaultPoolRendered map[string]bool
 	// poolMembers is the last-rendered named-pool membership (pool name →
 	// member tags), used to detect when a probe change requires a re-render
-	// even though us-pool itself is unchanged.
+	// even though default-pool itself is unchanged.
 	poolMembers map[string][]string
 	// probeResults[nodeTag][probeName] = latest result. Written by the
 	// probe loop, read by score() to gate pool membership.
@@ -482,21 +482,21 @@ func (s *Scorer) score(ctx context.Context) {
 	throughput := s.updateThroughput(ctx, proxies)
 
 	// 3. Build candidate set = union of THREE sources:
-	//      (a) current us-pool members,
+	//      (a) current default-pool members,
 	//      (b) nodes previously seen in state (keeps evicted nodes under
 	//          observation so they can recover and be readmitted),
 	//      (c) subscription outbounds matching NodePattern (DISCOVERY).
 	//
 	// (c) is what makes a newly-added subscription work. Without it (a) and (b)
-	// form a closed loop: the candidate set comes from us-pool, and us-pool's
+	// form a closed loop: the candidate set comes from default-pool, and default-pool's
 	// membership is written by the renderer from the scorer's own
 	// qualifiedOverride, which comes from the candidate set. A node the scorer
-	// has never seen has no way in — it must already be in us-pool to be
-	// scored, and must be scored to enter us-pool. Measured on 92: 11 US nodes
+	// has never seen has no way in — it must already be in default-pool to be
+	// scored, and must be scored to enter default-pool. Measured on 92: 11 US nodes
 	// from two ACTIVE subscriptions were never scored once across 8 consecutive
 	// rounds, and a process restart did NOT rescue them (main.go skips the
 	// bootstrap render when config.yaml exists, so mihomo starts with the
-	// previously-rendered us-pool and the pattern fallback in usPoolMembers
+	// previously-rendered default-pool and the pattern fallback in defaultPoolMembers
 	// never fires). See docs/ops-candidate-discovery-loop.md.
 	//
 	// HISTORY — the discovery this restores was removed by b1ff1df on a stated
@@ -504,7 +504,7 @@ func (s *Scorer) score(ctx context.Context) {
 	// ctc-02/US-C30-* names. Verified against the exact production pattern, all
 	// such names match (\b is an ASCII word boundary; 🇺🇸/美国/·/- are all
 	// non-word chars). That commit's real fix was the state union in (b), which
-	// solved a genuine bug (us-pool shrinking to the qualified subset starved
+	// solved a genuine bug (default-pool shrinking to the qualified subset starved
 	// the candidate source). Dropping the regexp was collateral damage from a
 	// wrong theory, and it created the loop.
 	//
@@ -513,7 +513,7 @@ func (s *Scorer) score(ctx context.Context) {
 	// return below is structurally unreachable if the set only grows).
 	//
 	// Source is AllOutbounds, not the /proxies keys: /proxies also contains
-	// groups and built-ins (us-pool, out, pin, probe-out, fb-<ip>, DIRECT...),
+	// groups and built-ins (default-pool, out, pin, probe-out, fb-<ip>, DIRECT...),
 	// and an empty NodePattern means "everything", which would then score the
 	// groups themselves as nodes. AllOutbounds is subscription outbounds only,
 	// and matches the renderer's own source of truth (nodeTags in groups.go),
@@ -521,21 +521,32 @@ func (s *Scorer) score(ctx context.Context) {
 	//
 	// Called before taking s.mu: s.subscribe takes the manager's own RWMutex
 	// and there is no reason to nest the two.
-	discovered := filterCandidates(s.subscribe(), s.nodePattern, proxies)
+	// Candidate discovery is the union of the global pattern and every
+	// class pool's pattern. A node outside default-pool's region still has to be
+	// scored and url-tested for the pool that wants it — e.g. US nodes for
+	// ai-pool when the global pattern is Asia-only, or JP nodes for the
+	// default class when the global pattern is US-only.
+	patterns := []string{s.nodePattern}
+	for _, p := range s.pools {
+		if p.NodePattern != "" {
+			patterns = append(patterns, p.NodePattern)
+		}
+	}
+	discovered := filterCandidates(s.subscribe(), patterns, proxies)
 
-	// us-pool absence is no longer fatal. groups.go deliberately omits the
+	// default-pool absence is no longer fatal. groups.go deliberately omits the
 	// group when it would be empty (all subscriptions failed / bootstrap), and
 	// returning here parked the scorer until an unrelated refresh re-rendered
 	// it — a self-perpetuating dead state adjacent to the loop above. With
 	// discovery available, source (a) is optional.
 	var members []interface{}
-	if usPool := proxies["us-pool"]; usPool != nil {
-		members, _ = usPool["all"].([]interface{})
+	if defaultPool := proxies["default-pool"]; defaultPool != nil {
+		members, _ = defaultPool["all"].([]interface{})
 	} else if len(discovered) == 0 {
-		slog.Warn("nodescorer: us-pool not found in /proxies and no nodes matched node_pattern")
+		slog.Warn("nodescorer: default-pool not found in /proxies and no nodes matched node_pattern")
 		return
 	} else {
-		slog.Warn("nodescorer: us-pool not found in /proxies — proceeding on pattern discovery",
+		slog.Warn("nodescorer: default-pool not found in /proxies — proceeding on pattern discovery",
 			"discovered", len(discovered))
 	}
 	candidateSet := make(map[string]bool, len(members)+len(s.state)+len(discovered))
@@ -569,7 +580,7 @@ func (s *Scorer) score(ctx context.Context) {
 	}
 	sort.Strings(candidates)
 	if len(candidates) == 0 {
-		slog.Warn("nodescorer: no candidates (us-pool empty, no prior state, no pattern match)")
+		slog.Warn("nodescorer: no candidates (default-pool empty, no prior state, no pattern match)")
 		return
 	}
 
@@ -635,7 +646,7 @@ func (s *Scorer) score(ctx context.Context) {
 		s.updateNodeEWMA(nodes[i].Name, compositeScore(nodes[i]), ewmaNow)
 	}
 
-	// us-pool membership policy: K-gated ranking is always on.
+	// default-pool membership policy: K-gated ranking is always on.
 	//
 	// K-gated mode:
 	//   1. Compute K from the operator's PoolSizing config + current
@@ -655,12 +666,10 @@ func (s *Scorer) score(ctx context.Context) {
 	// small + uniformly high-quality so HRW never lands a terminal on a
 	// degraded node. Pool changes are slow (readmit throttle), so each
 	// terminal's egress IP is stable for hours-to-days.
-	qualifiedNodes := make([]*NodeHealth, 0, len(nodes))
-	for i := range nodes {
-		if nodes[i].Qualified {
-			qualifiedNodes = append(qualifiedNodes, &nodes[i])
-		}
-	}
+	// The global pattern is a HARD routing filter for the default pool.
+	// Non-matching nodes stay scored/probed (class pools and recovery need
+	// them) but cannot enter the default routing top-K.
+	qualifiedNodes := filterByNodePattern(nodes, s.nodePattern)
 	kTarget, supplyLimited := computeK(s.cfg.PoolSizing, len(qualifiedNodes))
 	minPool := s.cfg.PoolSizing.MinPoolSize
 	if minPool <= 0 {
@@ -869,7 +878,7 @@ func (s *Scorer) score(ctx context.Context) {
 			}
 
 			// First-round bootstrap: pool is empty. Fill greedily from
-			// preferred so the data plane has a healthy us-pool immediately.
+			// preferred so the data plane has a healthy default-pool immediately.
 			bootstrap := len(s.poolSet) == 0
 
 			for i := range nodes {
@@ -1047,8 +1056,8 @@ func (s *Scorer) score(ctx context.Context) {
 		slog.Info("nodescorer: shadow eligibility diff",
 			"live_pool", len(newPoolSet),
 			"shadow_pool", len(shadow),
-			"only_in_live", liveOnly,      // legacy keeps, eligibility would drop
-			"only_in_shadow", shadowOnly,  // eligibility would add, legacy excludes
+			"only_in_live", liveOnly, // legacy keeps, eligibility would drop
+			"only_in_shadow", shadowOnly, // eligibility would add, legacy excludes
 			"identical", len(liveOnly) == 0 && len(shadowOnly) == 0,
 		)
 	}
@@ -1072,14 +1081,14 @@ func (s *Scorer) score(ctx context.Context) {
 	poolChanged := !poolSetsEqual(s.poolSet, newPoolSet)
 
 	// The probing set changing is also a reason to re-render, independently of
-	// the routing set. See lastUsPoolRendered.
-	usPoolChanged := !poolSetsEqual(s.lastUsPoolRendered, candidateSet)
+	// the routing set. See lastDefaultPoolRendered.
+	defaultPoolChanged := !poolSetsEqual(s.lastDefaultPoolRendered, candidateSet)
 
-	// Compute named-pool memberships: us-pool ∩ {nodes passing the pool's
+	// Compute named-pool memberships: default-pool ∩ {nodes passing the pool's
 	// required probes}. A node with no probe result yet for a required
 	// probe is treated as NOT passing (conservative — keep unverified
 	// nodes out of the sensitive pool rather than risk a 403).
-	newPoolMembers := s.computePoolMembers(newPoolSet)
+	newPoolMembers := s.computePoolMembers(nodes, newPoolSet, kTarget)
 	if !poolMembersEqual(s.poolMembers, newPoolMembers) {
 		poolChanged = true
 	}
@@ -1096,9 +1105,9 @@ func (s *Scorer) score(ctx context.Context) {
 	// disrupt long-lived flows). poolSet/poolMembers stay pointing at
 	// the runtime applied set so hysteresis (EvictStrikes/ReadmitStrikes)
 	// continues to compare against what mihomo actually has.
-	// usPoolChanged is throttled the same way: a probing-set-only change is
+	// defaultPoolChanged is throttled the same way: a probing-set-only change is
 	// not urgent enough to bypass the flow-disruption guard.
-	reloadNeeded := poolChanged || usPoolChanged
+	reloadNeeded := poolChanged || defaultPoolChanged
 	poolChangePending := reloadNeeded &&
 		!s.lastHotReload.IsZero() &&
 		s.cfg.HotReloadMinInterval > 0 &&
@@ -1156,7 +1165,7 @@ func (s *Scorer) score(ctx context.Context) {
 		// Capture pre-mutation state for transition log + diff against
 		// newPoolSet. Audit log entry only when pool actually changed
 		// (poolChanged includes named-pool member shifts that may not
-		// affect us-pool composition — record both kinds).
+		// affect default-pool composition — record both kinds).
 		if poolChanged && s.cfg.PoolMode != "manual" {
 			before := setToSortedSlice(s.poolSet)
 			after := setToSortedSlice(newPoolSet)
@@ -1199,14 +1208,14 @@ func (s *Scorer) score(ctx context.Context) {
 		// tell whether it changed. Set here (not at the render call) so it stays
 		// in lockstep with poolSet under the same lock and the same
 		// not-deferred condition.
-		s.lastUsPoolRendered = candidateSet
+		s.lastDefaultPoolRendered = candidateSet
 	}
 
 	slog.Info("nodescorer: scored",
 		"qualified", qualified,
 		"total", len(nodes),
 		"pool_changed", poolChanged,
-		"us_pool_changed", usPoolChanged,
+		"default_pool_changed", defaultPoolChanged,
 		"deferred", poolChangePending,
 		"k_target", kTarget,
 		"k_current", len(newPoolSet),
@@ -1219,9 +1228,9 @@ func (s *Scorer) score(ctx context.Context) {
 	s.saveStateLocked()
 
 	if reloadNeeded && !poolChangePending {
-		// us-pool = the probing set (all currently-qualified candidates).
+		// default-pool = the probing set (all currently-qualified candidates).
 		// Mihomo url-test probes group members → keeping qualifiedNodes in
-		// us-pool ensures fresh probe history for ALL candidates so
+		// default-pool ensures fresh probe history for ALL candidates so
 		// ranking remains accurate across rounds. Without this, OUT
 		// nodes' probe history froze at whatever it was when they were
 		// last in pool, locking the bootstrap selection in place.
@@ -1232,34 +1241,34 @@ func (s *Scorer) score(ctx context.Context) {
 		// stable node).
 		//
 		// When K-gating is disabled (kTarget=0), routingMembers=nil tells
-		// the renderer to fall back to us-pool for per-terminal slicing —
-		// legacy behavior (every us-pool member is a routing target).
-		// usPoolAll = ALL pattern-matched candidates (not just qualifiedNodes).
-		// Mihomo probes every member of us-pool; keeping all candidates here
+		// the renderer to fall back to default-pool for per-terminal slicing —
+		// legacy behavior (every default-pool member is a routing target).
+		// defaultPoolAll = ALL pattern-matched candidates (not just qualifiedNodes).
+		// Mihomo probes every member of default-pool; keeping all candidates here
 		// ensures new/cold-start nodes accumulate probe history and can
 		// graduate to qualifiedNodes in future rounds. Narrowing to
 		// qualifiedNodes here caused a bootstrap deadlock: cold nodes never
 		// got probed → ProbeCount stayed 0 → never qualified → never re-added.
 		//
-		// CAVEAT — us-pool is NOT only a probing set. `out (select)` lists it
-		// first (groups.go), and perTerminalSlices ends with MATCH,us-pool, so
+		// CAVEAT — default-pool is NOT only a probing set. `out (select)` lists it
+		// first (groups.go), and perTerminalSlices ends with MATCH,default-pool, so
 		// it is the catch-all for any source outside client_subnet. Being a
 		// load-balance/consistent-hashing group, that FALLBACK traffic hashes
 		// across every member — including candidates that are alive but not yet
 		// measured. In-subnet terminals are unaffected (they route via fb-<ip>
 		// built from routingMembers), so the exposure is fallback traffic only,
 		// for roughly one scoring round until measurements arrive. This is the
-		// deliberate price of the probing/routing split; narrowing usPoolAll to
+		// deliberate price of the probing/routing split; narrowing defaultPoolAll to
 		// avoid it would restore the bootstrap deadlock above.
-		usPoolAll := append([]string(nil), candidates...)
-		sort.Strings(usPoolAll)
+		defaultPoolAll := append([]string(nil), candidates...)
+		sort.Strings(defaultPoolAll)
 		var routingMembers []string
 		if kTarget > 0 {
 			routingMembers = setToSortedSlice(newPoolSet)
 		}
 		members := newPoolMembers
 		s.lastHotReload = now
-		go s.hotReload(context.Background(), usPoolAll, routingMembers, members)
+		go s.hotReload(context.Background(), defaultPoolAll, routingMembers, members)
 	}
 }
 
@@ -1436,7 +1445,7 @@ func (s *Scorer) admissionRefusal(h NodeHealth) string {
 	// Qualified=true "benefit of doubt", which is what let the flapping-dead
 	// ash nodes (US-01..05) get admitted, carry traffic for a round, reveal
 	// fail=1.0 and drop — ~3 flaps/15min of pure churn. Such a node is still
-	// probed via usPoolAll, so it can EARN admission; it just does not carry
+	// probed via defaultPoolAll, so it can EARN admission; it just does not carry
 	// users first. MinProbes (default 2) subsumes the older ProbeCount>0
 	// condition this replaces.
 	if min := s.cfg.MinProbes; min > 0 && h.ProbeCount < min {
@@ -1457,7 +1466,7 @@ func (s *Scorer) admissionRefusal(h NodeHealth) string {
 func (s *Scorer) computeEligibleSetLocked(nodes []NodeHealth, minPool int, now time.Time) map[string]bool {
 	eligible := make(map[string]bool, len(nodes))
 	// Bootstrap: empty pool (first round after a restart). Entry hysteresis is
-	// skipped so the data plane gets a us-pool immediately rather than after
+	// skipped so the data plane gets a default-pool immediately rather than after
 	// ReadmitStrikes rounds of no egress.
 	bootstrap := len(s.poolSet) == 0
 	for i := range nodes {
@@ -1570,7 +1579,7 @@ func (s *Scorer) computeEligibleSetLocked(nodes []NodeHealth, minPool int, now t
 		// Cold-start last resort: genuine first boot (empty poolSet, no
 		// node has probe history yet) leaves both the main gate and the
 		// ProbeCount>0 fill empty — which would starve the data plane of a
-		// us-pool entirely. Only here do we fall back to benefit-of-doubt
+		// default-pool entirely. Only here do we fall back to benefit-of-doubt
 		// (alive + Qualified, ProbeCount==0) nodes, best-EWMA first, purely
 		// to bring the pool up to the floor until real probes arrive. This
 		// does NOT reopen the flap: it fires only when fewer than minPool
@@ -1628,28 +1637,189 @@ func (s *Scorer) computeEligibleSetLocked(nodes []NodeHealth, minPool int, now t
 	return eligible
 }
 
-// computePoolMembers maps each configured pool → the subset of the given
-// us-pool set that currently passes all of the pool's required probes.
-// CALLER MUST HOLD s.mu (reads s.probeResults).
-func (s *Scorer) computePoolMembers(usPool map[string]bool) map[string][]string {
+// filterByNodePattern returns the qualified nodes whose tag matches the
+// global url_test.node_pattern. This is a ROUTING filter, not just
+// discovery: a pattern change must evict old-region nodes from the default
+// pool even though they remain in the probing set/state for recovery.
+// Observed 2026-10-23: after the default pattern switched from momo HK/SG to
+// the broader Asia set, the K-gating still selected the US momo nodes from
+// state because the pattern only fed candidate discovery.
+//
+// An empty pattern matches everything (the legacy tests and configs rely on
+// that); an invalid pattern is treated the same way rather than silently
+// emptying the pool — config.Load rejects invalid patterns at startup.
+func filterByNodePattern(nodes []NodeHealth, pattern string) []*NodeHealth {
+	var re *regexp.Regexp
+	if pattern != "" {
+		re, _ = regexp.Compile(pattern)
+	}
+	out := make([]*NodeHealth, 0, len(nodes))
+	for i := range nodes {
+		if !nodes[i].Qualified {
+			continue
+		}
+		if re != nil && !re.MatchString(nodes[i].Name) {
+			continue
+		}
+		out = append(out, &nodes[i])
+	}
+	return out
+}
+
+// computePoolMembers maps each configured pool → its member node tags.
+//
+// Legacy pool (not config.PoolConfig.IsClassPool): members are the subset of
+// the given default-pool that currently passes all of the pool's required probes.
+// A pool with no RequiresPassing is omitted, so the renderer falls back to
+// the full default-pool.
+//
+// Class pool: members are the qualified nodes matching the pool's own
+// NodePattern, ranked by long EWMA and capped at Size (falling back to the
+// global K target, then to every eligible node). Selection is sticky: an
+// incumbent is only replaced when a challenger's long EWMA beats the worst
+// incumbent by SwapThresholdScore, mirroring the global K-gating anti-flap
+// rule. This keeps a terminal's class egress stable across scoring rounds.
+//
+// CALLER MUST HOLD s.mu (reads s.probeResults, s.ewma, s.poolMembers).
+func (s *Scorer) computePoolMembers(nodes []NodeHealth, defaultPool map[string]bool, kTarget int) map[string][]string {
 	if len(s.pools) == 0 {
 		return map[string][]string{}
 	}
 	out := make(map[string][]string, len(s.pools))
 	for _, p := range s.pools {
-		if len(p.RequiresPassing) == 0 {
-			continue // no gating → renderer falls back to full us-pool
-		}
-		var members []string
-		for tag := range usPool {
-			if s.nodePassesProbes(tag, p.RequiresPassing) {
-				members = append(members, tag)
+		if !p.IsClassPool() {
+			if len(p.RequiresPassing) == 0 {
+				continue // no gating → renderer falls back to full default-pool
 			}
+			var members []string
+			for tag := range defaultPool {
+				if s.nodePassesProbes(tag, p.RequiresPassing) {
+					members = append(members, tag)
+				}
+			}
+			sort.Strings(members)
+			out[p.Name] = members
+			continue
 		}
-		sort.Strings(members)
-		out[p.Name] = members
+
+		var pattern *regexp.Regexp
+		if p.NodePattern != "" {
+			re, err := regexp.Compile(p.NodePattern)
+			if err != nil {
+				// config.Load rejects invalid patterns; this is belt-and-
+				// suspenders for a config mutated through another path.
+				continue
+			}
+			pattern = re
+		}
+
+		eligible := make([]NodeHealth, 0, len(nodes))
+		for i := range nodes {
+			h := &nodes[i]
+			if !h.Qualified || !h.Alive {
+				// Qualified is a diagnostic bit (any successful probe in
+				// the window); it does NOT mean mihomo can dial the node.
+				// A class pool carries production traffic, so never select
+				// a node mihomo marks alive=false. Observed 2026-10-23:
+				// hutao BGP_B/C were qualified with fail_rate 0.2 but
+				// alive=false; the ai-pool's HRW top-2 picked both and every
+				// ChatGPT dial timed out. The renderer's pattern baseline
+				// keeps the pool populated for probing; this filter applies
+				// once mihomo has an alive bit.
+				continue
+			}
+			if pattern != nil && !pattern.MatchString(h.Name) {
+				continue
+			}
+			if len(p.RequiresPassing) > 0 && !s.nodePassesProbes(h.Name, p.RequiresPassing) {
+				continue
+			}
+			eligible = append(eligible, *h)
+		}
+		sort.SliceStable(eligible, func(i, j int) bool {
+			ei, ej := s.nodeLongEWMA(eligible[i].Name), s.nodeLongEWMA(eligible[j].Name)
+			if ei == ej {
+				return eligible[i].Name < eligible[j].Name
+			}
+			return ei < ej
+		})
+
+		size := p.Size
+		if size <= 0 {
+			size = kTarget
+		}
+		if size <= 0 {
+			size = len(eligible)
+		}
+		out[p.Name] = s.selectPoolMembersSticky(p.Name, eligible, size)
 	}
 	return out
+}
+
+// selectPoolMembersSticky picks up to size members from eligible (already
+// sorted best-first by long EWMA). Incumbents from s.poolMembers[poolName]
+// keep their slot unless a challenger is better by SwapThresholdScore. Nodes
+// with no EWMA signal (+Inf) sort last and only fill empty slots.
+//
+// CALLER MUST HOLD s.mu.
+func (s *Scorer) selectPoolMembersSticky(poolName string, eligible []NodeHealth, size int) []string {
+	if size <= 0 || len(eligible) == 0 {
+		return nil
+	}
+	if size > len(eligible) {
+		size = len(eligible)
+	}
+	chosen := make(map[string]bool, size)
+	selected := make([]string, 0, size)
+	// Incumbents still eligible, in the same best-first order.
+	for _, h := range eligible {
+		for _, m := range s.poolMembers[poolName] {
+			if m == h.Name {
+				selected = append(selected, h.Name)
+				chosen[h.Name] = true
+				break
+			}
+		}
+		if len(selected) >= size {
+			break
+		}
+	}
+	threshold := s.cfg.SwapThresholdScore
+	for _, h := range eligible {
+		if len(selected) >= size && size > 0 {
+			// Full: a challenger must beat the worst incumbent by the
+			// anti-flap margin.
+			worstIdx := 0
+			worst := s.nodeLongEWMA(selected[0])
+			for i := 1; i < len(selected); i++ {
+				if e := s.nodeLongEWMA(selected[i]); e > worst {
+					worst = e
+					worstIdx = i
+				}
+			}
+			if chosen[h.Name] || s.nodeLongEWMA(h.Name)+threshold >= worst {
+				continue
+			}
+			delete(chosen, selected[worstIdx])
+			selected[worstIdx] = h.Name
+			chosen[h.Name] = true
+			continue
+		}
+		if chosen[h.Name] {
+			continue
+		}
+		selected = append(selected, h.Name)
+		chosen[h.Name] = true
+	}
+	// Keep the emitted list deterministic and best-first.
+	sort.SliceStable(selected, func(i, j int) bool {
+		ei, ej := s.nodeLongEWMA(selected[i]), s.nodeLongEWMA(selected[j])
+		if ei == ej {
+			return selected[i] < selected[j]
+		}
+		return ei < ej
+	})
+	return selected
 }
 
 // nodePassesProbes reports whether the node has a passing (ok=true) result
@@ -1711,7 +1881,7 @@ func (s *Scorer) scoreNode(tag string, pData map[string]interface{}, throughputB
 		// data until mihomo's load-balance group includes it (mihomo only
 		// probes group members). Marking it !qualified would lock it out
 		// of the pool forever — vicious cycle. Give benefit of doubt so
-		// it enters us-pool, gets probed, then real qualification kicks
+		// it enters default-pool, gets probed, then real qualification kicks
 		// in once history >= MinProbes.
 		h.Qualified = true
 		h.Reason = "no probe history yet (benefit of doubt)"
@@ -1750,10 +1920,10 @@ func (s *Scorer) scoreNode(tag string, pData map[string]interface{}, throughputB
 		h.Qualified = true
 		return h
 	}
-	// us-pool qualification rule (post Plan-A): a node is qualified if
+	// default-pool qualification rule (post Plan-A): a node is qualified if
 	// it had at least one successful probe in the most recent 5 entries
 	// of its probe history. RTT p50/p95/jitter/fail_rate thresholds are
-	// NOT us-pool gates — they proved too noisy at 30s mihomo
+	// NOT default-pool gates — they proved too noisy at 30s mihomo
 	// health-check granularity (every scoring round the 5-of-10-probe-
 	// window's noise floor flipped the qualified set, churning pool
 	// membership and triggering hot-reload every cycle). Those metrics
@@ -1911,12 +2081,12 @@ func (s *Scorer) updateThroughput(ctx context.Context, proxies map[string]map[st
 	return result
 }
 
-func (s *Scorer) hotReload(ctx context.Context, usPool, routingMembers []string, poolMembers map[string][]string) {
+func (s *Scorer) hotReload(ctx context.Context, defaultPool, routingMembers []string, poolMembers map[string][]string) {
 	if s.renderer == nil {
 		return
 	}
 	outbounds := s.subscribe()
-	data, err := s.renderer.RenderWithPools(outbounds, usPool, routingMembers, poolMembers)
+	data, err := s.renderer.RenderWithPools(outbounds, defaultPool, routingMembers, poolMembers)
 	if err != nil {
 		slog.Error("nodescorer: re-render failed", "err", err)
 		return
@@ -1930,7 +2100,7 @@ func (s *Scorer) hotReload(ctx context.Context, usPool, routingMembers []string,
 		return
 	}
 	slog.Info("nodescorer: pool updated + hot-reloaded",
-		"us_pool", len(usPool), "routing", len(routingMembers), "named_pools", len(poolMembers))
+		"default_pool", len(defaultPool), "routing", len(routingMembers), "named_pools", len(poolMembers))
 }
 
 func (s *Scorer) mihomoHotReload(ctx context.Context) error {
@@ -1958,10 +2128,17 @@ func (s *Scorer) mihomoHotReload(ctx context.Context) error {
 
 // filterCandidates returns the subset of outbound tags that:
 //   - have a non-empty tag
-//   - match the NodePattern regexp (empty pattern = match everything)
+//   - match ANY of the given NodePattern regexps (empty list / empty entry =
+//     match everything)
 //   - exist as known entries in mihomo's /proxies map
 //
-// Using AllOutbounds() as source (not us-pool.all) means evicted nodes
+// The pattern list is the union of the global data_plane.url_test.node_pattern
+// and every class pool's node_pattern. Discovery must be a union: the scorer
+// can only rank nodes it scores, and mihomo only url-tests nodes that appear
+// in a probed group. If ai-pool wants US nodes while the global pattern is
+// Asia-only, US nodes must still enter the candidate set here.
+//
+// Using AllOutbounds() as source (not default-pool.all) means evicted nodes
 // are still in the candidate set and can recover + be readmitted, and
 // nodes from a newly-added subscription are discovered at all (see the
 // closed-loop note in score()).
@@ -1971,15 +2148,22 @@ func (s *Scorer) mihomoHotReload(ctx context.Context) error {
 // yields subscription outbounds (no groups or built-ins) and the /proxies
 // existence check below rejects anything mihomo did not accept, so a
 // non-node-bearing entry cannot survive. Stated explicitly because an empty
-// NodePattern makes this function match every tag.
-func filterCandidates(outbounds []subscribe.Outbound, nodePattern string, proxies map[string]map[string]interface{}) []string {
-	var re *regexp.Regexp
-	if nodePattern != "" {
-		var err error
-		re, err = regexp.Compile(nodePattern)
-		if err != nil {
-			re = nil
+// pattern list makes this function match every tag.
+func filterCandidates(outbounds []subscribe.Outbound, patterns []string, proxies map[string]map[string]interface{}) []string {
+	matchAll := false
+	res := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		if p == "" {
+			matchAll = true
+			continue
 		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			// Invalid pattern: keep the historical over-broad behavior
+			// (ignore the filter) rather than silently emptying the pool.
+			continue
+		}
+		res = append(res, re)
 	}
 	var out []string
 	for _, o := range outbounds {
@@ -1987,8 +2171,17 @@ func filterCandidates(outbounds []subscribe.Outbound, nodePattern string, proxie
 		if tag == "" {
 			continue
 		}
-		if re != nil && !re.MatchString(tag) {
-			continue
+		if !matchAll && len(res) > 0 {
+			matched := false
+			for _, re := range res {
+				if re.MatchString(tag) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 		// Verify mihomo knows about this proxy (it may not if the subscription
 		// hasn't been loaded yet or the proxy was removed).

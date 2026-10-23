@@ -163,7 +163,7 @@ func TestEntryHysteresis_ExitedNodeReEarnsEntry(t *testing.T) {
 
 // TestEntryHysteresis_BootstrapExempt verifies a cold start still fills the
 // pool in one round. Without the exemption the data plane would have no
-// us-pool for ReadmitStrikes rounds after every restart.
+// default-pool for ReadmitStrikes rounds after every restart.
 func TestEntryHysteresis_BootstrapExempt(t *testing.T) {
 	s := eligibilityScorer(3, "a", "b")
 	// poolSet empty = bootstrap.

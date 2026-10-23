@@ -10,10 +10,10 @@
 //	                        → direct
 //	          single-active. backup pool only used during primary failure.
 //
-//	mihomo:   out (selector) → us-pool (load-balance, consistent-hashing)
+//	mihomo:   out (selector) → default-pool (load-balance, consistent-hashing)
 //	                        → pin    (manual selector for ops override)
 //	                        → DIRECT
-//	          us-pool MEMBER LIST = ALL enabled subs' nodes filtered by
+//	          default-pool MEMBER LIST = ALL enabled subs' nodes filtered by
 //	          NodePattern. consistent-hashing: same destination → same node
 //	          (sticky), different destinations → spread across nodes. All
 //	          nodes are simultaneously active under different flows.
@@ -58,15 +58,15 @@ type Renderer struct {
 	cfg  config.DataPlaneConfig // reused: schema is engine-agnostic
 	node config.NodeConfig
 	subs []config.SubscriptionEntry
-	// qualifiedOverride, when non-nil, limits us-pool members to the given
+	// qualifiedOverride, when non-nil, limits default-pool members to the given
 	// set of node tags (used by nodescorer during hot-reload). nil = use all
 	// NodePattern-matched nodes (normal rendering path).
 	qualifiedOverride []string
 	// routingMembers, when non-nil, limits the per-terminal HRW assignment
 	// pool to this subset of qualifiedOverride. Decouples "what mihomo
-	// probes" (qualifiedOverride — full us-pool, so probe history keeps
+	// probes" (qualifiedOverride — full default-pool, so probe history keeps
 	// flowing for ranking) from "what carries production traffic" (this
-	// field — top-K best). nil = per-terminal slices use the full us-pool
+	// field — top-K best). nil = per-terminal slices use the full default-pool
 	// (legacy / Plan A behavior).
 	//
 	// Guarded by stateMu when read by AssignmentForIP (the API endpoint
@@ -76,13 +76,13 @@ type Renderer struct {
 	// AssignmentForIP calls see the post-render pool.
 	routingMembers []string
 	// pools are the named select/load-balance groups rendered alongside
-	// us-pool (e.g. openai-pool). Their rule_sets route to them instead of
+	// default-pool (e.g. openai-pool). Their rule_sets route to them instead of
 	// the default `out` selector.
 	pools []config.PoolConfig
 	// poolMembers maps pool name → member node tags, set by nodescorer at
-	// hot-reload time (members = us-pool-qualified ∩ passing the pool's
+	// hot-reload time (members = default-pool-qualified ∩ passing the pool's
 	// required probes). nil/absent for a pool name → that pool falls back
-	// to the full us-pool member set (so it works before the first probe
+	// to the full default-pool member set (so it works before the first probe
 	// round completes).
 	poolMembers map[string][]string
 	// probeListener toggles emission of the turnout-probe HTTP listener +
@@ -119,7 +119,7 @@ func (r *Renderer) WithLoadBalance(perTerminal bool) *Renderer {
 // time. Used by main.go when PoolMode=manual so that the FIRST render after
 // startup (e.g. an early subscription refresh that races the scorer's 10s
 // warmup) already restricts traffic to the operator-pinned PoolMembers,
-// rather than falling back to the full us-pool set. The scorer's hotReload
+// rather than falling back to the full default-pool set. The scorer's hotReload
 // path overwrites this on subsequent reloads.
 func (r *Renderer) WithRoutingMembers(members []string) *Renderer {
 	r.routingMembers = append([]string(nil), members...)
@@ -218,23 +218,23 @@ func (r *Renderer) SetFakeIPSkip(suffixes []string) {
 }
 
 // RenderWithPools is the nodescorer hot-reload entry that also assigns
-// named-pool memberships. usPool is the full us-pool member set (probed
-// by mihomo's url-test for ranking); routingMembers ⊆ usPool is the
+// named-pool memberships. defaultPool is the full default-pool member set (probed
+// by mihomo's url-test for ranking); routingMembers ⊆ defaultPool is the
 // subset that actually carries traffic via per-terminal HRW (top-K). When
 // routingMembers is nil/empty the per-terminal slicing falls back to
-// usPool (legacy behavior — every member of us-pool is also a routing
-// target). poolMembers maps each named pool → its members (us-pool ∩
+// defaultPool (legacy behavior — every member of default-pool is also a routing
+// target). poolMembers maps each named pool → its members (default-pool ∩
 // passing the pool's probes); a pool absent from poolMembers falls back
-// to the full us-pool.
+// to the full default-pool.
 //
 // After a successful render, publishes the new (qualifiedOverride,
 // routingMembers, poolMembers) back to the receiver via stateMu so
 // AssignmentForIP returns the fresh pool. Without this, /api/pool/
 // terminal lags hot-reloads — observed 2026-06-09 with stale cyberguard
 // primary returned for terminals after pool moved to ctc-02.
-func (r *Renderer) RenderWithPools(outbounds []subscribe.Outbound, usPool, routingMembers []string, poolMembers map[string][]string) ([]byte, error) {
+func (r *Renderer) RenderWithPools(outbounds []subscribe.Outbound, defaultPool, routingMembers []string, poolMembers map[string][]string) ([]byte, error) {
 	clone := *r
-	clone.qualifiedOverride = usPool
+	clone.qualifiedOverride = defaultPool
 	clone.routingMembers = routingMembers
 	clone.poolMembers = poolMembers
 	out, err := clone.Write(outbounds)
@@ -242,7 +242,7 @@ func (r *Renderer) RenderWithPools(outbounds []subscribe.Outbound, usPool, routi
 		return nil, err
 	}
 	r.stateMu.Lock()
-	r.qualifiedOverride = append([]string(nil), usPool...)
+	r.qualifiedOverride = append([]string(nil), defaultPool...)
 	r.routingMembers = append([]string(nil), routingMembers...)
 	r.poolMembers = poolMembers
 	r.stateMu.Unlock()

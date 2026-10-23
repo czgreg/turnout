@@ -12,6 +12,10 @@
 
 ## 一、一行不改（verbatim 复制）
 
+> ⚠️ 本表描述**初始移植时**的状态。2026-10-23 的双出口类改动修改了
+> `internal/mihomo/{rules,groups,perterminal}.go` 与 `internal/nodescorer/`，
+> 差异见 §八。
+
 ### 判定逻辑 —— 本项目最核心的复用
 
 | 包/文件 | 为什么不改 |
@@ -340,3 +344,30 @@ rules:
 
 控制台位置：「分流白名单 → 广告拦截」卡片，走独立端点 `GET/PUT /api/ad-block`，
 不并入白名单的整存模型（它不是白名单文档的一部分，且立即生效）。
+
+---
+
+## 八、2026-10-23：双出口类（AI / 其他）
+
+背景：单出口池只收美国节点，冷开 YouTube 约 3 s。新增「分类池」：一个终端
+同时拥有两个稳定出口——AI 流量走美国，其他白名单流量走亚洲。
+
+- **配置**：`PoolConfig` 新增 `node_pattern` / `size` / `per_terminal` /
+  `domain_suffix`。带任一字段的池成为「分类池」，拥有自己的候选集和路由；
+  旧池（只有 `requires_passing` / `rule_sets`）行为完全不变。
+  `node_pattern` 是 Go RE2，不支持 lookahead/lookbehind。
+- **评分**：候选发现取全局 pattern 与所有分类池 pattern 的并集；
+  `computePoolMembers` 按 pattern + long-EWMA + `size` 选成员，并用
+  `SwapThresholdScore` 做粘滞替换，避免池抖动。
+- **渲染**：分类池 `per_terminal: true` 生成 `fb-<pool>-*` 组和
+  `perterm-<pool>` 子规则；`false` 则直接路由到共享组。空池渲染
+  `select,[DIRECT]` 兜底（mihomo 不接受空组）。`domain_suffix` 规则先于
+  rule_sets 和全局 whitelist，保证 Gemini 等具体域名不被更宽的 geosite 抢走。
+- **API**：`/api/pool/terminal` 增加 `pools` 数组（每个分类的 primary/
+  secondary/active）；`/api/proxies/active` 的 `pools[]` 现在包含命名分类池
+  （它们不在 `out.All` 里，旧循环看不到）。
+- **取舍**：同一终端在 AI 类和其他类各有一个 IP；Gemini 归 AI（美国），
+  YouTube 归其他（亚洲）。详见 `docs/design-dual-class-exit.md`。
+- **2026-10-23 后续命名**：默认池 `us-pool` 更名为 `default-pool`（代码常量、
+  mihomo 组名、`MATCH,default-pool`、API/UI/文档）。上面的上游对照表仍写
+  `us-pool`，那是上游的历史名称。

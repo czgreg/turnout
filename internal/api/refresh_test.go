@@ -51,6 +51,9 @@ func (b *blockingRenderer) SetNode(_ config.NodeConfig)                     {}
 func (b *blockingRenderer) AssignmentForIP(_ string, _ []subscribe.Outbound) ([]string, bool) {
 	return nil, false
 }
+func (b *blockingRenderer) PoolAssignmentForIP(_ string, _ string, _ []subscribe.Outbound) ([]string, bool) {
+	return nil, false
+}
 
 // refreshFixture wires a Server with no subscriptions (so Refresh is a
 // no-op), a blocking renderer, and a Controller pointed at a stub clash-api

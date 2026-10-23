@@ -31,21 +31,21 @@ import (
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
-// fakeRenderer records the (usPool, routingMembers) it was last asked to
+// fakeRenderer records the (defaultPool, routingMembers) it was last asked to
 // render so a test can assert what the hot-reload would have shipped.
 // Path points at a temp file so writeAtomic + saveStateLocked succeed.
 type fakeRenderer struct {
-	path        string
-	mu          sync.Mutex
-	lastUsPool  []string
-	lastRouting []string
-	renders     int
+	path            string
+	mu              sync.Mutex
+	lastDefaultPool []string
+	lastRouting     []string
+	renders         int
 }
 
-func (f *fakeRenderer) RenderWithPools(_ []subscribe.Outbound, usPool, routing []string, _ map[string][]string) ([]byte, error) {
+func (f *fakeRenderer) RenderWithPools(_ []subscribe.Outbound, defaultPool, routing []string, _ map[string][]string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.lastUsPool = append([]string(nil), usPool...)
+	f.lastDefaultPool = append([]string(nil), defaultPool...)
 	f.lastRouting = append([]string(nil), routing...)
 	f.renders++
 	return []byte("rendered: " + strings.Join(routing, ",")), nil
@@ -53,10 +53,10 @@ func (f *fakeRenderer) RenderWithPools(_ []subscribe.Outbound, usPool, routing [
 
 func (f *fakeRenderer) Path() string { return f.path }
 
-func (f *fakeRenderer) snapshot() (usPool, routing []string, renders int) {
+func (f *fakeRenderer) snapshot() (defaultPool, routing []string, renders int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.lastUsPool...), append([]string(nil), f.lastRouting...), f.renders
+	return append([]string(nil), f.lastDefaultPool...), append([]string(nil), f.lastRouting...), f.renders
 }
 
 // waitRenders blocks until the renderer has been called at least n times
@@ -85,7 +85,7 @@ type proxyNode struct {
 }
 
 // mockClashAPI stands in for mihomo's clash-api. It serves /proxies (with
-// a us-pool load-balance group whose `all` lists every node) and
+// a default-pool load-balance group whose `all` lists every node) and
 // /connections (empty — passive throughput isn't under test here). PUT
 // /configs and /proxies/* (hot-reload + selector flips) return 204.
 //
@@ -101,7 +101,7 @@ func mockClashAPI(t *testing.T, probeURL string, nodes map[string]proxyNode) (ad
 		all = append(all, tag)
 		proxies[tag] = buildProxyEntry(n.alive, probeURL, n.history)
 	}
-	proxies["us-pool"] = map[string]interface{}{
+	proxies["default-pool"] = map[string]interface{}{
 		"type": "LoadBalance",
 		"all":  all,
 		"now":  "",
@@ -238,15 +238,15 @@ func TestDecision_BootstrapFillsToK(t *testing.T) {
 	}
 }
 
-// --- us-pool (probing set) always contains ALL qualified candidates, not
+// --- default-pool (probing set) always contains ALL qualified candidates, not
 // just the routing top-K. This is the property that answers the "out-of-
-// pool nodes show data" question: every qualified node stays in us-pool,
+// pool nodes show data" question: every qualified node stays in default-pool,
 // so mihomo keeps url-test probing it → its RTT history (probe_count,
 // p50/p95, fail_rate) keeps refreshing even while it's NOT carrying
 // production traffic. If this regresses, out-of-pool nodes' probe history
 // freezes and the ranking locks in place (the bug the code comment at
 // scorer.go:911-917 warns about).
-func TestDecision_UsPoolKeepsAllQualifiedForProbing(t *testing.T) {
+func TestDecision_DefaultPoolKeepsAllQualifiedForProbing(t *testing.T) {
 	cfg := kGatingCfg(5)
 	nodes := map[string]proxyNode{}
 	for _, n := range []struct {
@@ -262,14 +262,14 @@ func TestDecision_UsPoolKeepsAllQualifiedForProbing(t *testing.T) {
 	s.score(context.Background())
 	fr.waitRenders(t, 1)
 
-	usPool, routing, _ := fr.snapshot()
-	// All 8 qualified nodes must be in us-pool (probing set).
-	if len(usPool) != 8 {
-		t.Errorf("us-pool (probing set) = %d nodes, want all 8 qualified", len(usPool))
+	defaultPool, routing, _ := fr.snapshot()
+	// All 8 qualified nodes must be in default-pool (probing set).
+	if len(defaultPool) != 8 {
+		t.Errorf("default-pool (probing set) = %d nodes, want all 8 qualified", len(defaultPool))
 	}
 	// Only K carry traffic.
-	if len(routing) >= len(usPool) {
-		t.Errorf("routing (%d) should be a strict subset of us-pool (%d)", len(routing), len(usPool))
+	if len(routing) >= len(defaultPool) {
+		t.Errorf("routing (%d) should be a strict subset of default-pool (%d)", len(routing), len(defaultPool))
 	}
 }
 
@@ -430,7 +430,7 @@ func TestDecision_OutOfPoolNodesRetainScoringData(t *testing.T) {
 	for _, n := range outOfPool {
 		// These fields MUST be populated even though the node isn't routing.
 		if n.ProbeCount == 0 {
-			t.Errorf("%s: out-of-pool node has probe_count=0 — its url-test history froze (regression of us-pool probing-set property)", n.Name)
+			t.Errorf("%s: out-of-pool node has probe_count=0 — its url-test history froze (regression of default-pool probing-set property)", n.Name)
 		}
 		if n.RTTP50Ms == 0 || n.RTTP95Ms == 0 {
 			t.Errorf("%s: out-of-pool node missing RTT stats (p50=%d p95=%d) — should still be scored", n.Name, n.RTTP50Ms, n.RTTP95Ms)
@@ -444,7 +444,7 @@ func TestDecision_OutOfPoolNodesRetainScoringData(t *testing.T) {
 
 // --- Benefit-of-doubt for brand-new nodes: a node with NO probe history
 // yet (alive, but mihomo hasn't probed it) is marked Qualified=true so it
-// can enter us-pool, get probed, and accumulate real data. Without this
+// can enter default-pool, get probed, and accumulate real data. Without this
 // the node would be stuck Qualified=false forever (mihomo only probes
 // group members) — the vicious cycle scoreNode:1021-1028 guards against.
 // It still gets the sentinel compositeScore so it ranks BELOW measured
@@ -582,10 +582,6 @@ func TestSanitizeEWMA_ScrubsPoisonedPointsOnLoad(t *testing.T) {
 	}
 }
 
-
-
-
-
 // TestPoolSetSurvivesSaveLoad verifies the pool membership persists across a
 // restart (save → new Scorer → load), so anti-flap hysteresis state is not
 // lost. Without this the reloaded scorer starts with an empty poolSet and the
@@ -680,7 +676,7 @@ func TestEligibility_KeepsAllQualifiedNoCut(t *testing.T) {
 
 // TestEligibility_FloorFillWhenBelowMin: only 2 nodes qualify; the pool must
 // be filled to min_pool_size=3 from the best available, so per-terminal HRW
-// top-2 never degrades to a single-egress-violating bare MATCH,us-pool.
+// top-2 never degrades to a single-egress-violating bare MATCH,default-pool.
 func TestEligibility_FloorFillWhenBelowMin(t *testing.T) {
 	cfg := eligibilityCfg()
 	// 2 clearly-good nodes + 1 mediocre-but-alive node available to fill.
@@ -829,7 +825,7 @@ func TestEligibility_O1_IncumbentNoHistoryKept(t *testing.T) {
 
 // TestEligibility_O1_ColdStartFillsFloor: genuine first boot — empty poolSet,
 // every node ProbeCount==0. The cold-start last-resort must still bring the
-// pool up to min_pool_size so the data plane has a us-pool.
+// pool up to min_pool_size so the data plane has a default-pool.
 func TestEligibility_O1_ColdStartFillsFloor(t *testing.T) {
 	cfg := eligibilityCfg() // min_pool_size=3
 	nodes := map[string]proxyNode{
@@ -880,10 +876,10 @@ func TestDeadEvict_EvictedAfterThresholdWhenAboveFloor(t *testing.T) {
 	cfg := eligibilityCfg() // min_pool=3
 	cfg.DeadEvictRounds = 2
 	nodes := map[string]proxyNode{
-		"sub/g1": {alive: true, history: goodHistory(100)},
-		"sub/g2": {alive: true, history: goodHistory(110)},
-		"sub/g3": {alive: true, history: goodHistory(120)},
-		"sub/g4": {alive: true, history: goodHistory(130)},
+		"sub/g1":       {alive: true, history: goodHistory(100)},
+		"sub/g2":       {alive: true, history: goodHistory(110)},
+		"sub/g3":       {alive: true, history: goodHistory(120)},
+		"sub/g4":       {alive: true, history: goodHistory(130)},
 		"sub/softdead": softDeadNode(),
 	}
 	s, _, _ := newDecisionScorer(t, cfg, nodes)
@@ -917,7 +913,8 @@ func TestDeadEvict_RetainedToHoldFloor(t *testing.T) {
 	s, _, _ := newDecisionScorer(t, cfg, nodes)
 	s.poolSet = map[string]bool{"sub/g1": true, "sub/g2": true, "sub/sd1": true, "sub/sd2": true}
 	ctx := context.Background()
-	s.score(ctx); s.score(ctx) // reach threshold
+	s.score(ctx)
+	s.score(ctx) // reach threshold
 	pool := inPoolNames(s.GetSnapshot())
 	if len(pool) < 3 {
 		t.Fatalf("pool=%d below min_pool 3 — floor not held with dead nodes; pool=%v", len(pool), pool)
@@ -943,10 +940,11 @@ func TestDeadEvict_CounterResetsOnAlive(t *testing.T) {
 	s, _, mutate := newDecisionScorer(t, cfg, nodes)
 	s.poolSet = map[string]bool{"sub/g1": true, "sub/g2": true, "sub/g3": true, "sub/flap": true}
 	ctx := context.Background()
-	s.score(ctx); s.score(ctx) // deadRounds=2 (below threshold 3)
+	s.score(ctx)
+	s.score(ctx)                         // deadRounds=2 (below threshold 3)
 	mutate("sub/flap", goodHistory(150)) // now alive=true → should reset
-	s.score(ctx) // deadRounds resets to 0
-	s.score(ctx) // stays 0
+	s.score(ctx)                         // deadRounds resets to 0
+	s.score(ctx)                         // stays 0
 	if !inPoolNames(s.GetSnapshot())["sub/flap"] {
 		t.Errorf("recovered node evicted despite alive reset before threshold")
 	}
@@ -1016,7 +1014,7 @@ func TestAdmission_GoodNewNodeAdmittedImmediately(t *testing.T) {
 		t.Errorf("good new node NOT admitted on first round (the 24h-trial regression); pool=%v", pool)
 	}
 	if s.inTrial("sub/newcomer", time.Now()) != true {
-		t.Errorf("fixture invalid: newcomer should still be inTrial, "+
+		t.Errorf("fixture invalid: newcomer should still be inTrial, " +
 			"otherwise this test would pass even with the old gate")
 	}
 }
@@ -1174,18 +1172,18 @@ func TestAdmission_UnmeasuredNewNodeRefused(t *testing.T) {
 
 // --- Candidate discovery (docs/ops-candidate-discovery-loop.md) -------------
 //
-// Before discovery, score() built its candidate set only from us-pool.all ∪
-// (state ∩ /proxies), while us-pool's membership was written by the renderer
+// Before discovery, score() built its candidate set only from default-pool.all ∪
+// (state ∩ /proxies), while default-pool's membership was written by the renderer
 // from the scorer's own output — a closed loop with no entry point for a node
 // the scorer had never seen. A newly-added subscription was therefore invisible
 // forever, restart included. These tests pin the entry point open.
 
 // mockClashAPIPartialPool is mockClashAPI with control over which nodes appear
-// in us-pool.all. The default helper puts EVERY node in us-pool, which is
+// in default-pool.all. The default helper puts EVERY node in default-pool, which is
 // exactly the state the discovery bug cannot occur in — so the loop was
-// untestable with it. inPool lists the us-pool.all members; every node in
+// untestable with it. inPool lists the default-pool.all members; every node in
 // `nodes` is still present in /proxies, mirroring production (the renderer had
-// written all 179 proxies while us-pool held only 13).
+// written all 179 proxies while default-pool held only 13).
 func mockClashAPIPartialPool(t *testing.T, probeURL string, nodes map[string]proxyNode, inPool []string) (addr string, mutate func(tag string, history []int)) {
 	t.Helper()
 	var mu sync.Mutex
@@ -1197,7 +1195,7 @@ func mockClashAPIPartialPool(t *testing.T, probeURL string, nodes map[string]pro
 	for _, tag := range inPool {
 		all = append(all, tag)
 	}
-	proxies["us-pool"] = map[string]interface{}{
+	proxies["default-pool"] = map[string]interface{}{
 		"type": "LoadBalance", "all": all, "now": "",
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1228,7 +1226,7 @@ func outbound(tag string) subscribe.Outbound {
 }
 
 // newDiscoveryScorer wires a scorer whose /proxies contains every node but
-// whose us-pool contains only `inPool`, with `subs` as the subscription
+// whose default-pool contains only `inPool`, with `subs` as the subscription
 // outbounds and a real node pattern.
 func newDiscoveryScorer(t *testing.T, cfg config.NodeQualifyConfig, nodes map[string]proxyNode,
 	inPool []string, subs []string, pattern string) (*Scorer, *fakeRenderer) {
@@ -1248,7 +1246,7 @@ func newDiscoveryScorer(t *testing.T, cfg config.NodeQualifyConfig, nodes map[st
 
 // TestDiscovery_NewSubscriptionNodeBecomesCandidate: the headline bug. A node
 // present in /proxies and in AllOutbounds, matching node_pattern, but absent
-// from us-pool.all and from state, must still be scored.
+// from default-pool.all and from state, must still be scored.
 func TestDiscovery_NewSubscriptionNodeBecomesCandidate(t *testing.T) {
 	cfg := eligibilityCfg()
 	nodes := map[string]proxyNode{
@@ -1256,7 +1254,7 @@ func TestDiscovery_NewSubscriptionNodeBecomesCandidate(t *testing.T) {
 		"ash/US-02":      {alive: true, history: goodHistory(110)},
 		"ash/US-03":      {alive: true, history: goodHistory(120)},
 		"ash/US-04":      {alive: true, history: goodHistory(130)},
-		"soonlink/US-新": {alive: true, history: goodHistory(250)},
+		"soonlink/US-新":  {alive: true, history: goodHistory(250)},
 		"soonlink/HK-01": {alive: true, history: goodHistory(80)}, // must NOT match
 	}
 	inPool := []string{"ash/US-01", "ash/US-02", "ash/US-03", "ash/US-04"}
@@ -1284,7 +1282,7 @@ func TestDiscovery_NewSubscriptionNodeBecomesCandidate(t *testing.T) {
 // discovered node cannot enter the ROUTING set yet (ProbeCount==0 → refused by
 // the admission gate), so poolChanged is false. If the reload trigger only
 // watched the routing set, no render would fire, the node would never reach
-// mihomo's us-pool, would never be url-tested, and would be refused forever
+// mihomo's default-pool, would never be url-tested, and would be refused forever
 // while the logs looked healthy. The probing set changing must itself trigger.
 func TestDiscovery_TriggersRenderEvenWhenRoutingSetUnchanged(t *testing.T) {
 	cfg := eligibilityCfg()
@@ -1305,10 +1303,10 @@ func TestDiscovery_TriggersRenderEvenWhenRoutingSetUnchanged(t *testing.T) {
 	s.score(context.Background())
 	fr.waitRenders(t, 1)
 
-	usPool, routing, _ := fr.snapshot()
-	if !contains(usPool, "soonlink/US-新") {
-		t.Errorf("BLOCKER 1: discovered node absent from rendered us-pool, so mihomo "+
-			"would never probe it; us_pool=%v", usPool)
+	defaultPool, routing, _ := fr.snapshot()
+	if !contains(defaultPool, "soonlink/US-新") {
+		t.Errorf("BLOCKER 1: discovered node absent from rendered default-pool, so mihomo "+
+			"would never probe it; default_pool=%v", defaultPool)
 	}
 	if contains(routing, "soonlink/US-新") {
 		t.Errorf("unmeasured node placed in routing set; routing=%v", routing)
@@ -1316,9 +1314,9 @@ func TestDiscovery_TriggersRenderEvenWhenRoutingSetUnchanged(t *testing.T) {
 }
 
 // TestDiscovery_IdempotentNoRenderStorm: once the discovered node is in the
-// rendered us-pool, an unchanged candidate set must NOT keep re-rendering.
+// rendered default-pool, an unchanged candidate set must NOT keep re-rendering.
 // Comparing against our own last intent (rather than against mihomo's current
-// us-pool, which is intersected with AllOutbounds) is what makes this hold.
+// default-pool, which is intersected with AllOutbounds) is what makes this hold.
 func TestDiscovery_IdempotentNoRenderStorm(t *testing.T) {
 	cfg := eligibilityCfg()
 	cfg.HotReloadMinInterval = 0
@@ -1339,7 +1337,7 @@ func TestDiscovery_IdempotentNoRenderStorm(t *testing.T) {
 	s.score(ctx)
 	fr.waitRenders(t, 1)
 	_, _, after1 := fr.snapshot()
-	// /proxies still reports the old us-pool (mihomo would have been reloaded
+	// /proxies still reports the old default-pool (mihomo would have been reloaded
 	// in production; the mock does not update). The candidate set is therefore
 	// identical next round, so nothing new should be rendered.
 	s.score(ctx)
@@ -1429,7 +1427,7 @@ func TestDiscovery_ColdStartPickReleasedOnceMeasured(t *testing.T) {
 	}
 
 	// Measurements arrive: the cold-start pick is terrible, siblings are good.
-	mutate("sub/US-bad", goodHistory(5000))   // p95 5000 > max_rtt_p95_ms 800
+	mutate("sub/US-bad", goodHistory(5000)) // p95 5000 > max_rtt_p95_ms 800
 	mutate("sub/US-alt-1", goodHistory(150))
 	mutate("sub/US-alt-2", goodHistory(160))
 	// Two rounds: one to record measurements, one to act on them.

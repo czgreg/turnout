@@ -36,27 +36,27 @@ type turnoutDTO struct {
 }
 
 type activeProxyDTO struct {
-	Now         string          `json:"now"`         // currently-selected node tag inside the active pool
-	DelayMs     int             `json:"delay_ms"`    // active pool's selected node's last delay
+	Now         string          `json:"now"`      // currently-selected node tag inside the active pool
+	DelayMs     int             `json:"delay_ms"` // active pool's selected node's last delay
 	LastCheck   string          `json:"last_check,omitempty"`
-	PoolSize    int             `json:"pool_size"`   // size of the routing pool (top-K nodes)
+	PoolSize    int             `json:"pool_size"` // size of the routing pool (top-K nodes)
 	PoolFilter  string          `json:"pool_filter,omitempty"`
-	Reachable   bool            `json:"reachable"`   // whether clash-api responded
-	ActiveGroup string          `json:"active_group"` // which group "out" selector currently points at
-	PoolMode    string          `json:"pool_mode,omitempty"`   // "auto" | "manual"
+	Reachable   bool            `json:"reachable"`              // whether clash-api responded
+	ActiveGroup string          `json:"active_group"`           // which group "out" selector currently points at
+	PoolMode    string          `json:"pool_mode,omitempty"`    // "auto" | "manual"
 	LastSwapAt  string          `json:"last_swap_at,omitempty"` // last time pool membership changed
 	Pools       []poolStatusDTO `json:"pools,omitempty"`
 }
 
 type poolStatusDTO struct {
-	Tag      string          `json:"tag"`       // mihomo: "us-pool"
-	Now      string          `json:"now"`       // its currently-selected member
-	PoolSize int             `json:"pool_size"`
-	Active   bool            `json:"active"` // whether "out" selector points at this pool
+	Tag      string `json:"tag"` // mihomo: "default-pool"
+	Now      string `json:"now"` // its currently-selected member
+	PoolSize int    `json:"pool_size"`
+	Active   bool   `json:"active"` // whether "out" selector points at this pool
 	// Egress is the IP+geo seen by the public internet when traffic exits
 	// via this pool's currently-selected member. Probed through the turnout-
 	// internal HTTP proxy (TurnoutInternalProxyURL = 127.0.0.1:11080), which
-	// follows mihomo's "out" selector → us-pool. Cached 60s. nil = no
+	// follows mihomo's "out" selector → default-pool. Cached 60s. nil = no
 	// probe has succeeded yet (cold start, or upstream unreachable).
 	Egress *egressInfo `json:"egress,omitempty"`
 	// Nodes is per-member latency from clash-api's last url-test measurement.
@@ -110,10 +110,10 @@ func (s *Server) handleProxiesActive(w http.ResponseWriter, r *http.Request) {
 // queryActiveProxy walks clash-api selector → load-balance pool → leaf node:
 //
 //  1. GET /proxies — bulk dump of every proxy + its history (1 round-trip)
-//  2. From it: pluck the "out" selector's `now` field (us-pool / pin / DIRECT)
-//  3. For us-pool, list its members and per-node latency
+//  2. From it: pluck the "out" selector's `now` field (default-pool / pin / DIRECT)
+//  3. For default-pool, list its members and per-node latency
 //  4. Kick the lazy egress probe through TurnoutInternalProxyURL (which goes
-//     "out → us-pool" via mihomo, so the IP we sample IS us-pool's egress)
+//     "out → default-pool" via mihomo, so the IP we sample IS default-pool's egress)
 //
 // Returns Reachable=false on any clash-api error so the rest of the response
 // is still useful.
@@ -214,6 +214,33 @@ func (s *Server) queryActiveProxy(ctx context.Context) activeProxyDTO {
 		}
 	}
 
+	// Named class pools are not members of `out`, so the loop above never
+	// sees them. Report each configured pool separately (members + delay +
+	// fail rate). Egress is not probed per class — the cached probe follows
+	// the default `out` path.
+	for _, p := range s.deps.Cfg.Pools {
+		pool, ok := bulk.Proxies[p.Name]
+		if !ok || pool.Type != "LoadBalance" {
+			continue
+		}
+		ps := poolStatusDTO{Tag: p.Name, Now: pool.Now}
+		ps.Nodes = make([]nodeStatusDTO, 0, len(pool.All))
+		for _, member := range pool.All {
+			n := nodeStatusDTO{Tag: member, FailRate: -1}
+			if fr, ok := failRates[member]; ok {
+				n.FailRate = fr
+			}
+			if mp, ok := bulk.Proxies[member]; ok && len(mp.History) > 0 {
+				h := mp.History[len(mp.History)-1]
+				n.DelayMs = h.Delay
+				n.LastCheck = h.Time
+			}
+			ps.Nodes = append(ps.Nodes, n)
+		}
+		ps.PoolSize = len(ps.Nodes)
+		dto.Pools = append(dto.Pools, ps)
+	}
+
 	return dto
 }
 
@@ -247,7 +274,7 @@ type historyEntry struct {
 // Two-field shape so callers can flip ANY Selector group to any of its
 // registered members — engine-agnostic by design:
 //
-//	{ "selector": "out", "name": "us-pool"   }   // mihomo: route via load-balance
+//	{ "selector": "out", "name": "default-pool"   }   // mihomo: route via load-balance
 //	{ "selector": "out", "name": "pin"       }   // mihomo: route via the manually-pinned node
 //	{ "selector": "pin", "name": "yuyun/SG-01" } // mihomo: pick which node `pin` points at
 //	{ "selector": "out", "name": "urltest-primary" } // sing-box: flip back to primary pool
@@ -269,7 +296,7 @@ type proxiesSelectDTO struct {
 // The override is NOT sticky:
 //   - sing-box engine: the watchdog keeps running and may flip "out" back
 //     to primary/backup on its own depending on health probes.
-//   - mihomo engine: the NodeScorer manages us-pool MEMBERSHIP (which
+//   - mihomo engine: the NodeScorer manages default-pool MEMBERSHIP (which
 //     nodes can carry traffic) but does not touch selector pointers, so
 //     manual `out` / `pin` flips persist until the operator reverts them
 //     or restarts the data plane.
@@ -282,7 +309,7 @@ func (s *Server) handleProxiesSelect(w http.ResponseWriter, r *http.Request) {
 	dto.Selector = strings.TrimSpace(dto.Selector)
 	dto.Name = strings.TrimSpace(dto.Name)
 	if dto.Selector == "" || dto.Name == "" {
-		http.Error(w, `body must include "selector" and "name" (e.g. {"selector":"out","name":"us-pool"})`, http.StatusBadRequest)
+		http.Error(w, `body must include "selector" and "name" (e.g. {"selector":"out","name":"default-pool"})`, http.StatusBadRequest)
 		return
 	}
 
