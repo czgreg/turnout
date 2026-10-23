@@ -54,7 +54,11 @@ function WatchdogCard({ snap }: { snap: Snapshot }) {
       </Card>
     );
   }
-  if (!wd?.enabled) {
+  // Only an explicit enabled:false means "not running". The healthy response
+  // historically omitted the field entirely, so `!wd?.enabled` treated every
+  // running watchdog as disabled — the card said 未启用 on a healthy node.
+  // `!wd` stays in the guard so TS narrows it for the healthy branch below.
+  if (!wd || wd.enabled === false) {
     return (
       <Card title="旁挂健康 / watchdog" extra={<span className="dim">未启用</span>} bordered={false} className="mb">
         <Alert

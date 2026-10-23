@@ -96,8 +96,13 @@ type CheckResult struct {
 // Status is the watchdog's published view, surfaced by GET /api/watchdog/status
 // and included in the console's health card.
 type Status struct {
-	State State     `json:"state"`
-	At    time.Time `json:"at"`
+	// Enabled is always true on a live watchdog. The field exists so every
+	// response of GET /api/watchdog/status has the same shape: the disabled
+	// case is published as {"enabled": false, "detail": ...}, and a consumer
+	// checking `!enabled` must not read a missing field as disabled.
+	Enabled bool      `json:"enabled"`
+	State   State     `json:"state"`
+	At      time.Time `json:"at"`
 
 	// Checks is the most recent round's per-check outcome.
 	Checks []CheckResult `json:"checks"`
@@ -107,9 +112,9 @@ type Status struct {
 	Failing []CheckName `json:"failing"`
 
 	// Consecutive counters behind the verdict.
-	FailStreak   int `json:"fail_streak"`
-	OKStreak     int `json:"ok_streak"`
-	FailThreshold int `json:"fail_threshold"`
+	FailStreak       int `json:"fail_streak"`
+	OKStreak         int `json:"ok_streak"`
+	FailThreshold    int `json:"fail_threshold"`
 	RecoverThreshold int `json:"recover_threshold"`
 
 	// LivenessIP is the address whose presence signals the firewall.
@@ -195,6 +200,7 @@ func New(cfg config.WatchdogConfig, checkers []Checker, addr AddressManager, emi
 		emit:        emit,
 		lastAlerted: map[CheckName]bool{},
 		status: Status{
+			Enabled:          true,
 			State:            StateUnknown,
 			LivenessIP:       cfg.LivenessIP,
 			FailThreshold:    cfg.FailThreshold,

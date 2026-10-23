@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -130,9 +131,9 @@ func baseCfg() config.WatchdogConfig {
 	return c
 }
 
-func ok() CheckResult    { return CheckResult{OK: true} }
-func bad() CheckResult   { return CheckResult{OK: false, Detail: "boom"} }
-func skip() CheckResult  { return CheckResult{OK: false, Skipped: true} }
+func ok() CheckResult   { return CheckResult{OK: true} }
+func bad() CheckResult  { return CheckResult{OK: false, Detail: "boom"} }
+func skip() CheckResult { return CheckResult{OK: false, Skipped: true} }
 
 // ── constructor behaviour ───────────────────────────────────────────────────
 
@@ -158,6 +159,28 @@ func TestNew_RefusesEmptyLivenessIP(t *testing.T) {
 func TestNew_RefusesNilAddressManager(t *testing.T) {
 	if wd := New(baseCfg(), nil, nil, nil); wd != nil {
 		t.Fatal("nil address manager must not start a watchdog")
+	}
+}
+
+// TestStatus_AlwaysReportsEnabled pins the response shape the console reads.
+// The disabled case publishes {"enabled": false} from the API handler; a
+// running watchdog that leaves the field out makes `!enabled` read as
+// disabled, which is how a healthy node's card came to say 未启用.
+func TestStatus_AlwaysReportsEnabled(t *testing.T) {
+	wd := New(baseCfg(), nil, &fakeAddr{}, nil)
+	if wd == nil {
+		t.Fatal("watchdog should start with a complete config")
+	}
+	b, err := json.Marshal(wd.Status())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if v, present := got["enabled"]; !present || v != true {
+		t.Fatalf("status must include \"enabled\":true, got %s", b)
 	}
 }
 
