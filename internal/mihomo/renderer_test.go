@@ -20,9 +20,9 @@ func newTestRenderer(t *testing.T) *Renderer {
 	}
 	cfg.ApplyDefaults()
 	r := NewRenderer(cfg).WithNode(config.NodeConfig{
-		ClientSubnet:  "10.1.2.0/24",
-		IngressIP: "10.1.2.1",
-		EgressIface:   "ens18",
+		ClientSubnet: "10.1.2.0/24",
+		IngressIP:    "10.1.2.1",
+		EgressIface:  "ens18",
 	})
 	r.cfg.TUN.Enabled = true
 	return r
@@ -211,12 +211,12 @@ func TestRenderer_WhitelistMode(t *testing.T) {
 		t.Errorf("whitelist final rule = %q, want MATCH,DIRECT", last)
 	}
 	want := map[string]bool{
-		"RULE-SET,geosite-anthropic,out":           false,
-		"RULE-SET,geosite-openai,out":              false,
-		"RULE-SET,geoip-telegram,out,no-resolve":   false,
-		"DOMAIN-SUFFIX,claude.ai,out":              false,
-		"DOMAIN-SUFFIX,cursor.com,out":             false,
-		"IP-CIDR,149.154.0.0/16,out,no-resolve":    false,
+		"RULE-SET,geosite-anthropic,out":         false,
+		"RULE-SET,geosite-openai,out":            false,
+		"RULE-SET,geoip-telegram,out,no-resolve": false,
+		"DOMAIN-SUFFIX,claude.ai,out":            false,
+		"DOMAIN-SUFFIX,cursor.com,out":           false,
+		"IP-CIDR,149.154.0.0/16,out,no-resolve":  false,
 	}
 	for _, ru := range rules {
 		s, _ := ru.(string)
@@ -961,4 +961,285 @@ func mustRules(t *testing.T, r *Renderer) []string {
 	t.Helper()
 	rules, _ := r.buildRules(sampleOutbounds())
 	return rules
+}
+
+func poolBool(b bool) *bool { return &b }
+
+// TestRenderer_ClassPoolPerTerminal covers the dual-class model: the default
+// class keeps the unified perterm over the global pool (Asia), while a class
+// pool with node_pattern + per_terminal gets its own fb-<pool>-* groups and
+// perterm-<pool> sub-rule (US).
+func TestRenderer_ClassPoolPerTerminal(t *testing.T) {
+	r := newTestRenderer(t)
+	r.cfg.URLTest.NodePattern = `日本|JP|SG`
+	r.cfg.Route.Mode = "whitelist"
+	r.cfg.Route.Whitelist = config.WhitelistConfig{
+		Geosites: config.StringList{"geosite-openai", "geosite-google", "geosite-youtube"},
+	}
+	r = r.WithPools([]config.PoolConfig{{
+		Name:         "ai-pool",
+		NodePattern:  `美国|🇺🇸|\bUS`,
+		Size:         2,
+		PerTerminal:  poolBool(true),
+		RuleSets:     []string{"geosite-openai"},
+		DomainSuffix: []string{"gemini.google.com"},
+	}}).WithLoadBalance(true)
+	r.node.ClientSubnet = "10.1.2.0/29" // 6 hosts keeps the YAML small
+
+	body, err := r.Write(sampleOutbounds())
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("invalid yaml: %v\n%s", err, body)
+	}
+
+	us := map[string]bool{
+		"ash/🇺🇸US-IEPL-01":    true,
+		"ctc-02/US-C30-01":    true,
+		"cyberguard/🇺🇸 US-01": true,
+	}
+	groups, _ := doc["proxy-groups"].([]any)
+	var aiPool map[string]any
+	aiFB, defaultFB := 0, 0
+	for _, g := range groups {
+		m, _ := g.(map[string]any)
+		name, _ := m["name"].(string)
+		switch {
+		case name == "ai-pool":
+			aiPool = m
+		case strings.HasPrefix(name, "fb-ai-pool-"):
+			aiFB++
+			pl, _ := m["proxies"].([]any)
+			if len(pl) != 2 {
+				t.Errorf("%s has %d proxies, want 2", name, len(pl))
+			}
+			for _, p := range pl {
+				if !us[p.(string)] {
+					t.Errorf("%s member %v is not a US node", name, p)
+				}
+			}
+		case strings.HasPrefix(name, "fb-"):
+			defaultFB++
+			pl, _ := m["proxies"].([]any)
+			if len(pl) != 2 {
+				t.Errorf("%s has %d proxies, want 2", name, len(pl))
+			}
+			for _, p := range pl {
+				if us[p.(string)] {
+					t.Errorf("default %s member %v must be an Asia node", name, p)
+				}
+			}
+		}
+	}
+	if aiPool == nil {
+		t.Fatal("ai-pool group missing")
+	}
+	if aiPool["type"] != "load-balance" {
+		t.Errorf("ai-pool type = %v, want load-balance", aiPool["type"])
+	}
+	for _, p := range aiPool["proxies"].([]any) {
+		if !us[p.(string)] {
+			t.Errorf("ai-pool member %v is not a US node", p)
+		}
+	}
+	if aiFB == 0 {
+		t.Error("no fb-ai-pool-* groups emitted")
+	}
+	if defaultFB == 0 {
+		t.Error("no default fb-* groups emitted")
+	}
+
+	rules, _ := doc["rules"].([]any)
+	want := map[string]bool{
+		"SUB-RULE,(RULE-SET,geosite-openai),perterm-ai-pool":         false,
+		"SUB-RULE,(DOMAIN-SUFFIX,gemini.google.com),perterm-ai-pool": false,
+		"SUB-RULE,(RULE-SET,geosite-google),perterm":                 false,
+		"SUB-RULE,(RULE-SET,geosite-youtube),perterm":                false,
+	}
+	for _, ru := range rules {
+		s, _ := ru.(string)
+		if _, ok := want[s]; ok {
+			want[s] = true
+		}
+	}
+	for rule, seen := range want {
+		if !seen {
+			t.Errorf("missing rule %q", rule)
+		}
+	}
+
+	sub, _ := doc["sub-rules"].(map[string]any)
+	aiSub, _ := sub["perterm-ai-pool"].([]any)
+	if len(aiSub) == 0 {
+		t.Fatal("perterm-ai-pool sub-rule missing")
+	}
+	if last, _ := aiSub[len(aiSub)-1].(string); last != "MATCH,ai-pool" {
+		t.Errorf("perterm-ai-pool last rule = %q, want MATCH,ai-pool", last)
+	}
+	foundAIFB := false
+	for _, ru := range aiSub {
+		if s, _ := ru.(string); strings.Contains(s, "fb-ai-pool-") {
+			foundAIFB = true
+		}
+	}
+	if !foundAIFB {
+		t.Error("perterm-ai-pool does not reference fb-ai-pool-* groups")
+	}
+	defaultSub, _ := sub["perterm"].([]any)
+	if len(defaultSub) == 0 {
+		t.Fatal("default perterm sub-rule missing")
+	}
+	if last, _ := defaultSub[len(defaultSub)-1].(string); last != "MATCH,us-pool" {
+		t.Errorf("default perterm last rule = %q, want MATCH,us-pool", last)
+	}
+}
+
+// TestRenderer_ClassPoolShared: a class pool with per_terminal: false targets
+// its load-balance group directly and emits no fb-<pool>-* groups.
+func TestRenderer_ClassPoolShared(t *testing.T) {
+	r := newTestRenderer(t)
+	r.cfg.URLTest.NodePattern = `日本|JP|SG`
+	r.cfg.Route.Mode = "whitelist"
+	r.cfg.Route.Whitelist = config.WhitelistConfig{
+		Geosites: config.StringList{"geosite-openai"},
+	}
+	r = r.WithPools([]config.PoolConfig{{
+		Name:        "ai-pool",
+		NodePattern: `美国|🇺🇸|\bUS`,
+		PerTerminal: poolBool(false),
+		RuleSets:    []string{"geosite-openai"},
+	}}).WithLoadBalance(true)
+	r.node.ClientSubnet = "10.1.2.0/29"
+
+	body, err := r.Write(sampleOutbounds())
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("invalid yaml: %v\n%s", err, body)
+	}
+
+	groups, _ := doc["proxy-groups"].([]any)
+	for _, g := range groups {
+		m, _ := g.(map[string]any)
+		if name, _ := m["name"].(string); strings.HasPrefix(name, "fb-ai-pool-") {
+			t.Errorf("shared pool emitted per-terminal group %q", name)
+		}
+	}
+	rules := mustRules(t, r)
+	found := false
+	for _, ru := range rules {
+		if ru == "RULE-SET,geosite-openai,ai-pool" {
+			found = true
+		}
+		if strings.Contains(ru, "perterm-ai-pool") {
+			t.Errorf("shared pool routed through a perterm sub-rule: %q", ru)
+		}
+	}
+	if !found {
+		t.Error("missing RULE-SET,geosite-openai,ai-pool")
+	}
+}
+
+// TestRenderer_ClassPoolEmpty: a pattern that matches nothing renders a
+// DIRECT stub (mihomo rejects an empty group) and the affected rules target
+// the stub instead of a nonexistent fb group.
+func TestRenderer_ClassPoolEmpty(t *testing.T) {
+	r := newTestRenderer(t)
+	r.cfg.URLTest.NodePattern = `日本|JP|SG`
+	r.cfg.Route.Mode = "whitelist"
+	r.cfg.Route.Whitelist = config.WhitelistConfig{
+		Geosites: config.StringList{"geosite-openai"},
+	}
+	r = r.WithPools([]config.PoolConfig{{
+		Name:        "ai-pool",
+		NodePattern: `ZZZZ-NEVER-MATCHES`,
+		PerTerminal: poolBool(true),
+		RuleSets:    []string{"geosite-openai"},
+	}}).WithLoadBalance(true)
+	r.node.ClientSubnet = "10.1.2.0/29"
+
+	body, err := r.Write(sampleOutbounds())
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("invalid yaml: %v\n%s", err, body)
+	}
+
+	groups, _ := doc["proxy-groups"].([]any)
+	var aiPool map[string]any
+	for _, g := range groups {
+		m, _ := g.(map[string]any)
+		if m["name"] == "ai-pool" {
+			aiPool = m
+		}
+		if name, _ := m["name"].(string); strings.HasPrefix(name, "fb-ai-pool-") {
+			t.Errorf("empty pool emitted per-terminal group %q", name)
+		}
+	}
+	if aiPool == nil {
+		t.Fatal("ai-pool stub group missing")
+	}
+	if aiPool["type"] != "select" {
+		t.Errorf("ai-pool type = %v, want select (DIRECT stub)", aiPool["type"])
+	}
+	pl, _ := aiPool["proxies"].([]any)
+	if len(pl) != 1 || pl[0] != "DIRECT" {
+		t.Errorf("ai-pool proxies = %v, want [DIRECT]", pl)
+	}
+	rules := mustRules(t, r)
+	found := false
+	for _, ru := range rules {
+		if ru == "RULE-SET,geosite-openai,ai-pool" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("missing RULE-SET,geosite-openai,ai-pool (empty pool must fall back to the stub)")
+	}
+}
+
+// TestRenderer_PoolAssignmentForIP covers the API-facing per-class lookup:
+// the returned HRW order must match the group members and the group name
+// must carry the pool name.
+func TestRenderer_PoolAssignmentForIP(t *testing.T) {
+	r := newTestRenderer(t) // ClientSubnet 10.1.2.0/24 (host mode)
+	r.poolMembers = map[string][]string{
+		"ai-pool": {
+			"ash/🇺🇸US-IEPL-01",
+			"ctc-02/US-C30-01",
+			"cyberguard/🇺🇸 US-01",
+		},
+	}
+	us := map[string]bool{
+		"ash/🇺🇸US-IEPL-01":    true,
+		"ctc-02/US-C30-01":    true,
+		"cyberguard/🇺🇸 US-01": true,
+	}
+	got, ok := r.PoolAssignmentForIP("10.1.2.42", "ai-pool", sampleOutbounds())
+	if !ok {
+		t.Fatal("expected an assignment for 10.1.2.42")
+	}
+	if len(got) != 2 {
+		t.Fatalf("assignment = %v, want 2 members", got)
+	}
+	for _, n := range got {
+		if !us[n] {
+			t.Errorf("assignment member %q is not in ai-pool", n)
+		}
+	}
+	if name := PoolPerTerminalGroupName("ai-pool", "10.1.2.42", "10.1.2.0/24"); name != "fb-ai-pool-10.1.2.42" {
+		t.Errorf("group name = %q, want fb-ai-pool-10.1.2.42", name)
+	}
+	if _, ok := r.PoolAssignmentForIP("192.168.1.1", "ai-pool", sampleOutbounds()); ok {
+		t.Error("assignment must be false for an IP outside client_subnet")
+	}
+	if _, ok := r.PoolAssignmentForIP("10.1.2.42", "nope", sampleOutbounds()); ok {
+		t.Error("assignment must be false for an unknown pool")
+	}
 }

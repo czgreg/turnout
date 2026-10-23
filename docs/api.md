@@ -246,6 +246,10 @@ post Plan-A 语义注意：
 | `nodes[].fail_rate` | 来自 NodeScorer 的探针失败率（0.0–1.0）。scorer 不可用时为 -1 |
 | `nodes[].delay_ms` | mihomo url-test 最近一次延迟（ms）。0 表示尚无测量 |
 
+`pools[]` 同时包含 `out` 链上的 `us-pool` 和所有命名分类池（如 `ai-pool`）。
+命名池不是 `out` 的成员，因此 `active=false`；`egress` 探针目前只覆盖默认
+`us-pool`，分类池的 `egress` 留空。
+
 ---
 
 ## POST /api/proxies/select
@@ -603,6 +607,22 @@ curl -H "Authorization: Bearer ..." \
 - `primary.alive` — mihomo url-test 的最新探针结果。
 - `primary.health` — 完整 NodeHealth 嵌入：rtt_p50/p95、jitter、fail_rate、probe_count、命名探针每个目标的最近一次状态、被动连接生命周期统计（`passive`）。
 - `secondary.*` — 同 primary，HRW top-2。当前实现固定每个 fb 组 2 个成员。
+- `pools` — 仅列出 `per_terminal: true` 的分类池（如 `ai-pool`）。每项含
+  `pool`、`group_name`（`fb-<pool>-<ip>`）、`primary` / `secondary` /
+  `active_node`。顶层 `primary` / `secondary` 仍描述默认「其他」类；`pools`
+  描述每个分类自己的稳定出口：
+
+```json
+"pools": [
+  {
+    "pool": "ai-pool",
+    "group_name": "fb-ai-pool-10.1.2.42",
+    "active_node": "primary",
+    "primary": {"name": "hutao/美国_BGP_E", "alive": true, "health": {"...": "..."}},
+    "secondary": {"name": "momo/🇺🇸美国07_WD", "alive": true, "health": {"...": "..."}}
+  }
+]
+```
 
 错误：
 - 400：`?ip=` 缺失。

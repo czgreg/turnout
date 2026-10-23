@@ -180,8 +180,27 @@ node_qualify:
   enabled: true
 
 pools:
-  # [不变] us-pool 等定义、成员、rule_sets 归属，与上游一致。
-  # 详见上游 docs/design-eligibility-set-selection.md。
+  # 命名池。旧池只写 requires_passing / rule_sets：它是 us-pool 的
+  # probe-gated 子集，行为与上游一致。
+  #
+  # 「分类池」：只要出现 node_pattern / size / per_terminal /
+  # domain_suffix 任一字段，这个池就拥有自己的候选集和路由，与全局
+  # us-pool 无关。node_pattern 是 Go RE2，不支持 lookahead/lookbehind，
+  # 需要多条件时用 alternation。
+  #
+  # 示例：AI 流量走美国，其余白名单流量走全局（亚洲）池。
+  # - name: ai-pool
+  #   node_pattern: "美国|🇺🇸|\\bUS"
+  #   size: 4                 # 按 long-EWMA 取 top-4
+  #   per_terminal: true      # 每终端一个稳定美国 IP（fb-ai-pool-*）
+  #   rule_sets:
+  #     - geosite-openai
+  #     - geosite-anthropic
+  #     - geosite-category-ai-!cn
+  #     - geosite-perplexity
+  #   domain_suffix:          # 精确域名，先于 whitelist 生效
+  #     - gemini.google.com
+  #     - generativelanguage.googleapis.com
   []
 
 load_balance:

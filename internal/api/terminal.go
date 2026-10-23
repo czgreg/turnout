@@ -13,15 +13,30 @@ import (
 // each node's probe / passive health so operators can diagnose user
 // complaints without correlating multiple endpoints.
 type TerminalAssignment struct {
-	IP         string                 `json:"ip"`
-	Subnet     string                 `json:"subnet"`               // configured client_subnet
-	InSubnet   bool                   `json:"in_subnet"`            // false → the node does not intercept this source at all (TPROXY jump is -s client_subnet)
-	Primary    *terminalNodeView      `json:"primary,omitempty"`    // current default egress for this terminal
-	Secondary  *terminalNodeView      `json:"secondary,omitempty"`  // mihomo fallback target when primary is alive=false
-	ActiveNode string                 `json:"active_node,omitempty"` // which one is actually carrying traffic right now ("primary" | "secondary" | "")
-	GroupName  string                 `json:"group_name,omitempty"` // e.g. fb-10.1.2.42 — present when InSubnet
-	PoolMode   string                 `json:"pool_mode"`            // "manual" | "auto" | other
-	Hint       string                 `json:"hint,omitempty"`       // operator-facing diagnostic note
+	IP         string            `json:"ip"`
+	Subnet     string            `json:"subnet"`                // configured client_subnet
+	InSubnet   bool              `json:"in_subnet"`             // false → the node does not intercept this source at all (TPROXY jump is -s client_subnet)
+	Primary    *terminalNodeView `json:"primary,omitempty"`     // current default egress for this terminal
+	Secondary  *terminalNodeView `json:"secondary,omitempty"`   // mihomo fallback target when primary is alive=false
+	ActiveNode string            `json:"active_node,omitempty"` // which one is actually carrying traffic right now ("primary" | "secondary" | "")
+	GroupName  string            `json:"group_name,omitempty"`  // e.g. fb-10.1.2.42 — present when InSubnet
+	PoolMode   string            `json:"pool_mode"`             // "manual" | "auto" | other
+	Hint       string            `json:"hint,omitempty"`        // operator-facing diagnostic note
+	// Pools lists per-class egresses for class pools configured with
+	// per_terminal: true (e.g. ai-pool). The top-level Primary/Secondary
+	// above describe the default "other" class.
+	Pools []TerminalPoolAssignment `json:"pools,omitempty"`
+}
+
+// TerminalPoolAssignment is one class pool's egress assignment for a
+// terminal. GroupName is the fb-<pool>-* fallback group.
+type TerminalPoolAssignment struct {
+	Pool       string            `json:"pool"`
+	GroupName  string            `json:"group_name,omitempty"`
+	Primary    *terminalNodeView `json:"primary,omitempty"`
+	Secondary  *terminalNodeView `json:"secondary,omitempty"`
+	ActiveNode string            `json:"active_node,omitempty"`
+	Hint       string            `json:"hint,omitempty"`
 }
 
 // terminalNodeView is the per-node detail surfaced for primary / secondary
@@ -120,6 +135,41 @@ func (s *Server) handlePoolTerminal(w http.ResponseWriter, r *http.Request) {
 	default:
 		resp.ActiveNode = ""
 		resp.Hint = "neither primary nor secondary is alive — terminal traffic is currently failing; check emergency_promote_chain or pool_members"
+	}
+
+	// Per-class egresses: only pools that opted into per-terminal pinning.
+	// An empty assignment means the scorer has not published this pool's
+	// membership yet; still report the pool so the operator sees it is
+	// configured.
+	for i := range s.deps.Cfg.Pools {
+		p := &s.deps.Cfg.Pools[i]
+		if !p.PerTerminalEnabled() {
+			continue
+		}
+		pa := TerminalPoolAssignment{
+			Pool:      p.Name,
+			GroupName: mihomo.PoolPerTerminalGroupName(p.Name, ip, s.deps.Cfg.Node.ClientSubnet),
+		}
+		classAssigned, ok := s.deps.Renderer.PoolAssignmentForIP(ip, p.Name, outbounds)
+		if !ok || len(classAssigned) == 0 {
+			pa.Hint = "no members rendered for this class yet (scorer has not published pool membership)"
+			resp.Pools = append(resp.Pools, pa)
+			continue
+		}
+		pa.Primary = makeView(classAssigned[0])
+		if len(classAssigned) > 1 {
+			pa.Secondary = makeView(classAssigned[1])
+		}
+		switch {
+		case pa.Primary != nil && pa.Primary.Alive:
+			pa.ActiveNode = "primary"
+		case pa.Secondary != nil && pa.Secondary.Alive:
+			pa.ActiveNode = "secondary"
+			pa.Hint = "primary is alive=false; mihomo fallback should be routing through secondary"
+		default:
+			pa.Hint = "neither primary nor secondary is alive — check this pool's membership"
+		}
+		resp.Pools = append(resp.Pools, pa)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

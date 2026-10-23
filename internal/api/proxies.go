@@ -36,23 +36,23 @@ type turnoutDTO struct {
 }
 
 type activeProxyDTO struct {
-	Now         string          `json:"now"`         // currently-selected node tag inside the active pool
-	DelayMs     int             `json:"delay_ms"`    // active pool's selected node's last delay
+	Now         string          `json:"now"`      // currently-selected node tag inside the active pool
+	DelayMs     int             `json:"delay_ms"` // active pool's selected node's last delay
 	LastCheck   string          `json:"last_check,omitempty"`
-	PoolSize    int             `json:"pool_size"`   // size of the routing pool (top-K nodes)
+	PoolSize    int             `json:"pool_size"` // size of the routing pool (top-K nodes)
 	PoolFilter  string          `json:"pool_filter,omitempty"`
-	Reachable   bool            `json:"reachable"`   // whether clash-api responded
-	ActiveGroup string          `json:"active_group"` // which group "out" selector currently points at
-	PoolMode    string          `json:"pool_mode,omitempty"`   // "auto" | "manual"
+	Reachable   bool            `json:"reachable"`              // whether clash-api responded
+	ActiveGroup string          `json:"active_group"`           // which group "out" selector currently points at
+	PoolMode    string          `json:"pool_mode,omitempty"`    // "auto" | "manual"
 	LastSwapAt  string          `json:"last_swap_at,omitempty"` // last time pool membership changed
 	Pools       []poolStatusDTO `json:"pools,omitempty"`
 }
 
 type poolStatusDTO struct {
-	Tag      string          `json:"tag"`       // mihomo: "us-pool"
-	Now      string          `json:"now"`       // its currently-selected member
-	PoolSize int             `json:"pool_size"`
-	Active   bool            `json:"active"` // whether "out" selector points at this pool
+	Tag      string `json:"tag"` // mihomo: "us-pool"
+	Now      string `json:"now"` // its currently-selected member
+	PoolSize int    `json:"pool_size"`
+	Active   bool   `json:"active"` // whether "out" selector points at this pool
 	// Egress is the IP+geo seen by the public internet when traffic exits
 	// via this pool's currently-selected member. Probed through the turnout-
 	// internal HTTP proxy (TurnoutInternalProxyURL = 127.0.0.1:11080), which
@@ -212,6 +212,33 @@ func (s *Server) queryActiveProxy(ctx context.Context) activeProxyDTO {
 				dto.LastCheck = last.Time
 			}
 		}
+	}
+
+	// Named class pools are not members of `out`, so the loop above never
+	// sees them. Report each configured pool separately (members + delay +
+	// fail rate). Egress is not probed per class — the cached probe follows
+	// the default `out` path.
+	for _, p := range s.deps.Cfg.Pools {
+		pool, ok := bulk.Proxies[p.Name]
+		if !ok || pool.Type != "LoadBalance" {
+			continue
+		}
+		ps := poolStatusDTO{Tag: p.Name, Now: pool.Now}
+		ps.Nodes = make([]nodeStatusDTO, 0, len(pool.All))
+		for _, member := range pool.All {
+			n := nodeStatusDTO{Tag: member, FailRate: -1}
+			if fr, ok := failRates[member]; ok {
+				n.FailRate = fr
+			}
+			if mp, ok := bulk.Proxies[member]; ok && len(mp.History) > 0 {
+				h := mp.History[len(mp.History)-1]
+				n.DelayMs = h.Delay
+				n.LastCheck = h.Time
+			}
+			ps.Nodes = append(ps.Nodes, n)
+		}
+		ps.PoolSize = len(ps.Nodes)
+		dto.Pools = append(dto.Pools, ps)
 	}
 
 	return dto

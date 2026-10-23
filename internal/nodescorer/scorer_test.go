@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
 func buildProxyEntry(alive bool, probeURL string, delays []int) map[string]interface{} {
@@ -92,7 +93,7 @@ func TestComputePoolMembers(t *testing.T) {
 	}
 	usPool := map[string]bool{"nodeA": true, "nodeB": true, "nodeC": true}
 
-	got := s.computePoolMembers(usPool)
+	got := s.computePoolMembers(nil, usPool, 0)
 	members := got["openai-pool"]
 	if len(members) != 1 || members[0] != "nodeA" {
 		t.Errorf("openai-pool members = %v, want [nodeA]", members)
@@ -104,9 +105,100 @@ func TestComputePoolMembers(t *testing.T) {
 func TestComputePoolMembers_NoGating(t *testing.T) {
 	s := newTestScorer(defaultCfg())
 	s.pools = []config.PoolConfig{{Name: "plain-pool", RuleSets: []string{"geosite-x"}}}
-	got := s.computePoolMembers(map[string]bool{"nodeA": true})
+	got := s.computePoolMembers(nil, map[string]bool{"nodeA": true}, 0)
 	if _, ok := got["plain-pool"]; ok {
 		t.Error("ungated pool should not appear in poolMembers (renderer falls back to us-pool)")
+	}
+}
+
+// TestComputePoolMembers_ClassPattern verifies a class pool takes only the
+// nodes matching its own node_pattern, ranked by long EWMA and capped at
+// Size. The global us-pool set is irrelevant for class pools.
+func TestComputePoolMembers_ClassPattern(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.SwapThresholdScore = 400
+	s := newTestScorer(cfg)
+	s.pools = []config.PoolConfig{{
+		Name:        "ai-pool",
+		NodePattern: `^us`,
+		Size:        2,
+		RuleSets:    []string{"geosite-openai"},
+	}}
+	s.poolMembers = map[string][]string{}
+	now := time.Now()
+	s.ewma = map[string]*nodeEWMA{
+		"us1": {Long: ewmaPoint{Value: 100, UpdatedAt: now}},
+		"us2": {Long: ewmaPoint{Value: 200, UpdatedAt: now}},
+		"us3": {Long: ewmaPoint{Value: 300, UpdatedAt: now}},
+		"jp1": {Long: ewmaPoint{Value: 50, UpdatedAt: now}},
+	}
+	nodes := []NodeHealth{
+		{Name: "us1", Qualified: true},
+		{Name: "us2", Qualified: true},
+		{Name: "us3", Qualified: true},
+		{Name: "jp1", Qualified: true},
+		{Name: "us4", Qualified: false}, // not qualified → never a member
+	}
+	got := s.computePoolMembers(nodes, map[string]bool{"jp1": true}, 8)
+	members := got["ai-pool"]
+	if len(members) != 2 || members[0] != "us1" || members[1] != "us2" {
+		t.Fatalf("ai-pool members = %v, want [us1 us2] (pattern + size + EWMA rank)", members)
+	}
+}
+
+// TestComputePoolMembers_ClassSticky pins the anti-flap rule: an incumbent
+// keeps its slot unless a challenger beats the worst incumbent's long EWMA
+// by SwapThresholdScore.
+func TestComputePoolMembers_ClassSticky(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.SwapThresholdScore = 400
+	s := newTestScorer(cfg)
+	s.pools = []config.PoolConfig{{
+		Name:        "ai-pool",
+		NodePattern: `^us`,
+		Size:        2,
+	}}
+	now := time.Now()
+	s.ewma = map[string]*nodeEWMA{
+		"us1": {Long: ewmaPoint{Value: 100, UpdatedAt: now}},
+		"us2": {Long: ewmaPoint{Value: 200, UpdatedAt: now}},
+		"us3": {Long: ewmaPoint{Value: 300, UpdatedAt: now}},
+	}
+	s.poolMembers = map[string][]string{"ai-pool": {"us2", "us3"}}
+	nodes := []NodeHealth{
+		{Name: "us1", Qualified: true},
+		{Name: "us2", Qualified: true},
+		{Name: "us3", Qualified: true},
+	}
+	got := s.computePoolMembers(nodes, nil, 0)["ai-pool"]
+	if len(got) != 2 || got[0] != "us2" || got[1] != "us3" {
+		t.Fatalf("sticky members = %v, want [us2 us3] (us1 cannot beat the 400 margin)", got)
+	}
+
+	// Margin zero: the best challenger replaces the worst incumbent.
+	s.cfg.SwapThresholdScore = 0
+	got = s.computePoolMembers(nodes, nil, 0)["ai-pool"]
+	if len(got) != 2 || got[0] != "us1" || got[1] != "us2" {
+		t.Fatalf("members after margin=0 = %v, want [us1 us2]", got)
+	}
+}
+
+// TestFilterCandidates_MultiPattern checks the union discovery used to find
+// class-pool nodes outside the global pattern's region.
+func TestFilterCandidates_MultiPattern(t *testing.T) {
+	outbounds := []subscribe.Outbound{
+		{"tag": "hutao/美国_A"},
+		{"tag": "hutao/日本_A"},
+		{"tag": "momo/🇸🇬新加坡1"},
+	}
+	proxies := map[string]map[string]interface{}{
+		"hutao/美国_A":  {},
+		"hutao/日本_A":  {},
+		"momo/🇸🇬新加坡1": {},
+	}
+	got := filterCandidates(outbounds, []string{`美国`, `日本`}, proxies)
+	if len(got) != 2 || got[0] != "hutao/美国_A" || got[1] != "hutao/日本_A" {
+		t.Fatalf("filterCandidates = %v, want [hutao/美国_A hutao/日本_A]", got)
 	}
 }
 

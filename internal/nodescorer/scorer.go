@@ -521,7 +521,18 @@ func (s *Scorer) score(ctx context.Context) {
 	//
 	// Called before taking s.mu: s.subscribe takes the manager's own RWMutex
 	// and there is no reason to nest the two.
-	discovered := filterCandidates(s.subscribe(), s.nodePattern, proxies)
+	// Candidate discovery is the union of the global pattern and every
+	// class pool's pattern. A node outside us-pool's region still has to be
+	// scored and url-tested for the pool that wants it — e.g. US nodes for
+	// ai-pool when the global pattern is Asia-only, or JP nodes for the
+	// default class when the global pattern is US-only.
+	patterns := []string{s.nodePattern}
+	for _, p := range s.pools {
+		if p.NodePattern != "" {
+			patterns = append(patterns, p.NodePattern)
+		}
+	}
+	discovered := filterCandidates(s.subscribe(), patterns, proxies)
 
 	// us-pool absence is no longer fatal. groups.go deliberately omits the
 	// group when it would be empty (all subscriptions failed / bootstrap), and
@@ -1047,8 +1058,8 @@ func (s *Scorer) score(ctx context.Context) {
 		slog.Info("nodescorer: shadow eligibility diff",
 			"live_pool", len(newPoolSet),
 			"shadow_pool", len(shadow),
-			"only_in_live", liveOnly,      // legacy keeps, eligibility would drop
-			"only_in_shadow", shadowOnly,  // eligibility would add, legacy excludes
+			"only_in_live", liveOnly, // legacy keeps, eligibility would drop
+			"only_in_shadow", shadowOnly, // eligibility would add, legacy excludes
 			"identical", len(liveOnly) == 0 && len(shadowOnly) == 0,
 		)
 	}
@@ -1079,7 +1090,7 @@ func (s *Scorer) score(ctx context.Context) {
 	// required probes}. A node with no probe result yet for a required
 	// probe is treated as NOT passing (conservative — keep unverified
 	// nodes out of the sensitive pool rather than risk a 403).
-	newPoolMembers := s.computePoolMembers(newPoolSet)
+	newPoolMembers := s.computePoolMembers(nodes, newPoolSet, kTarget)
 	if !poolMembersEqual(s.poolMembers, newPoolMembers) {
 		poolChanged = true
 	}
@@ -1628,28 +1639,151 @@ func (s *Scorer) computeEligibleSetLocked(nodes []NodeHealth, minPool int, now t
 	return eligible
 }
 
-// computePoolMembers maps each configured pool → the subset of the given
-// us-pool set that currently passes all of the pool's required probes.
-// CALLER MUST HOLD s.mu (reads s.probeResults).
-func (s *Scorer) computePoolMembers(usPool map[string]bool) map[string][]string {
+// computePoolMembers maps each configured pool → its member node tags.
+//
+// Legacy pool (not config.PoolConfig.IsClassPool): members are the subset of
+// the given us-pool that currently passes all of the pool's required probes.
+// A pool with no RequiresPassing is omitted, so the renderer falls back to
+// the full us-pool.
+//
+// Class pool: members are the qualified nodes matching the pool's own
+// NodePattern, ranked by long EWMA and capped at Size (falling back to the
+// global K target, then to every eligible node). Selection is sticky: an
+// incumbent is only replaced when a challenger's long EWMA beats the worst
+// incumbent by SwapThresholdScore, mirroring the global K-gating anti-flap
+// rule. This keeps a terminal's class egress stable across scoring rounds.
+//
+// CALLER MUST HOLD s.mu (reads s.probeResults, s.ewma, s.poolMembers).
+func (s *Scorer) computePoolMembers(nodes []NodeHealth, usPool map[string]bool, kTarget int) map[string][]string {
 	if len(s.pools) == 0 {
 		return map[string][]string{}
 	}
 	out := make(map[string][]string, len(s.pools))
 	for _, p := range s.pools {
-		if len(p.RequiresPassing) == 0 {
-			continue // no gating → renderer falls back to full us-pool
-		}
-		var members []string
-		for tag := range usPool {
-			if s.nodePassesProbes(tag, p.RequiresPassing) {
-				members = append(members, tag)
+		if !p.IsClassPool() {
+			if len(p.RequiresPassing) == 0 {
+				continue // no gating → renderer falls back to full us-pool
 			}
+			var members []string
+			for tag := range usPool {
+				if s.nodePassesProbes(tag, p.RequiresPassing) {
+					members = append(members, tag)
+				}
+			}
+			sort.Strings(members)
+			out[p.Name] = members
+			continue
 		}
-		sort.Strings(members)
-		out[p.Name] = members
+
+		var pattern *regexp.Regexp
+		if p.NodePattern != "" {
+			re, err := regexp.Compile(p.NodePattern)
+			if err != nil {
+				// config.Load rejects invalid patterns; this is belt-and-
+				// suspenders for a config mutated through another path.
+				continue
+			}
+			pattern = re
+		}
+
+		eligible := make([]NodeHealth, 0, len(nodes))
+		for i := range nodes {
+			h := &nodes[i]
+			if !h.Qualified {
+				continue
+			}
+			if pattern != nil && !pattern.MatchString(h.Name) {
+				continue
+			}
+			if len(p.RequiresPassing) > 0 && !s.nodePassesProbes(h.Name, p.RequiresPassing) {
+				continue
+			}
+			eligible = append(eligible, *h)
+		}
+		sort.SliceStable(eligible, func(i, j int) bool {
+			ei, ej := s.nodeLongEWMA(eligible[i].Name), s.nodeLongEWMA(eligible[j].Name)
+			if ei == ej {
+				return eligible[i].Name < eligible[j].Name
+			}
+			return ei < ej
+		})
+
+		size := p.Size
+		if size <= 0 {
+			size = kTarget
+		}
+		if size <= 0 {
+			size = len(eligible)
+		}
+		out[p.Name] = s.selectPoolMembersSticky(p.Name, eligible, size)
 	}
 	return out
+}
+
+// selectPoolMembersSticky picks up to size members from eligible (already
+// sorted best-first by long EWMA). Incumbents from s.poolMembers[poolName]
+// keep their slot unless a challenger is better by SwapThresholdScore. Nodes
+// with no EWMA signal (+Inf) sort last and only fill empty slots.
+//
+// CALLER MUST HOLD s.mu.
+func (s *Scorer) selectPoolMembersSticky(poolName string, eligible []NodeHealth, size int) []string {
+	if size <= 0 || len(eligible) == 0 {
+		return nil
+	}
+	if size > len(eligible) {
+		size = len(eligible)
+	}
+	chosen := make(map[string]bool, size)
+	selected := make([]string, 0, size)
+	// Incumbents still eligible, in the same best-first order.
+	for _, h := range eligible {
+		for _, m := range s.poolMembers[poolName] {
+			if m == h.Name {
+				selected = append(selected, h.Name)
+				chosen[h.Name] = true
+				break
+			}
+		}
+		if len(selected) >= size {
+			break
+		}
+	}
+	threshold := s.cfg.SwapThresholdScore
+	for _, h := range eligible {
+		if len(selected) >= size && size > 0 {
+			// Full: a challenger must beat the worst incumbent by the
+			// anti-flap margin.
+			worstIdx := 0
+			worst := s.nodeLongEWMA(selected[0])
+			for i := 1; i < len(selected); i++ {
+				if e := s.nodeLongEWMA(selected[i]); e > worst {
+					worst = e
+					worstIdx = i
+				}
+			}
+			if chosen[h.Name] || s.nodeLongEWMA(h.Name)+threshold >= worst {
+				continue
+			}
+			delete(chosen, selected[worstIdx])
+			selected[worstIdx] = h.Name
+			chosen[h.Name] = true
+			continue
+		}
+		if chosen[h.Name] {
+			continue
+		}
+		selected = append(selected, h.Name)
+		chosen[h.Name] = true
+	}
+	// Keep the emitted list deterministic and best-first.
+	sort.SliceStable(selected, func(i, j int) bool {
+		ei, ej := s.nodeLongEWMA(selected[i]), s.nodeLongEWMA(selected[j])
+		if ei == ej {
+			return selected[i] < selected[j]
+		}
+		return ei < ej
+	})
+	return selected
 }
 
 // nodePassesProbes reports whether the node has a passing (ok=true) result
@@ -1958,8 +2092,15 @@ func (s *Scorer) mihomoHotReload(ctx context.Context) error {
 
 // filterCandidates returns the subset of outbound tags that:
 //   - have a non-empty tag
-//   - match the NodePattern regexp (empty pattern = match everything)
+//   - match ANY of the given NodePattern regexps (empty list / empty entry =
+//     match everything)
 //   - exist as known entries in mihomo's /proxies map
+//
+// The pattern list is the union of the global data_plane.url_test.node_pattern
+// and every class pool's node_pattern. Discovery must be a union: the scorer
+// can only rank nodes it scores, and mihomo only url-tests nodes that appear
+// in a probed group. If ai-pool wants US nodes while the global pattern is
+// Asia-only, US nodes must still enter the candidate set here.
 //
 // Using AllOutbounds() as source (not us-pool.all) means evicted nodes
 // are still in the candidate set and can recover + be readmitted, and
@@ -1971,15 +2112,22 @@ func (s *Scorer) mihomoHotReload(ctx context.Context) error {
 // yields subscription outbounds (no groups or built-ins) and the /proxies
 // existence check below rejects anything mihomo did not accept, so a
 // non-node-bearing entry cannot survive. Stated explicitly because an empty
-// NodePattern makes this function match every tag.
-func filterCandidates(outbounds []subscribe.Outbound, nodePattern string, proxies map[string]map[string]interface{}) []string {
-	var re *regexp.Regexp
-	if nodePattern != "" {
-		var err error
-		re, err = regexp.Compile(nodePattern)
-		if err != nil {
-			re = nil
+// pattern list makes this function match every tag.
+func filterCandidates(outbounds []subscribe.Outbound, patterns []string, proxies map[string]map[string]interface{}) []string {
+	matchAll := false
+	res := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		if p == "" {
+			matchAll = true
+			continue
 		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			// Invalid pattern: keep the historical over-broad behavior
+			// (ignore the filter) rather than silently emptying the pool.
+			continue
+		}
+		res = append(res, re)
 	}
 	var out []string
 	for _, o := range outbounds {
@@ -1987,8 +2135,17 @@ func filterCandidates(outbounds []subscribe.Outbound, nodePattern string, proxie
 		if tag == "" {
 			continue
 		}
-		if re != nil && !re.MatchString(tag) {
-			continue
+		if !matchAll && len(res) > 0 {
+			matched := false
+			for _, re := range res {
+				if re.MatchString(tag) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 		// Verify mihomo knows about this proxy (it may not if the subscription
 		// hasn't been loaded yet or the proxy was removed).

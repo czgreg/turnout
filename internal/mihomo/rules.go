@@ -23,20 +23,6 @@ const (
 	rsAdsAll = "category-ads-all"
 )
 
-// poolForRuleSet returns the name of the pool a given rule-set tag routes
-// to, or "" if the tag isn't claimed by any pool (→ routes to the default
-// `out` selector). First pool wins if somehow two claim the same tag.
-func (r *Renderer) poolForRuleSet(tag string) string {
-	for _, p := range r.pools {
-		for _, rs := range p.RuleSets {
-			if rs == tag {
-				return p.Name
-			}
-		}
-	}
-	return ""
-}
-
 // poolRuleSets returns every rule-set tag claimed by any pool, deduped.
 // Used by buildRuleProviders to ensure those tags get a provider even when
 // they aren't in the whitelist (overseas mode, or whitelist that doesn't
@@ -210,39 +196,86 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 		return cond + "," + outSelector + ",no-resolve"
 	}
 
-	// Pool rule_sets (openai-pool etc.). When per-terminal is ON, ALL
-	// rule-set domain hits — including pool-claimed tags — go through the
-	// regular perterm sub-rule, so a terminal's traffic exits via its
-	// fb-<ip> regardless of destination class. This deliberately drops
-	// the per-class perterm-<poolname> variant: routing OpenAI through
-	// different egresses than other traffic produced a per-class fan-out
-	// pattern that anti-bot models flag (one user identity hitting two
-	// destinations from two IPs). The operator's pool_members list must
-	// already filter for OpenAI compatibility — see docs.
+	// Pool routing. Class pools (node_pattern / size / per_terminal /
+	// domain_suffix) own their dispatch: per-terminal pools get a
+	// perterm-<pool> sub-rule over their own members, shared pools are
+	// targeted directly. Legacy pools keep the original behavior: with
+	// global per-term on they route through the unified `perterm` (one
+	// terminal, one IP across all classes); otherwise they target the
+	// named load-balance group.
 	//
-	// In non-perterm mode, named pool groups still serve their original
-	// purpose (probe-gated load-balance for that destination class).
+	// Emitted before the whitelist so a class can claim a specific domain
+	// (e.g. Gemini inside geosite-google) ahead of a broader tag.
 	poolRouted := map[string]bool{}
-	for _, tag := range r.poolRuleSets() {
-		poolName := r.poolForRuleSet(tag)
-		if poolName == "" {
+	var classTags, classUsPool []string
+	classResolved := false
+	resolveClassMembers := func() {
+		if classResolved {
+			return
+		}
+		classTags = nodeTags(outbounds)
+		classUsPool = r.usPoolMembers(outbounds)
+		classResolved = true
+	}
+	for _, p := range r.pools {
+		if p.IsClassPool() {
+			resolveClassMembers()
+			members := r.poolDispatchMembers(p, classTags, classUsPool)
+			classPerTerm := p.PerTerminalEnabled() &&
+				r.node.ClientSubnet != "" &&
+				len(members) >= perTerminalFallbackDepth
+			subName := "perterm-" + p.Name
+			if classPerTerm {
+				if slices := r.perTerminalSlicesFor(members, poolGroupPrefix(p.Name), p.Name); len(slices) > 0 {
+					subRules[subName] = slices
+				} else {
+					classPerTerm = false
+				}
+			}
+			for _, d := range p.DomainSuffix {
+				if classPerTerm {
+					rules = append(rules, "SUB-RULE,(DOMAIN-SUFFIX,"+d+"),"+subName)
+				} else {
+					rules = append(rules, "DOMAIN-SUFFIX,"+d+","+p.Name)
+				}
+			}
+			for _, tag := range p.RuleSets {
+				if poolRouted[tag] {
+					continue
+				}
+				noResolve := ""
+				if strings.HasPrefix(tag, "geoip-") {
+					noResolve = ",no-resolve"
+				}
+				if classPerTerm {
+					rules = append(rules, "SUB-RULE,(RULE-SET,"+tag+noResolve+"),"+subName)
+				} else {
+					rules = append(rules, "RULE-SET,"+tag+","+p.Name+noResolve)
+				}
+				poolRouted[tag] = true
+			}
 			continue
 		}
-		if perterm {
-			if strings.HasPrefix(tag, "geoip-") {
-				rules = append(rules, ipRule("RULE-SET,"+tag))
+		// Legacy pool (probe-gated subset of us-pool).
+		for _, tag := range p.RuleSets {
+			if poolRouted[tag] {
+				continue
+			}
+			if perterm {
+				if strings.HasPrefix(tag, "geoip-") {
+					rules = append(rules, ipRule("RULE-SET,"+tag))
+				} else {
+					rules = append(rules, domainRule("RULE-SET,"+tag))
+				}
 			} else {
-				rules = append(rules, domainRule("RULE-SET,"+tag))
+				noResolve := ""
+				if strings.HasPrefix(tag, "geoip-") {
+					noResolve = ",no-resolve"
+				}
+				rules = append(rules, "RULE-SET,"+tag+","+p.Name+noResolve)
 			}
 			poolRouted[tag] = true
-			continue
 		}
-		noResolve := ""
-		if strings.HasPrefix(tag, "geoip-") {
-			noResolve = ",no-resolve"
-		}
-		rules = append(rules, "RULE-SET,"+tag+","+poolName+noResolve)
-		poolRouted[tag] = true
 	}
 
 	if r.cfg.Route.Mode == "whitelist" {

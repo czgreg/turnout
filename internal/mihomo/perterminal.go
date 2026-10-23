@@ -94,26 +94,30 @@ func (r *Renderer) perTerminalMembers(outbounds []subscribe.Outbound) []string {
 // with empty outbounds, or unconfigured perTerminal); the caller then
 // falls back to a single us-pool MATCH rule.
 func (r *Renderer) perTerminalSlices(outbounds []subscribe.Outbound) []string {
-	members := r.perTerminalMembers(outbounds)
-	if len(members) == 0 {
+	return r.perTerminalSlicesFor(r.perTerminalMembers(outbounds), perTerminalGroupPrefix, usPool)
+}
+
+// perTerminalSlicesFor is the generalized body of a per-term sub-rule: one
+// SRC-IP rule per terminal unit pointing at groupPrefix+key, then a fallback
+// for sources outside client_subnet. Used by the default class (prefix
+// "fb-", fallback us-pool) and by class pools (prefix "fb-<pool>-",
+// fallback <pool>).
+func (r *Renderer) perTerminalSlicesFor(members []string, groupPrefix, fallbackGroup string) []string {
+	// Need at least perTerminalFallbackDepth members to form a useful
+	// fallback chain. Callers check the same condition before emitting the
+	// SRC-IP rules, so the two never diverge.
+	if len(members) < perTerminalFallbackDepth {
 		return nil
 	}
 	units := perTerminalUnits(r.node.ClientSubnet)
 	if len(units) == 0 {
 		return nil
 	}
-	// Only emit fb-<ip> rules when we have enough members to form a fallback
-	// group (perTerminalFallbackDepth=2). With <2 members perTerminalFallbackGroups
-	// returns nil (no groups emitted), so the SRC-IP-CIDR rules would reference
-	// nonexistent groups and mihomo rejects the config.
-	if len(members) < perTerminalFallbackDepth {
-		return nil
-	}
 	rules := make([]string, 0, len(units)+1)
 	for _, u := range units {
-		rules = append(rules, fmt.Sprintf("%s,%s,%s%s", u.ruleType, u.match, perTerminalGroupPrefix, u.key))
+		rules = append(rules, fmt.Sprintf("%s,%s,%s%s", u.ruleType, u.match, groupPrefix, u.key))
 	}
-	rules = append(rules, "MATCH,"+usPool)
+	rules = append(rules, "MATCH,"+fallbackGroup)
 	return rules
 }
 
@@ -127,11 +131,18 @@ func (r *Renderer) perTerminalSlices(outbounds []subscribe.Outbound) []string {
 // it has active flows — keeps probe traffic proportional to actual
 // terminal activity rather than the static subnet size.
 func (r *Renderer) perTerminalFallbackGroups(outbounds []subscribe.Outbound, probeURL string, intervalSec int) []map[string]any {
-	members := r.perTerminalMembers(outbounds)
+	return r.perTerminalFallbackGroupsFor(r.perTerminalMembers(outbounds), perTerminalGroupPrefix, probeURL, intervalSec)
+}
+
+// perTerminalFallbackGroupsFor emits one fallback group per terminal unit
+// named groupPrefix+key, each containing [primary, secondary] in HRW order
+// drawn from members. Shared by the default class and class pools so their
+// failover semantics stay identical.
+func (r *Renderer) perTerminalFallbackGroupsFor(members []string, groupPrefix, probeURL string, intervalSec int) []map[string]any {
 	if len(members) < perTerminalFallbackDepth {
 		// Need at least perTerminalFallbackDepth members to form a useful
-		// fallback chain. perTerminalSlices checks the same condition, so
-		// when this returns nil no SRC-IP-CIDR rules referencing fb-<ip>
+		// fallback chain. perTerminalSlicesFor checks the same condition, so
+		// when this returns nil no SRC-IP rules referencing these groups
 		// will have been emitted either.
 		return nil
 	}
@@ -143,7 +154,7 @@ func (r *Renderer) perTerminalFallbackGroups(outbounds []subscribe.Outbound, pro
 	for _, u := range units {
 		ranked := hrwTopN(u.key, members, perTerminalFallbackDepth)
 		out = append(out, map[string]any{
-			"name":     perTerminalGroupPrefix + u.key,
+			"name":     groupPrefix + u.key,
 			"type":     "fallback",
 			"proxies":  ranked,
 			"url":      probeURL,
@@ -200,6 +211,50 @@ func PerTerminalGroupName(ip, clientSubnet string) string {
 		return perTerminalGroupPrefix + k
 	}
 	return ""
+}
+
+// poolGroupPrefix is the proxy-group prefix for a class pool's per-terminal
+// groups. The full pool name is used (ai-pool → "fb-ai-pool-") so it can
+// never collide with the default "fb-" prefix or another pool's name.
+func poolGroupPrefix(pool string) string {
+	return perTerminalGroupPrefix + pool + "-"
+}
+
+// PoolPerTerminalGroupName is the fb-<pool>-* group for a class pool, or ""
+// when the terminal is outside client_subnet. Mirrors PerTerminalGroupName
+// for named pools; the API uses it so its report matches the renderer.
+func PoolPerTerminalGroupName(pool, ip, clientSubnet string) string {
+	if !ipInSubnet(ip, clientSubnet) {
+		return ""
+	}
+	if k := perTerminalKey(ip, clientSubnet); k != "" {
+		return poolGroupPrefix(pool) + k
+	}
+	return ""
+}
+
+// PoolAssignmentForIP returns the HRW-ordered members for one terminal IP
+// within a named class pool. Returns (nil, false) when the pool has no
+// rendered members or the IP is outside client_subnet.
+//
+// Reads poolMembers under stateMu: the scorer publishes it on every
+// hot-reload, and the API must see the same list the renderer emitted.
+func (r *Renderer) PoolAssignmentForIP(ip, pool string, outbounds []subscribe.Outbound) ([]string, bool) {
+	r.stateMu.RLock()
+	wanted := append([]string(nil), r.poolMembers[pool]...)
+	r.stateMu.RUnlock()
+	members := r.intersectWithPresent(wanted, outbounds)
+	if len(members) == 0 {
+		return nil, false
+	}
+	if !ipInSubnet(ip, r.node.ClientSubnet) {
+		return nil, false
+	}
+	depth := perTerminalFallbackDepth
+	if depth > len(members) {
+		depth = len(members)
+	}
+	return hrwTopN(perTerminalKey(ip, r.node.ClientSubnet), members, depth), true
 }
 
 // ptUnit is one per-terminal routing unit: the rule that matches its

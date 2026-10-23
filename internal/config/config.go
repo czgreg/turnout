@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -1008,9 +1009,11 @@ type ProbeCheckConfig struct {
 }
 
 // PoolConfig describes a named select group rendered alongside the default
-// us-pool. Members are nodes that are both qualified for us-pool AND pass
-// every probe listed in `requires_passing`. Routes the `rule_sets` to this
-// pool instead of `out` (the default).
+// us-pool. Legacy pools (only requires_passing/rule_sets) are a probe-gated
+// subset of us-pool and route like before. A "class pool" additionally
+// declares its own candidate set (node_pattern), sizing, and per-terminal
+// behavior, so different traffic classes can exit through different regions
+// without touching the global us-pool.
 type PoolConfig struct {
 	// Name is the pool tag emitted into mihomo's proxy-groups (e.g.
 	// "openai-pool"). Must be unique across pools.
@@ -1024,6 +1027,71 @@ type PoolConfig struct {
 	// must be present in cfg.DataPlane.Route.Whitelist.Geosites OR
 	// auto-fetched.
 	RuleSets []string `yaml:"rule_sets"`
+
+	// NodePattern is a Go RE2 regexp selecting candidate nodes for this
+	// pool from ALL subscription nodes. Empty = inherit the global
+	// data_plane.url_test.node_pattern. Setting it makes the pool a class
+	// pool: its members can come from a different region than us-pool.
+	// NOTE: Go RE2 has no lookahead/lookbehind — use alternation instead.
+	NodePattern string `yaml:"node_pattern"`
+	// Size caps the pool's member count after ranking by long EWMA.
+	// 0 = use the global K target; if that is also 0, all eligible nodes.
+	Size int `yaml:"size"`
+	// PerTerminal marks a class pool and controls its egress stability.
+	// true = emit fb-<pool>-<ip> groups so each terminal gets a stable
+	// egress for this class. false = one shared load-balance group.
+	// nil = legacy pool (not a class pool).
+	PerTerminal *bool `yaml:"per_terminal"`
+	// DomainSuffix lists exact domains routed to this class. Emitted
+	// before rule_sets and the global whitelist, so a specific domain can
+	// override a broader geosite hit (e.g. Gemini inside geosite-google).
+	DomainSuffix []string `yaml:"domain_suffix"`
+}
+
+// IsClassPool reports whether the pool declares class semantics (own
+// candidate set / sizing / per-terminal / exact domains). Legacy pools keep
+// the old behavior: a probe-gated subset of us-pool with unified perterm.
+func (p PoolConfig) IsClassPool() bool {
+	return p.NodePattern != "" || p.Size > 0 || p.PerTerminal != nil || len(p.DomainSuffix) > 0
+}
+
+// PerTerminalEnabled reports the resolved per-terminal setting. nil (the
+// legacy/default case) reads as false.
+func (p PoolConfig) PerTerminalEnabled() bool {
+	return p.PerTerminal != nil && *p.PerTerminal
+}
+
+// validatePools enforces invariants the renderer and scorer rely on. Run at
+// load time so a bad yaml never reaches a render or the live mihomo process.
+func (c *Config) validatePools() error {
+	seen := make(map[string]bool, len(c.Pools))
+	for i := range c.Pools {
+		p := &c.Pools[i]
+		if p.Name == "" {
+			return fmt.Errorf("pools[%d]: name is required", i)
+		}
+		if seen[p.Name] {
+			return fmt.Errorf("pools: duplicate pool name %q", p.Name)
+		}
+		seen[p.Name] = true
+		if p.Size < 0 {
+			return fmt.Errorf("pools[%s]: size must be >= 0", p.Name)
+		}
+		if p.NodePattern != "" {
+			if _, err := regexp.Compile(p.NodePattern); err != nil {
+				return fmt.Errorf("pools[%s]: invalid node_pattern: %w", p.Name, err)
+			}
+		}
+		if p.PerTerminalEnabled() && c.Node.ClientSubnet == "" {
+			return fmt.Errorf("pools[%s]: per_terminal requires node.client_subnet", p.Name)
+		}
+		for _, d := range p.DomainSuffix {
+			if d == "" {
+				return fmt.Errorf("pools[%s]: empty domain_suffix entry", p.Name)
+			}
+		}
+	}
+	return nil
 }
 
 func Load(path string) (*Config, error) {
@@ -1046,6 +1114,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	c.applyDefaults()
+	if err := c.validatePools(); err != nil {
+		return nil, err
+	}
 	return &c, nil
 }
 

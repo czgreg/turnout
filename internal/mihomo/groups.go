@@ -13,8 +13,10 @@
 package mihomo
 
 import (
+	"log/slog"
 	"regexp"
 
+	"github.com/turnout-gateway/turnout-gateway/internal/config"
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
@@ -133,35 +135,24 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 	// asynchronously; if a subscription is deleted between two scorer rounds,
 	// poolMembers may still name nodes that are no longer in proxies:, causing
 	// mihomo to reject the config with 400 "proxy not found".
-	tagSet := make(map[string]bool, len(tags))
-	for _, t := range tags {
-		tagSet[t] = true
-	}
+	// (poolDispatchMembers performs the same intersection per pool.)
 
 	// Named pools (openai-pool etc.) — one load-balance group each.
-	// Members come from r.poolMembers[name] (us-pool ∩ passing that pool's
-	// probes, set by nodescorer); absent → fall back to the full us-pool
-	// set so the pool works before the first probe round completes.
+	// Class pools resolve their own candidate set (node_pattern) and may
+	// emit per-terminal fallback groups; legacy pools stay subsets of
+	// us-pool. An empty pool renders a DIRECT select stub so the rules
+	// that reference it never dead-end (mihomo rejects empty groups).
 	for _, p := range r.pools {
-		members := pool
-		if m, ok := r.poolMembers[p.Name]; ok {
-			// Intersect with current outbounds to drop any nodes that no
-			// longer exist (deleted subscription). mihomo validates that
-			// every name in a group's proxies: is present in proxies:.
-			filtered := make([]string, 0, len(m))
-			for _, tag := range m {
-				if tagSet[tag] {
-					filtered = append(filtered, tag)
-				}
-			}
-			if len(filtered) > 0 {
-				members = filtered
-			}
-		}
+		members := r.poolDispatchMembers(p, tags, pool)
 		if len(members) == 0 {
-			// No qualified members yet — fall back to full us-pool so the
-			// rule routing to this pool doesn't dead-end at an empty group.
-			members = pool
+			slog.Warn("mihomo: named pool has no members — rendering DIRECT stub",
+				"pool", p.Name, "node_pattern", p.NodePattern)
+			groups = append(groups, map[string]any{
+				"name":    p.Name,
+				"type":    "select",
+				"proxies": []string{"DIRECT"},
+			})
+			continue
 		}
 		groups = append(groups, map[string]any{
 			"name":     p.Name,
@@ -172,6 +163,10 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 			"interval": intervalSec,
 			"lazy":     false,
 		})
+		if p.PerTerminalEnabled() && r.node.ClientSubnet != "" {
+			groups = append(groups, r.perTerminalFallbackGroupsFor(
+				members, poolGroupPrefix(p.Name), probeURL, intervalSec)...)
+		}
 	}
 
 	// probe-out: a select group over EVERY candidate node. nodescorer
@@ -286,6 +281,42 @@ func nodeTags(outbounds []subscribe.Outbound) []string {
 		}
 	}
 	return tags
+}
+
+// poolDispatchMembers resolves the member list a named pool should render.
+// Priority:
+//
+//	scorer-selected members (r.poolMembers, intersected with tags present
+//	in the current subscription set)
+//	→ the pool's own node_pattern over all node tags
+//	→ the global us-pool.
+//
+// The pattern fallback matters on the first render after a pattern change:
+// the scorer has no members yet, but mihomo must still see the candidates in
+// a probed group so it can url-test them and the scorer can rank them.
+func (r *Renderer) poolDispatchMembers(p config.PoolConfig, tags, usPool []string) []string {
+	baseline := usPool
+	if p.NodePattern != "" {
+		baseline = filterByPattern(tags, p.NodePattern)
+	}
+	wanted := r.poolMembers[p.Name]
+	if len(wanted) == 0 {
+		return baseline
+	}
+	present := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		present[t] = true
+	}
+	out := make([]string, 0, len(wanted))
+	for _, t := range wanted {
+		if present[t] {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return baseline
+	}
+	return out
 }
 
 // filterByPattern returns tags matching the given regex pattern. Empty
