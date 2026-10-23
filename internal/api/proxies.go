@@ -49,14 +49,14 @@ type activeProxyDTO struct {
 }
 
 type poolStatusDTO struct {
-	Tag      string `json:"tag"` // mihomo: "us-pool"
+	Tag      string `json:"tag"` // mihomo: "default-pool"
 	Now      string `json:"now"` // its currently-selected member
 	PoolSize int    `json:"pool_size"`
 	Active   bool   `json:"active"` // whether "out" selector points at this pool
 	// Egress is the IP+geo seen by the public internet when traffic exits
 	// via this pool's currently-selected member. Probed through the turnout-
 	// internal HTTP proxy (TurnoutInternalProxyURL = 127.0.0.1:11080), which
-	// follows mihomo's "out" selector → us-pool. Cached 60s. nil = no
+	// follows mihomo's "out" selector → default-pool. Cached 60s. nil = no
 	// probe has succeeded yet (cold start, or upstream unreachable).
 	Egress *egressInfo `json:"egress,omitempty"`
 	// Nodes is per-member latency from clash-api's last url-test measurement.
@@ -110,10 +110,10 @@ func (s *Server) handleProxiesActive(w http.ResponseWriter, r *http.Request) {
 // queryActiveProxy walks clash-api selector → load-balance pool → leaf node:
 //
 //  1. GET /proxies — bulk dump of every proxy + its history (1 round-trip)
-//  2. From it: pluck the "out" selector's `now` field (us-pool / pin / DIRECT)
-//  3. For us-pool, list its members and per-node latency
+//  2. From it: pluck the "out" selector's `now` field (default-pool / pin / DIRECT)
+//  3. For default-pool, list its members and per-node latency
 //  4. Kick the lazy egress probe through TurnoutInternalProxyURL (which goes
-//     "out → us-pool" via mihomo, so the IP we sample IS us-pool's egress)
+//     "out → default-pool" via mihomo, so the IP we sample IS default-pool's egress)
 //
 // Returns Reachable=false on any clash-api error so the rest of the response
 // is still useful.
@@ -274,7 +274,7 @@ type historyEntry struct {
 // Two-field shape so callers can flip ANY Selector group to any of its
 // registered members — engine-agnostic by design:
 //
-//	{ "selector": "out", "name": "us-pool"   }   // mihomo: route via load-balance
+//	{ "selector": "out", "name": "default-pool"   }   // mihomo: route via load-balance
 //	{ "selector": "out", "name": "pin"       }   // mihomo: route via the manually-pinned node
 //	{ "selector": "pin", "name": "yuyun/SG-01" } // mihomo: pick which node `pin` points at
 //	{ "selector": "out", "name": "urltest-primary" } // sing-box: flip back to primary pool
@@ -296,7 +296,7 @@ type proxiesSelectDTO struct {
 // The override is NOT sticky:
 //   - sing-box engine: the watchdog keeps running and may flip "out" back
 //     to primary/backup on its own depending on health probes.
-//   - mihomo engine: the NodeScorer manages us-pool MEMBERSHIP (which
+//   - mihomo engine: the NodeScorer manages default-pool MEMBERSHIP (which
 //     nodes can carry traffic) but does not touch selector pointers, so
 //     manual `out` / `pin` flips persist until the operator reverts them
 //     or restarts the data plane.
@@ -309,7 +309,7 @@ func (s *Server) handleProxiesSelect(w http.ResponseWriter, r *http.Request) {
 	dto.Selector = strings.TrimSpace(dto.Selector)
 	dto.Name = strings.TrimSpace(dto.Name)
 	if dto.Selector == "" || dto.Name == "" {
-		http.Error(w, `body must include "selector" and "name" (e.g. {"selector":"out","name":"us-pool"})`, http.StatusBadRequest)
+		http.Error(w, `body must include "selector" and "name" (e.g. {"selector":"out","name":"default-pool"})`, http.StatusBadRequest)
 		return
 	}
 

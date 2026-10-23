@@ -83,7 +83,7 @@ export interface ActivePool {
 /**
  * Read-only class-pool config from GET /api/pools (gateway.yaml `pools:`).
  * Live members are not here — they come from ActivePool.nodes, joined by
- * name. The default `us-pool` is not in this list; it is the ActivePool with
+ * name. The default `default-pool` is not in this list; it is the ActivePool with
  * active=true and its pattern is `active_proxy.pool_filter`.
  */
 export interface PoolConfig {

@@ -122,10 +122,10 @@ token 为空时不鉴权。
 | 字段 | 说明 |
 |---|---|
 | `engine_ok` | mihomo clash-api `/version` 可达 |
-| `pool_size` | 实际承载流量的 us-pool 成员数（InPool，即 per-terminal HRW 抽取的集合大小）。 |
+| `pool_size` | 实际承载流量的 default-pool 成员数（InPool，即 per-terminal HRW 抽取的集合大小）。 |
 | `pool_eligible` | **仅**通过 liveness 门的节点数（`tier1_count` = `len(qualifiedNodes)`，含无历史节点的 benefit-of-doubt）。**不扣除准入质量门** —— 质量门在 `computeEligibleSetLocked` 里另算。所以 `pool_eligible >= pool_size` 是常态，且与 K 无关：92 在 2026-09-09 读到 12 vs 7，多出的 5 个全部因 `fail_rate` 被拒。读作"活着且可达"，不是"够格入池"；被拒原因看日志 `admission refused on quality`。（旧字段 `pool_qualified` 名为"合格数"实为 InPool，已拆开。） |
 | `pool_total` | NodePattern-匹配的候选总数。 |
-| `pool_last_update` | us-pool 成员最近一次变更时间。变更频率 ≈ 订阅增减节点频率（小时-天级）。 |
+| `pool_last_update` | default-pool 成员最近一次变更时间。变更频率 ≈ 订阅增减节点频率（小时-天级）。 |
 | `capacity` | 离线压测得出的单机上限，未配置时不返回 |
 
 ---
@@ -147,8 +147,8 @@ token 为空时不鉴权。
 NodeScorer 评分快照。503 = `node_qualify.enabled=false`。
 
 post Plan-A 语义注意：
-- `qualified` 与 `in_pool` 解耦了。`qualified` 是节点的"诊断口径"（基于探针窗口判断该节点活/通），`in_pool` 是 us-pool 的实际成员资格。**us-pool = 全部候选节点（只要 NodePattern 匹配），永远不剔除**；mihomo 的 LoadBalance + 30s 健康检查在 per-flow 层自动跳过死节点。所以 `in_pool=true qualified=false` 是正常状态（节点暂时探针失败但留在 pool 里）。
-- `thresholds` 块（`MaxRTTP50Ms / MaxRTTP95Ms / MaxJitterMs / MaxFailRate`）**仅为观察用**，不再 gate us-pool。要看一个节点的真实 RTT/抖动表现就读这些字段；要看是否被 mihomo 路由就读 `in_pool`。
+- `qualified` 与 `in_pool` 解耦了。`qualified` 是节点的"诊断口径"（基于探针窗口判断该节点活/通），`in_pool` 是 default-pool 的实际成员资格。**default-pool = 全部候选节点（只要 NodePattern 匹配），永远不剔除**；mihomo 的 LoadBalance + 30s 健康检查在 per-flow 层自动跳过死节点。所以 `in_pool=true qualified=false` 是正常状态（节点暂时探针失败但留在 pool 里）。
+- `thresholds` 块（`MaxRTTP50Ms / MaxRTTP95Ms / MaxJitterMs / MaxFailRate`）**仅为观察用**，不再 gate default-pool。要看一个节点的真实 RTT/抖动表现就读这些字段；要看是否被 mihomo 路由就读 `in_pool`。
 - 命名池（如 openai-pool）成员资格仍然由探针 gating，但用 K=3 滑动窗口 + 多数规则：节点要 ≥ 2/3 探针通过才进，要 ≥ 2/3 探针失败才掉出。单次 CF 噪声不再翻转命名池。
 
 ```json
@@ -184,8 +184,8 @@ post Plan-A 语义注意：
 
 | 字段 | 说明 |
 |---|---|
-| `qualified` | 该节点最近 5 个 mihomo 探针里是否有任何成功。仅为诊断字段，不影响 us-pool 成员。 |
-| `in_pool` | 实际是否在 us-pool 中。post Plan-A：所有 NodePattern 匹配的候选都是 true。 |
+| `qualified` | 该节点最近 5 个 mihomo 探针里是否有任何成功。仅为诊断字段，不影响 default-pool 成员。 |
+| `in_pool` | 实际是否在 default-pool 中。post Plan-A：所有 NodePattern 匹配的候选都是 true。 |
 | `reason` | 不合格原因。常见值："dead"（探针全失败 + alive=False）、"no successful probes in last 5"（窗口内全失败）、"no probe history yet (benefit of doubt)"（首次进池前的过渡状态，仍计为 qualified=true）。 |
 | `strikes` / `ok_rounds` | 连续不合格 / 合格的 scoring 轮数，仅诊断用。 |
 | `probes` | 顶级：各 probe 全局通过率；节点级：每个 probe 的最新结果。命名池 gating 用 K=3 窗口的多数规则，不只看最新结果。 |
@@ -220,13 +220,13 @@ post Plan-A 语义注意：
   },
   "active_proxy": {
     "reachable": true,
-    "active_group": "us-pool",
+    "active_group": "default-pool",
     "pool_filter": "美国|🇺🇸|\\bUS",
     "pool_mode": "auto",
     "last_swap_at": "2026-06-06T11:58:00Z",
     "pools": [
       {
-        "tag": "us-pool", "pool_size": 8, "active": true,
+        "tag": "default-pool", "pool_size": 8, "active": true,
         "egress": {"ip": "12.34.56.78", "country": "US", "asn": "AS???"},
         "nodes": [
           {"tag": "ctc-02/US-C30-01", "delay_ms": 155, "last_check": "...", "fail_rate": 0.0}
@@ -239,17 +239,17 @@ post Plan-A 语义注意：
 
 | 字段 | 说明 |
 |---|---|
-| `active_group` | `out` selector 当前指向的 group（`us-pool` / `pin` / `DIRECT`） |
+| `active_group` | `out` selector 当前指向的 group（`default-pool` / `pin` / `DIRECT`） |
 | `pool_mode` | `node_qualify.pool_mode`：`auto`（scorer 自动换池）/ `manual`（手动维护）|
 | `last_swap_at` | 池成员最近一次变更时间。频繁变化说明 scorer 在抖动，配合 `/api/pool/transitions` 查原因 |
 | `pool_size` | routing pool 成员数（K-gating top-K）。K-gating 未启用时等于所有合格候选数 |
-| `nodes[]` | 当前 routing pool 成员（K-gating top-K 子集）。scorer 不活跃时降级为全量 us-pool 成员 |
+| `nodes[]` | 当前 routing pool 成员（K-gating top-K 子集）。scorer 不活跃时降级为全量 default-pool 成员 |
 | `nodes[].fail_rate` | 来自 NodeScorer 的探针失败率（0.0–1.0）。scorer 不可用时为 -1 |
 | `nodes[].delay_ms` | mihomo url-test 最近一次延迟（ms）。0 表示尚无测量 |
 
-`pools[]` 同时包含 `out` 链上的 `us-pool` 和所有命名分类池（如 `ai-pool`）。
+`pools[]` 同时包含 `out` 链上的 `default-pool` 和所有命名分类池（如 `ai-pool`）。
 命名池不是 `out` 的成员，因此 `active=false`；`egress` 探针目前只覆盖默认
-`us-pool`，分类池的 `egress` 留空。
+`default-pool`，分类池的 `egress` 留空。
 
 ---
 
@@ -265,7 +265,7 @@ post Plan-A 语义注意：
 
 成功返回 200 + `/api/proxies/active` 当前快照。失败：400（selector 类型不是 Select）、404（selector 或 name 不存在）。
 
-override 不 sticky：NodeScorer 只管 us-pool 成员，不回写 selector 指针。
+override 不 sticky：NodeScorer 只管 default-pool 成员，不回写 selector 指针。
 
 ---
 
@@ -550,7 +550,7 @@ PUT body：`{"enabled": true}`。变更走「落盘 → 重渲染 → 热重载 
 
 分类池的**只读**配置，来自 `gateway.yaml` 的 `pools:`。没有 PUT：池配置是运维资产，
 编辑走 yaml。当前成员节点不在这里，用 `/api/proxies/active` 的 `pools[].nodes` 按
-`name` 关联；默认 `us-pool` 不在这个列表里（它是 `active=true` 的那个，
+`name` 关联；默认 `default-pool` 不在这个列表里（它是 `active=true` 的那个，
 pattern 见 `active_proxy.pool_filter`）。
 
 ```json
@@ -632,7 +632,7 @@ curl -H "Authorization: Bearer ..." \
 字段：
 - `ip` — 入参 IP。回显方便日志。
 - `subnet` — 节点配置的 `client_subnet`（如 `10.1.2.0/24`）。
-- `in_subnet` — `false` 表示该 IP 不在 client_subnet，会走 `MATCH,us-pool` 兜底，**没有**专属的 fb-<ip> 组。下面的 primary/secondary 字段缺省。
+- `in_subnet` — `false` 表示该 IP 不在 client_subnet，会走 `MATCH,default-pool` 兜底，**没有**专属的 fb-<ip> 组。下面的 primary/secondary 字段缺省。
 - `group_name` — mihomo 中对应的 fallback 组名（`fb-<ip>` 形式）。可以直接用于 mihomo clash-api 调试。
 - `pool_mode` — 当前 `node_qualify.pool_mode`。
 - `active_node` — `primary` / `secondary` / `""`（都不可用）。系统按 mihomo fallback 语义判断：primary alive=true 时返回 primary，否则 secondary 替补。
@@ -926,7 +926,7 @@ curl -s $BASE/api/status | jq .
 # 节点评分（含 probe 结果）
 curl -s $BASE/api/nodes/health | jq '{qualified, total, last_scored_at}'
 
-# 当前 us-pool 成员（post Plan-A：通常 = 全部候选）
+# 当前 default-pool 成员（post Plan-A：通常 = 全部候选）
 curl -s $BASE/api/nodes/health | jq '.nodes[] | select(.in_pool) | {name, rtt_p50_ms}'
 
 # 哪些节点最近探针失败 (qualified=false ≠ 被踢出，pool 永远全员)
@@ -943,7 +943,7 @@ curl -s -X POST -H 'Content-Type: application/json' $BASE/api/proxies/select \
 
 # 恢复 load-balance
 curl -s -X POST -H 'Content-Type: application/json' $BASE/api/proxies/select \
-  -d '{"selector":"out","name":"us-pool"}'
+  -d '{"selector":"out","name":"default-pool"}'
 
 # 立即刷新订阅
 curl -s -X POST $BASE/api/subscribe/refresh | jq .
@@ -1020,7 +1020,7 @@ curl -s $BASE/api/whitelist \
 | `active_proxy.active_urltest` | → `active_proxy.active_group`（语义更准确，原字段删除） |
 | `active_proxy.history_len` | **已删除**（无运维价值） |
 | `pools[].pool_size` | 语义变更：原为 mihomo `all` 全量大小，现为 routing pool（top-K）实际大小 |
-| `pools[].nodes[]` | 语义变更：原返回全量 us-pool 成员，现只返回 routing pool 成员（scorer 不活跃时降级为全量） |
+| `pools[].nodes[]` | 语义变更：原返回全量 default-pool 成员，现只返回 routing pool 成员（scorer 不活跃时降级为全量） |
 
 **新增字段**：
 

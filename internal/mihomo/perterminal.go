@@ -81,7 +81,7 @@ const (
 func (r *Renderer) perTerminalMembers(outbounds []subscribe.Outbound) []string {
 	members := r.intersectWithPresent(r.routingMembers, outbounds)
 	if len(members) == 0 {
-		members = r.usPoolMembers(outbounds)
+		members = r.defaultPoolMembers(outbounds)
 	}
 	return members
 }
@@ -92,15 +92,15 @@ func (r *Renderer) perTerminalMembers(outbounds []subscribe.Outbound) []string {
 //
 // Returns nil when there are no candidate routing members (validate path
 // with empty outbounds, or unconfigured perTerminal); the caller then
-// falls back to a single us-pool MATCH rule.
+// falls back to a single default-pool MATCH rule.
 func (r *Renderer) perTerminalSlices(outbounds []subscribe.Outbound) []string {
-	return r.perTerminalSlicesFor(r.perTerminalMembers(outbounds), perTerminalGroupPrefix, usPool)
+	return r.perTerminalSlicesFor(r.perTerminalMembers(outbounds), perTerminalGroupPrefix, defaultPool)
 }
 
 // perTerminalSlicesFor is the generalized body of a per-term sub-rule: one
 // SRC-IP rule per terminal unit pointing at groupPrefix+key, then a fallback
 // for sources outside client_subnet. Used by the default class (prefix
-// "fb-", fallback us-pool) and by class pools (prefix "fb-<pool>-",
+// "fb-", fallback default-pool) and by class pools (prefix "fb-<pool>-",
 // fallback <pool>).
 func (r *Renderer) perTerminalSlicesFor(members []string, groupPrefix, fallbackGroup string) []string {
 	// Need at least perTerminalFallbackDepth members to form a useful
@@ -184,7 +184,7 @@ func (r *Renderer) AssignmentForIP(ip string, outbounds []subscribe.Outbound) ([
 	r.stateMu.RUnlock()
 	members := r.intersectWithPresent(routingSnapshot, outbounds)
 	if len(members) == 0 {
-		members = r.usPoolMembers(outbounds)
+		members = r.defaultPoolMembers(outbounds)
 	}
 	if len(members) == 0 {
 		return nil, false

@@ -29,13 +29,13 @@ type Config struct {
 	DataPlane     DataPlaneConfig     `yaml:"data_plane"`
 
 	// NodeQualify drives the NodeScorer goroutine that dynamically manages
-	// us-pool membership: each ScoringInterval the scorer probes every
+	// default-pool membership: each ScoringInterval the scorer probes every
 	// candidate, applies the thresholds + probe checks, and hot-reloads
 	// mihomo when the qualified set changes.
 	NodeQualify NodeQualifyConfig `yaml:"node_qualify"`
 
 	// Pools lists named select groups that get rendered alongside the
-	// default us-pool. Each pool is gated by `requires_passing` (probe
+	// default default-pool. Each pool is gated by `requires_passing` (probe
 	// names from NodeQualify.Probes that must all pass) and routes the
 	// listed `rule_sets` via mihomo rules. Used to segregate sites with
 	// special needs (e.g. openai-pool for ChatGPT/Claude — only nodes
@@ -49,7 +49,7 @@ type Config struct {
 	// operators can compare current load against the known ceiling.
 	Capacity CapacityConfig `yaml:"capacity"`
 
-	// LoadBalance tunes how overseas (us-pool-bound) traffic is spread.
+	// LoadBalance tunes how overseas (default-pool-bound) traffic is spread.
 	// Default zero value = per-destination (consistent-hashing) as before.
 	LoadBalance LoadBalanceConfig `yaml:"load_balance"`
 
@@ -468,7 +468,7 @@ type TUNConfig struct {
 	Stack string `yaml:"stack"`
 }
 
-// LoadBalanceConfig tunes how overseas (us-pool-bound) traffic is spread.
+// LoadBalanceConfig tunes how overseas (default-pool-bound) traffic is spread.
 type LoadBalanceConfig struct {
 	// PerTerminal, when true, pins each client terminal's whitelisted
 	// (domain-matched) traffic to a single egress node — "one terminal,
@@ -483,7 +483,7 @@ type LoadBalanceConfig struct {
 	//
 	// Mechanism: the renderer slices node.client_subnet into per-/32
 	// SRC-IP-CIDR rules under a `perterm` sub-rule, assigning each terminal
-	// to a qualified us-pool node via rendezvous (HRW) hashing. Whitelist
+	// to a qualified default-pool node via rendezvous (HRW) hashing. Whitelist
 	// rules route to the perterm sub-rule instead of directly to `out`.
 	PerTerminal bool `yaml:"per_terminal"`
 }
@@ -494,7 +494,7 @@ type DNSConfig struct {
 	// CNDoH is the upstream pool for CN-side resolution.
 	CNDoH []string `yaml:"cn_doh"`
 	// ProxyDoH is the upstream pool for non-CN resolution. Routed through
-	// mihomo's "out" selector → us-pool by the renderer.
+	// mihomo's "out" selector → default-pool by the renderer.
 	ProxyDoH []string `yaml:"proxy_doh"`
 	// BootstrapResolver is an IP literal used to resolve any DoH/DoT host
 	// names without chicken-and-egg (e.g. "udp://119.29.29.29").
@@ -596,11 +596,11 @@ type RouteConfig struct {
 	GeoIPURL   string `yaml:"geoip_url"`
 
 	// Mode controls how non-CN traffic is split.
-	//   "overseas" (default): every non-CN destination → us-pool. CN
+	//   "overseas" (default): every non-CN destination → default-pool. CN
 	//                         domains/IPs still go DIRECT via geosite-cn /
 	//                         geoip-cn. Most transparent to clients.
 	//   "whitelist":          only domains hitting Whitelist.* go to
-	//                         us-pool (or its named pool); everything else
+	//                         default-pool (or its named pool); everything else
 	//                         goes DIRECT. Saves airport bandwidth at the
 	//                         cost of curating the list.
 	Mode string `yaml:"mode"`
@@ -699,13 +699,13 @@ type URLTestConfig struct {
 	// because it must traverse GFW (which is what we want to verify).
 	ProbeURL string `yaml:"probe_url"`
 	// NodePattern is a Go-regexp; only outbounds whose tag matches are
-	// added to us-pool. Empty = every airport node is a candidate.
+	// added to default-pool. Empty = every airport node is a candidate.
 	NodePattern string `yaml:"node_pattern"`
 }
 
 // NodeQualifyConfig is the threshold set for the NodeScorer. All thresholds
 // must be satisfied simultaneously for a node to be considered "qualified"
-// for the base us-pool. Probe results gate membership in named pools.
+// for the base default-pool. Probe results gate membership in named pools.
 type NodeQualifyConfig struct {
 	// Enabled turns the scorer on. Default true under mihomo.
 	Enabled bool `yaml:"enabled"`
@@ -816,7 +816,7 @@ type NodeQualifyConfig struct {
 	// NodeHealth.Probes and gate membership in named Pools.
 	Probes []ProbeConfig `yaml:"probes"`
 
-	// PoolSizing controls dynamic K (us-pool target size). When TActive=0
+	// PoolSizing controls dynamic K (default-pool target size). When TActive=0
 	// (default) the legacy "every qualified candidate is in pool" behavior
 	// is preserved. When TActive>0 the scorer ranks qualified candidates
 	// by composite score and gates the pool to top-K, sized from the
@@ -973,7 +973,7 @@ type PoolSizingConfig struct {
 // ProbeConfig is one site-specific reachability check. Probes are NOT
 // part of the basic RTT-qualification thresholds — a node failing probe
 // X is removed only from pools that list X in `requires_passing`, not
-// from the base us-pool.
+// from the base default-pool.
 type ProbeConfig struct {
 	// Name is the probe identifier. Use the destination hostname so the
 	// API surface is self-descriptive (e.g. "chatgpt.com", "claude.ai").
@@ -1017,18 +1017,18 @@ type ProbeCheckConfig struct {
 }
 
 // PoolConfig describes a named select group rendered alongside the default
-// us-pool. Legacy pools (only requires_passing/rule_sets) are a probe-gated
-// subset of us-pool and route like before. A "class pool" additionally
+// default-pool. Legacy pools (only requires_passing/rule_sets) are a probe-gated
+// subset of default-pool and route like before. A "class pool" additionally
 // declares its own candidate set (node_pattern), sizing, and per-terminal
 // behavior, so different traffic classes can exit through different regions
-// without touching the global us-pool.
+// without touching the global default-pool.
 type PoolConfig struct {
 	// Name is the pool tag emitted into mihomo's proxy-groups (e.g.
 	// "openai-pool"). Must be unique across pools.
 	Name string `yaml:"name"`
 	// RequiresPassing names probes (from NodeQualify.Probes[].Name) that
 	// every member must currently pass. Empty = no extra gating beyond
-	// us-pool's basic RTT thresholds.
+	// default-pool's basic RTT thresholds.
 	RequiresPassing []string `yaml:"requires_passing"`
 	// RuleSets names rule-providers (e.g. "geosite-openai", "geosite-
 	// anthropic") that route through this pool instead of `out`. Each
@@ -1039,7 +1039,7 @@ type PoolConfig struct {
 	// NodePattern is a Go RE2 regexp selecting candidate nodes for this
 	// pool from ALL subscription nodes. Empty = inherit the global
 	// data_plane.url_test.node_pattern. Setting it makes the pool a class
-	// pool: its members can come from a different region than us-pool.
+	// pool: its members can come from a different region than default-pool.
 	// NOTE: Go RE2 has no lookahead/lookbehind — use alternation instead.
 	NodePattern string `yaml:"node_pattern"`
 	// Size caps the pool's member count after ranking by long EWMA.
@@ -1058,7 +1058,7 @@ type PoolConfig struct {
 
 // IsClassPool reports whether the pool declares class semantics (own
 // candidate set / sizing / per-terminal / exact domains). Legacy pools keep
-// the old behavior: a probe-gated subset of us-pool with unified perterm.
+// the old behavior: a probe-gated subset of default-pool with unified perterm.
 func (p PoolConfig) IsClassPool() bool {
 	return p.NodePattern != "" || p.Size > 0 || p.PerTerminal != nil || len(p.DomainSuffix) > 0
 }

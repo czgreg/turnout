@@ -28,7 +28,7 @@
 # ── Single-egress mode (EGRESS=<proxy-name>) ────────────────────────────
 #
 # The default mode measures the WHOLE POOL: 127.0.0.1:11080 falls through to
-# MATCH,us-pool, so load-balance spreads every request across all K members
+# MATCH,default-pool, so load-balance spreads every request across all K members
 # and the resulting table is an aggregate ceiling. It says nothing about what
 # ONE airport node can carry — which is the number you need before lowering
 # the pool size K (capacity.cap_per_node).
@@ -53,7 +53,7 @@
 # do not run it during business hours on a node carrying real users.
 #
 #   EGRESS        proxy name from the live config (exact, quote it)
-#   EGRESS_LIST   =1 → list us-pool member names and exit
+#   EGRESS_LIST   =1 → list default-pool member names and exit
 #   CHILD_PORT    child mixed-port        (default 21080)
 #   LIVE_CONFIG   live rendered config    (default /var/lib/turnout/mihomo/config.yaml)
 
@@ -120,14 +120,14 @@ worker_pids=()
 
 # ---- single-egress mode -------------------------------------------------
 
-# List candidate egress names: us-pool members if the group exists, else all
+# List candidate egress names: default-pool members if the group exists, else all
 # proxies. Printed one per line so the operator can copy-paste into EGRESS.
 list_egress() {
   python3 - "$LIVE_CONFIG" <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1])) or {}
 groups = {g.get("name"): g for g in d.get("proxy-groups") or []}
-pool = groups.get("us-pool") or {}
+pool = groups.get("default-pool") or {}
 names = pool.get("proxies") or [p.get("name") for p in d.get("proxies") or []]
 for n in names:
     print(n)
@@ -297,7 +297,7 @@ assert_child_alive() {
 if [ -n "$EGRESS" ]; then
   log "measuring SINGLE EGRESS: $EGRESS"
 else
-  log "measuring WHOLE POOL (us-pool aggregate)"
+  log "measuring WHOLE POOL (default-pool aggregate)"
 fi
 
 printf '%-7s %-7s %-8s %-8s %-8s %-8s %-8s\n' \

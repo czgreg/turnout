@@ -32,7 +32,7 @@ func throughputScorer(t *testing.T, snapshot *[]map[string]interface{}) *Scorer 
 func conn(id, node string, up, dn int64) map[string]interface{} {
 	return map[string]interface{}{
 		"id":       id,
-		"chains":   []interface{}{node, "us-pool"},
+		"chains":   []interface{}{node, "default-pool"},
 		"upload":   float64(up),
 		"download": float64(dn),
 	}

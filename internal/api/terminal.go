@@ -88,7 +88,7 @@ func (s *Server) handlePoolTerminal(w http.ResponseWriter, r *http.Request) {
 		// In the bypass role the TPROXY jump is keyed on -s client_subnet, so a
 		// source outside it never reaches mihomo: a diverted packet is simply
 		// forwarded back out the default route. The old hint described the
-		// mihomo rule fallback (MATCH,us-pool), which never gets a chance to
+		// mihomo rule fallback (MATCH,default-pool), which never gets a chance to
 		// apply and sent operators looking at the wrong layer.
 		resp.Hint = "ip is outside client_subnet — this node does not intercept traffic from it; packets the firewall diverts here are forwarded back out the default route untouched"
 		writeJSON(w, http.StatusOK, resp)

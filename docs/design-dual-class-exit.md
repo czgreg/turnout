@@ -4,7 +4,7 @@ Status: implemented 2026-10-23.
 
 ## Why
 
-The gateway originally had one egress pool (`us-pool`) filtered by a single
+The gateway originally had one egress pool (`default-pool`) filtered by a single
 global `data_plane.url_test.node_pattern`. With a US-only pattern every
 whitelisted destination paid a 200–300 ms RTT, so a cold YouTube open took
 ~3 s even when the node was healthy, and an occasional 10 %-loss window
@@ -32,7 +32,7 @@ Search/Gmail/YouTube and the US IP to Gemini; this is the intended split.
 Two kinds of named pools coexist:
 
 - **Legacy pool** — only `requires_passing` / `rule_sets`. Members are a
-  probe-gated subset of `us-pool`; with `load_balance.per_terminal: true`
+  probe-gated subset of `default-pool`; with `load_balance.per_terminal: true`
   its rule sets route through the unified `perterm` sub-rule (one terminal,
   one IP across all classes). Behavior is unchanged.
 - **Class pool** — any of `node_pattern`, `size`, `per_terminal`,
@@ -94,7 +94,7 @@ pools:
   `Size`, and keeps incumbents unless a challenger beats the worst by
   `SwapThresholdScore`.
 - `internal/mihomo/groups.go` — `poolDispatchMembers()` resolves a pool's
-  members (scorer list → pattern → us-pool) and class pools emit their own
+  members (scorer list → pattern → default-pool) and class pools emit their own
   per-terminal fallback groups. An empty pool renders a `select [DIRECT]`
   stub so mihomo never sees an empty group.
 - `internal/mihomo/rules.go` — class pools dispatch to `perterm-<pool>` or
@@ -132,7 +132,7 @@ make build-linux
 After deploy:
 
 - `GET /api/nodes/health` — JP/SG/HK nodes appear and become qualified.
-- `GET /api/proxies/active` — `us-pool` routing members are mostly Asia;
+- `GET /api/proxies/active` — `default-pool` routing members are mostly Asia;
   `ai-pool` members are US.
 - `GET /api/pool/terminal?ip=<terminal>` — the default class and `ai-pool`
   each show primary/secondary.

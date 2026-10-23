@@ -21,7 +21,7 @@
 //
 // Dial THROUGH the loopback HTTP proxy mihomo exposes
 // (TurnoutInternalProxyURL = http://127.0.0.1:11080). Mihomo resolves the
-// host via its own DNS and egresses through us-pool to a real overseas
+// host via its own DNS and egresses through default-pool to a real overseas
 // peer, past the GFW.
 //
 // Two failure modes argue for "proxy with direct fallback", not "proxy

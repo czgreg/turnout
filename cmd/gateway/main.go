@@ -19,8 +19,8 @@ import (
 	"github.com/turnout-gateway/turnout-gateway/internal/dataplane"
 	"github.com/turnout-gateway/turnout-gateway/internal/dnspreload"
 	"github.com/turnout-gateway/turnout-gateway/internal/mihomo"
-	"github.com/turnout-gateway/turnout-gateway/internal/nodescorer"
 	"github.com/turnout-gateway/turnout-gateway/internal/nodeinfo"
+	"github.com/turnout-gateway/turnout-gateway/internal/nodescorer"
 	"github.com/turnout-gateway/turnout-gateway/internal/notify"
 	"github.com/turnout-gateway/turnout-gateway/internal/rulesets"
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
@@ -58,7 +58,10 @@ func main() {
 		apiPort := cfg.API.Listen
 		if idx := len(apiPort) - 1; idx >= 0 {
 			for i := len(apiPort) - 1; i >= 0; i-- {
-				if apiPort[i] == ':' { apiPort = apiPort[i+1:]; break }
+				if apiPort[i] == ':' {
+					apiPort = apiPort[i+1:]
+					break
+				}
 			}
 		}
 		fmt.Printf("export TURNOUT_CLIENT_SUBNET=%q\n", cfg.Node.ClientSubnet)
@@ -137,7 +140,7 @@ func main() {
 
 	// NodeScorer: dynamic pool management. Scores every node on its probe
 	// history + passive /connections throughput; keeps only qualified nodes
-	// in us-pool; hot-reloads mihomo via PUT /configs when the set changes
+	// in default-pool; hot-reloads mihomo via PUT /configs when the set changes
 	// (no systemctl restart).
 	var nodeScorer *nodescorer.Scorer
 	if cfg.NodeQualify.Enabled {
@@ -620,15 +623,15 @@ func emergencyToNotifyEvent(ev nodescorer.EmergencyEvent) notify.Event {
 // Format for the Lark body uses Chinese plus arrows so the operator
 // can see at a glance what changed without parsing prose:
 //
-//   ▼ 剔除: <node>
-//   ▲ 新增: <node>
+//	▼ 剔除: <node>
+//	▲ 新增: <node>
 //
-//   当前池 (K=8):
-//     ash/🇺🇸US-IEPL-01
-//     ...
-//     fishcloud/🇺🇸 美国03  ← 刚加入
+//	当前池 (K=8):
+//	  ash/🇺🇸US-IEPL-01
+//	  ...
+//	  fishcloud/🇺🇸 美国03  ← 刚加入
 //
-//   原因: K-gating composite-score swap
+//	原因: K-gating composite-score swap
 func transitionToNotifyEvent(t nodescorer.PoolTransition) notify.Event {
 	if t.Type == "bootstrap" {
 		return notify.Event{} // suppressed — see Notifier.Emit

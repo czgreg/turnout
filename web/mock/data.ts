@@ -230,14 +230,14 @@ export function active(subs: Subscription[]): Active {
     },
     active_proxy: {
       reachable: true,
-      active_group: 'us-pool',
+      active_group: 'default-pool',
       pool_filter: '美国|🇺🇸|\\bUS',
       pool_mode: 'auto',
       last_swap_at: iso(4 * MIN),
       pool_size: poolMembers().length,
       pools: [
         {
-          tag: 'us-pool',
+          tag: 'default-pool',
           pool_size: poolMembers().length,
           active: true,
           egress: {
@@ -337,7 +337,7 @@ export function terminal(ip: string): TerminalAssignment {
       subnet: SUBNET,
       in_subnet: false,
       pool_mode: 'auto',
-      hint: 'ip is outside client_subnet — traffic from this source falls through to MATCH,us-pool, not a per-terminal fb group',
+      hint: 'ip is outside client_subnet — traffic from this source falls through to MATCH,default-pool, not a per-terminal fb group',
     };
   }
   const pool = nodes().filter((n) => n.in_pool);

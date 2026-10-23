@@ -14,7 +14,7 @@
 | 阶段 | 耗时 | 位置 |
 |---|---|---|
 | 订阅刷新发现节点 | 手动触发（`refresh_interval: 0s`） | — |
-| 进 `us-pool`（探测集，不载流量） | 立即 | `scorer.go:1119` |
+| 进 `default-pool`（探测集，不载流量） | 立即 | `scorer.go:1119` |
 | 攒够 url-test 历史 | 30s | `health_check_interval` |
 | scorer 评一轮 | ≤5m | `scoring_interval` |
 | **trial 窗口** | **24h** | `ewma.go:56` |

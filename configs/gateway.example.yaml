@@ -172,7 +172,7 @@ data_plane:
 # ─────────────────────────────────────────────────────────────
 # 出口池 —— [不变] 完全沿用上游
 # ─────────────────────────────────────────────────────────────
-# node_pattern 属于 data_plane.url_test（它决定哪些机场节点进 us-pool），
+# node_pattern 属于 data_plane.url_test（它决定哪些机场节点进 default-pool），
 # 不是 node_qualify 的字段 —— 见文件上方 data_plane 块。
 node_qualify:
   # 只收美国节点，配合机场订阅。
@@ -180,12 +180,12 @@ node_qualify:
   enabled: true
 
 pools:
-  # 命名池。旧池只写 requires_passing / rule_sets：它是 us-pool 的
+  # 命名池。旧池只写 requires_passing / rule_sets：它是 default-pool 的
   # probe-gated 子集，行为与上游一致。
   #
   # 「分类池」：只要出现 node_pattern / size / per_terminal /
   # domain_suffix 任一字段，这个池就拥有自己的候选集和路由，与全局
-  # us-pool 无关。node_pattern 是 Go RE2，不支持 lookahead/lookbehind，
+  # default-pool 无关。node_pattern 是 Go RE2，不支持 lookahead/lookbehind，
   # 需要多条件时用 alternation。
   #
   # 示例：AI 流量走美国，其余白名单流量走全局（亚洲）池。

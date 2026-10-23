@@ -31,7 +31,7 @@
 //   - default-nameserver: bare-IP UDP, used to bootstrap-resolve the DoH
 //     hostnames in nameserver / nameserver-policy themselves.
 //   - nameserver:        proxy DoH — default for everything not matched
-//                        by nameserver-policy. Routed through us-pool by
+//                        by nameserver-policy. Routed through default-pool by
 //                        mihomo's outbound dispatch. Overseas domains
 //                        resolve through the proxy, dodging CN poisoning.
 //   - nameserver-policy: domain-keyed routing. CN domains and intranet

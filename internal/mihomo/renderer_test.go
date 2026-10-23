@@ -118,7 +118,7 @@ func TestRenderer_OverseasMode(t *testing.T) {
 		t.Errorf("proxies count = %d, want 5", len(proxies))
 	}
 
-	// proxy-groups: out, us-pool, pin
+	// proxy-groups: out, default-pool, pin
 	groups, _ := doc["proxy-groups"].([]any)
 	if len(groups) != 3 {
 		t.Fatalf("proxy-groups count = %d, want 3", len(groups))
@@ -128,24 +128,24 @@ func TestRenderer_OverseasMode(t *testing.T) {
 	for _, g := range groups {
 		m, _ := g.(map[string]any)
 		gNames = append(gNames, m["name"].(string))
-		if m["name"] == "us-pool" {
+		if m["name"] == "default-pool" {
 			usp = m
 		}
 	}
 	if usp == nil {
-		t.Fatal("us-pool group missing")
+		t.Fatal("default-pool group missing")
 	}
 	if usp["type"] != "load-balance" {
-		t.Errorf("us-pool type = %v, want load-balance", usp["type"])
+		t.Errorf("default-pool type = %v, want load-balance", usp["type"])
 	}
 	if usp["strategy"] != "consistent-hashing" {
-		t.Errorf("us-pool strategy = %v, want consistent-hashing", usp["strategy"])
+		t.Errorf("default-pool strategy = %v, want consistent-hashing", usp["strategy"])
 	}
 	pool, _ := usp["proxies"].([]any)
 	// Pattern matches 3 of 5: ash IEPL-01 (US), ctc-02 US-C30-01,
 	// cyberguard 🇺🇸 US-01. yuyun JP and yuyun SG-01 don't match.
 	if len(pool) != 3 {
-		t.Errorf("us-pool members = %d, want 3", len(pool))
+		t.Errorf("default-pool members = %d, want 3", len(pool))
 	}
 
 	// Rules — overseas mode ends with MATCH,out
@@ -612,7 +612,7 @@ func TestRenderer_PoolMembersOverride(t *testing.T) {
 
 // TestRenderer_PerTerminal covers "one terminal, one egress": with
 // load_balance.per_terminal + whitelist, domain whitelist hits dispatch to
-// the perterm sub-rule, which slices the client subnet per-/32 to us-pool
+// the perterm sub-rule, which slices the client subnet per-/32 to default-pool
 // members. IP whitelist stays on `out`. Also checks gvisor stack flips when
 // requested.
 func TestRenderer_PerTerminal(t *testing.T) {
@@ -648,7 +648,7 @@ func TestRenderer_PerTerminal(t *testing.T) {
 
 	// whitelist domain hit → SUB-RULE,(RULE-SET,geosite-openai),perterm
 	// geoip → ALSO via perterm, keeping no-resolve inside the condition.
-	// Sending it to `out` (us-pool, consistent-hashing by destination)
+	// Sending it to `out` (default-pool, consistent-hashing by destination)
 	// spread one terminal's IP-matched flows across every egress.
 	rules, _ := doc["rules"].([]any)
 	var sawDomainSub, sawGeoipSub bool
@@ -671,7 +671,7 @@ func TestRenderer_PerTerminal(t *testing.T) {
 		t.Error("expected geoip whitelist to dispatch via perterm sub-rule with no-resolve")
 	}
 
-	// sub-rules.perterm: SRC-IP-CIDR slices for the 6 hosts + MATCH,us-pool
+	// sub-rules.perterm: SRC-IP-CIDR slices for the 6 hosts + MATCH,default-pool
 	sub, _ := doc["sub-rules"].(map[string]any)
 	pt, _ := sub["perterm"].([]any)
 	if len(pt) < 2 {
@@ -686,8 +686,8 @@ func TestRenderer_PerTerminal(t *testing.T) {
 	if srcCount != 6 {
 		t.Errorf("perterm SRC-IP-CIDR rules = %d, want 6 (/29 usable hosts)", srcCount)
 	}
-	if last, _ := pt[len(pt)-1].(string); last != "MATCH,us-pool" {
-		t.Errorf("perterm last rule = %q, want MATCH,us-pool", last)
+	if last, _ := pt[len(pt)-1].(string); last != "MATCH,default-pool" {
+		t.Errorf("perterm last rule = %q, want MATCH,default-pool", last)
 	}
 }
 
@@ -695,7 +695,7 @@ func TestRenderer_PerTerminal(t *testing.T) {
 // WithRoutingMembers set, perterm SRC-IP-CIDR rules use ONLY those members
 // (HRW pool = restricted set), regardless of how many candidates exist in
 // the subscription. This is the path PoolMode=manual takes — the operator's
-// PoolMembers list is the routing pool, even if the full us-pool group has
+// PoolMembers list is the routing pool, even if the full default-pool group has
 // more nodes (kept wide for probing only).
 func TestRenderer_WithRoutingMembers(t *testing.T) {
 	r := newTestRenderer(t)
@@ -793,7 +793,7 @@ func TestHRWStability(t *testing.T) {
 
 // TestRenderer_PerTerminalWithPool verifies that probe-gated pool rule_sets
 // route through pool-specific perterm sub-rules (perterm-openai-pool with
-// openai-pool members only), not the generic perterm (all us-pool members).
+// openai-pool members only), not the generic perterm (all default-pool members).
 // TestRenderer_PerTerminalNamedPoolUnified verifies that with per-terminal
 // fallback groups, named-pool rule_sets (openai-pool etc.) route through
 // the SAME generic perterm sub-rule as everything else — not a per-pool
@@ -1091,8 +1091,8 @@ func TestRenderer_ClassPoolPerTerminal(t *testing.T) {
 	if len(defaultSub) == 0 {
 		t.Fatal("default perterm sub-rule missing")
 	}
-	if last, _ := defaultSub[len(defaultSub)-1].(string); last != "MATCH,us-pool" {
-		t.Errorf("default perterm last rule = %q, want MATCH,us-pool", last)
+	if last, _ := defaultSub[len(defaultSub)-1].(string); last != "MATCH,default-pool" {
+		t.Errorf("default perterm last rule = %q, want MATCH,default-pool", last)
 	}
 }
 

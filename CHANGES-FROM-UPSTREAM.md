@@ -368,3 +368,6 @@ rules:
   （它们不在 `out.All` 里，旧循环看不到）。
 - **取舍**：同一终端在 AI 类和其他类各有一个 IP；Gemini 归 AI（美国），
   YouTube 归其他（亚洲）。详见 `docs/design-dual-class-exit.md`。
+- **2026-10-23 后续命名**：默认池 `us-pool` 更名为 `default-pool`（代码常量、
+  mihomo 组名、`MATCH,default-pool`、API/UI/文档）。上面的上游对照表仍写
+  `us-pool`，那是上游的历史名称。

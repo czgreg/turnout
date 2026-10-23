@@ -118,7 +118,7 @@ func ruleProvider(behavior, path string) map[string]any {
 // per-terminal mode (load_balance.per_terminal=true): domain-matched
 // whitelist entries dispatch to the `perterm` sub-rule instead of `out`.
 // perterm holds SRC-IP-CIDR,<terminal/32>,<node> slices (HRW-assigned over
-// the us-pool members) + a MATCH,us-pool fallback — so one terminal's
+// the default-pool members) + a MATCH,default-pool fallback — so one terminal's
 // whitelisted traffic all exits one node. IP-based whitelist (geoip /
 // ip_cidr, no-resolve) still goes to `out` (hardcoded-IP apps don't drift,
 // and no-resolve doesn't translate into a SUB-RULE condition).
@@ -184,7 +184,7 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 	// node (`mihomo -t` accepts "SUB-RULE,(RULE-SET,geoip-x,no-resolve),perterm").
 	//
 	// These used to go straight to `out` even with per-terminal on. `out`
-	// leads with us-pool, a consistent-hashing load-balancer keyed on the
+	// leads with default-pool, a consistent-hashing load-balancer keyed on the
 	// DESTINATION, so one terminal's IP-matched flows (QUIC to Google IPs,
 	// Telegram MTProto) were spread across every egress while its
 	// domain-matched flows stayed pinned — exactly the multi-IP pattern
@@ -207,20 +207,20 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 	// Emitted before the whitelist so a class can claim a specific domain
 	// (e.g. Gemini inside geosite-google) ahead of a broader tag.
 	poolRouted := map[string]bool{}
-	var classTags, classUsPool []string
+	var classTags, classDefaultPool []string
 	classResolved := false
 	resolveClassMembers := func() {
 		if classResolved {
 			return
 		}
 		classTags = nodeTags(outbounds)
-		classUsPool = r.usPoolMembers(outbounds)
+		classDefaultPool = r.defaultPoolMembers(outbounds)
 		classResolved = true
 	}
 	for _, p := range r.pools {
 		if p.IsClassPool() {
 			resolveClassMembers()
-			members := r.poolDispatchMembers(p, classTags, classUsPool)
+			members := r.poolDispatchMembers(p, classTags, classDefaultPool)
 			classPerTerm := p.PerTerminalEnabled() &&
 				r.node.ClientSubnet != "" &&
 				len(members) >= perTerminalFallbackDepth
@@ -256,7 +256,7 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 			}
 			continue
 		}
-		// Legacy pool (probe-gated subset of us-pool).
+		// Legacy pool (probe-gated subset of default-pool).
 		for _, tag := range p.RuleSets {
 			if poolRouted[tag] {
 				continue

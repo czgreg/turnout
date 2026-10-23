@@ -51,7 +51,7 @@ func newTestScorer(cfg config.NodeQualifyConfig) *Scorer {
 }
 
 // TestComputePoolMembers verifies probe-gated named-pool membership: only
-// us-pool nodes that pass ALL of a pool's required probes are members; a
+// default-pool nodes that pass ALL of a pool's required probes are members; a
 // node missing any required probe result (or failing it) is excluded.
 func TestComputePoolMembers(t *testing.T) {
 	s := newTestScorer(defaultCfg())
@@ -91,9 +91,9 @@ func TestComputePoolMembers(t *testing.T) {
 			"chatgpt.com": {true},
 		},
 	}
-	usPool := map[string]bool{"nodeA": true, "nodeB": true, "nodeC": true}
+	defaultPool := map[string]bool{"nodeA": true, "nodeB": true, "nodeC": true}
 
-	got := s.computePoolMembers(nil, usPool, 0)
+	got := s.computePoolMembers(nil, defaultPool, 0)
 	members := got["openai-pool"]
 	if len(members) != 1 || members[0] != "nodeA" {
 		t.Errorf("openai-pool members = %v, want [nodeA]", members)
@@ -101,19 +101,19 @@ func TestComputePoolMembers(t *testing.T) {
 }
 
 // TestComputePoolMembers_NoGating: a pool with empty RequiresPassing is not
-// included in the explicit member map (renderer falls back to full us-pool).
+// included in the explicit member map (renderer falls back to full default-pool).
 func TestComputePoolMembers_NoGating(t *testing.T) {
 	s := newTestScorer(defaultCfg())
 	s.pools = []config.PoolConfig{{Name: "plain-pool", RuleSets: []string{"geosite-x"}}}
 	got := s.computePoolMembers(nil, map[string]bool{"nodeA": true}, 0)
 	if _, ok := got["plain-pool"]; ok {
-		t.Error("ungated pool should not appear in poolMembers (renderer falls back to us-pool)")
+		t.Error("ungated pool should not appear in poolMembers (renderer falls back to default-pool)")
 	}
 }
 
 // TestComputePoolMembers_ClassPattern verifies a class pool takes only the
 // nodes matching its own node_pattern, ranked by long EWMA and capped at
-// Size. The global us-pool set is irrelevant for class pools.
+// Size. The global default-pool set is irrelevant for class pools.
 func TestComputePoolMembers_ClassPattern(t *testing.T) {
 	cfg := defaultCfg()
 	cfg.SwapThresholdScore = 400

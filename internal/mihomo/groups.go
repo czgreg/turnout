@@ -1,7 +1,7 @@
 // groups.go — proxy / proxy-groups assembly.
 //
 // The single biggest difference between mihomo and the sing-box renderer:
-// no primary/backup split. ALL enabled subs' nodes pool into us-pool, a
+// no primary/backup split. ALL enabled subs' nodes pool into default-pool, a
 // load-balance group with consistent-hashing strategy.
 //
 // Why: with sing-box urltest, exactly one node carries all traffic at a
@@ -21,17 +21,17 @@ import (
 )
 
 const (
-	// usPool is the load-balance group of all NodePattern-matching nodes
+	// defaultPool is the load-balance group of all NodePattern-matching nodes
 	// across all enabled subscriptions. Receives all overseas traffic by
 	// default. consistent-hashing keeps long-lived flows on a stable node.
-	usPool = "us-pool"
+	defaultPool = "default-pool"
 
 	// pin is a manual selector — operator can PUT /proxies/pin to force
 	// all "out"-routed traffic onto a single named node. Equivalent to
 	// the watchdog's PUT /proxies/<sel> escape hatch verified in spike.
 	pinSelector = "pin"
 
-	// out is the top-level routing target: a selector with us-pool default.
+	// out is the top-level routing target: a selector with default-pool default.
 	// Route rules send overseas traffic here; the selector decides which
 	// underlying group/proxy actually carries it.
 	outSelector = "out"
@@ -80,15 +80,15 @@ func (r *Renderer) buildProxies(outbounds []subscribe.Outbound) []map[string]any
 
 // buildProxyGroups emits the `proxy-groups:` array.
 //
-//	out (select)        : [us-pool, pin, DIRECT]
-//	us-pool (load-bal)  : NodePattern-filtered subset of all parsed nodes,
+//	out (select)        : [default-pool, pin, DIRECT]
+//	default-pool (load-bal)  : NodePattern-filtered subset of all parsed nodes,
 //	                      strategy=consistent-hashing
 //	pin (select)        : every NodePattern-matching node by name,
 //	                      starts at the first as default, op-tunable via
 //	                      PUT /proxies/pin
 func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string]any {
 	tags := nodeTags(outbounds)
-	pool := r.usPoolMembers(outbounds)
+	pool := r.defaultPoolMembers(outbounds)
 
 	probeURL := r.cfg.URLTest.ProbeURL
 	if probeURL == "" {
@@ -112,10 +112,10 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 			"type": "select",
 			// The pool sits first so default routing uses it; pin is only
 			// reached via explicit PUT /proxies/out {name: pin}.
-			"proxies": []string{usPool, pinSelector, "DIRECT"},
+			"proxies": []string{defaultPool, pinSelector, "DIRECT"},
 		},
 		{
-			"name":     usPool,
+			"name":     defaultPool,
 			"type":     "load-balance",
 			"strategy": "consistent-hashing",
 			"proxies":  pool,
@@ -140,7 +140,7 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 	// Named pools (openai-pool etc.) — one load-balance group each.
 	// Class pools resolve their own candidate set (node_pattern) and may
 	// emit per-terminal fallback groups; legacy pools stay subsets of
-	// us-pool. An empty pool renders a DIRECT select stub so the rules
+	// default-pool. An empty pool renders a DIRECT select stub so the rules
 	// that reference it never dead-end (mihomo rejects empty groups).
 	for _, p := range r.pools {
 		members := r.poolDispatchMembers(p, tags, pool)
@@ -172,7 +172,7 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 	// probe-out: a select group over EVERY candidate node. nodescorer
 	// flips it one node at a time and runs site probes through the
 	// turnout-probe listener (which is pinned to this group). Separate from
-	// us-pool so probing never perturbs production routing.
+	// default-pool so probing never perturbs production routing.
 	if r.probeListener {
 		probeMembers := pool
 		if len(tags) > 0 {
@@ -186,7 +186,7 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 	}
 
 	// Bootstrap edge case: empty pool (no subscribed outbounds yet — first
-	// boot, --validate, or --render-once). Drop us-pool/pin/probe-out and
+	// boot, --validate, or --render-once). Drop default-pool/pin/probe-out and
 	// stub each named pool to a DIRECT-only `select` so that buildRules
 	// references like `RULE-SET,geosite-openai,openai-pool` still resolve
 	// and mihomo accepts the config. Rules transparently fall through to
@@ -216,7 +216,7 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 	// failover from primary to secondary when primary dies. Empty list
 	// (e.g. fewer than 2 routing members) skips the per-terminal groups
 	// entirely; rules.go's perterm logic already handles the fallback to
-	// MATCH,us-pool in that case.
+	// MATCH,default-pool in that case.
 	if r.perTerminal && r.node.ClientSubnet != "" {
 		fbGroups := r.perTerminalFallbackGroups(outbounds, probeURL, intervalSec)
 		groups = append(groups, fbGroups...)
@@ -242,11 +242,11 @@ func (r *Renderer) buildListeners() []map[string]any {
 	}
 }
 
-// usPoolMembers computes the us-pool member tag list: the NodeScorer's
+// defaultPoolMembers computes the default-pool member tag list: the NodeScorer's
 // qualifiedOverride (intersected with present tags) when set, else the
 // NodePattern-filtered set, else all node tags. Shared by buildProxyGroups
 // and buildRules (per-terminal slicing) so both see the same membership.
-func (r *Renderer) usPoolMembers(outbounds []subscribe.Outbound) []string {
+func (r *Renderer) defaultPoolMembers(outbounds []subscribe.Outbound) []string {
 	tags := nodeTags(outbounds)
 	var pool []string
 	if len(r.qualifiedOverride) > 0 {
@@ -289,13 +289,13 @@ func nodeTags(outbounds []subscribe.Outbound) []string {
 //	scorer-selected members (r.poolMembers, intersected with tags present
 //	in the current subscription set)
 //	→ the pool's own node_pattern over all node tags
-//	→ the global us-pool.
+//	→ the global default-pool.
 //
 // The pattern fallback matters on the first render after a pattern change:
 // the scorer has no members yet, but mihomo must still see the candidates in
 // a probed group so it can url-test them and the scorer can rank them.
-func (r *Renderer) poolDispatchMembers(p config.PoolConfig, tags, usPool []string) []string {
-	baseline := usPool
+func (r *Renderer) poolDispatchMembers(p config.PoolConfig, tags, defaultPool []string) []string {
+	baseline := defaultPool
 	if p.NodePattern != "" {
 		baseline = filterByPattern(tags, p.NodePattern)
 	}
