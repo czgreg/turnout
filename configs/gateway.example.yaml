@@ -96,12 +96,19 @@ data_plane:
 
     # [新] 广告拦截。默认关；开启后在被引流网段全局生效，终端零配置。
     #
-    # 实现：在 CN 直连规则之前插入一行 `RULE-SET,category-ads-all,REJECT`。
-    # 规则集是 MetaCubeX 的 geosite-category-ads-all（纯广告域名，8 KB），
-    # 由 scripts/stage.sh 随部署打包，缺失会让 stage 直接失败而不是静默放行。
+    # 实现：在 CN 直连规则之前插入三行 `RULE-SET,<tag>,REJECT`，分别对应
+    # 三份域名表（都由 scripts/stage.sh 随部署打包）：
+    #   category-ads-all  MetaCubeX，903 条。注意它是 category-ads 的**超集**
+    #                     （多出的 60 条正是 adnxs / casalemedia / openx /
+    #                     pubmatic / taboola 这些广告交易所，同时也带进
+    #                     +.sentry.io / +.segment.io / +.clearbit.com）
+    #   anti-ad           中文向列表，约 11.2 万条，纯文本
+    #   cname-ads         AdGuard cname-trackers 的"伪装第一方域名"约 1.17 万条，
+    #                     域名级 REJECT 靠它才够得到 CNAME 伪装的投放
     #
     # 边界：只阻断广告**请求**，不隐藏页面广告位，不拦同域广告；
-    # 没有按域名豁免的入口——误杀只能整体关闭。
+    # 没有按域名豁免的入口——误杀只能整体关闭。已知代价：anti-AD 收了
+    # img1.126.net（163 系图片 CDN）。
     # 运行时可通过控制台「分流白名单 → 广告拦截」开关热切换（3–5 秒重载）。
     ad_block: false
   

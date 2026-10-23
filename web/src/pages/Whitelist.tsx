@@ -175,12 +175,17 @@ function AdBlockCard() {
         />
         <span>{state?.enabled ? '已开启' : '已关闭'}</span>
         {state && !state.rule_set_installed && (
-          <Tag color="orange">规则集缺失，需重新部署后才能开启</Tag>
+          <Tag color="orange">
+            规则集缺失
+            {state.missing?.length ? `：${state.missing.join('、')}` : ''}
+            ，需重新部署后才能开启
+          </Tag>
         )}
       </Space>
       <p className="dim mt">
-        拦截 MetaCubeX 的 <code>geosite-category-ads-all</code>（纯广告域名）。靠 TLS SNI /
-        HTTP Host 识别，终端零配置，对全部终端生效；规则位于 CN 直连之前。
+        三份域名表：MetaCubeX <code>category-ads-all</code>（广告交易所）、anti-AD（中文向，约 11
+        万条）、AdGuard cname-trackers（伪装成第一方域名的投放域名）。靠 TLS SNI / HTTP Host
+        识别，终端零配置，对全部终端生效；规则位于 CN 直连之前。
         它只阻断广告<i>请求</i>——不会隐藏页面里的广告位，也不拦与正文同域的广告。
       </p>
     </Card>

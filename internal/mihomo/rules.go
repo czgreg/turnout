@@ -17,11 +17,38 @@ import (
 const (
 	rsGeositeCN = "geosite-cn"
 	rsGeoipCN   = "geoip-cn"
-	// rsAdsAll is MetaCubeX's pure-advertising domain set. The tag doubles as
-	// the provider key AND the on-disk filename (<tag>.mrs), so stage.sh must
-	// save the fetched file under exactly this stem.
+	// The three ad rule-sets. rsAdsAll is MetaCubeX's category-ads-all: the
+	// superset (903 domains), not the narrower category-ads (843) — the 60
+	// extra entries are where the mainstream ad exchanges live (adnxs,
+	// casalemedia, openx, pubmatic, taboola, mgid). The same 60 also carry
+	// tracker/dev domains (+.sentry.io, +.segment.io, +.clearbit.com); with no
+	// per-domain exemption that is the accepted cost of the switch.
 	rsAdsAll = "category-ads-all"
+	// rsAntiAD is the CN-oriented anti-AD list (~112k domains). It is plain
+	// text, one domain per line — no .mrs conversion needed.
+	rsAntiAD = "anti-ad"
+	// rsCNAMEAds is AdGuard's cname-trackers "disguised" list (~11.7k): the
+	// first-party-looking domains that CNAME to ad/tracking servers. Blocking
+	// these is the only way a domain-level rule reaches CNAME-cloaked ads.
+	rsCNAMEAds = "cname-ads"
 )
+
+// RuleSetSpec describes one file ad blocking depends on.
+type RuleSetSpec struct {
+	Tag    string // provider key, also the RULE-SET argument
+	File   string // basename under RuleSetsDir
+	Format string // mihomo rule-provider format: "mrs" or "text"
+}
+
+// AdRuleSets is the single source of truth for ad blocking: the renderer emits
+// one REJECT line per entry, and the API refuses to switch it on unless every
+// File is on disk. Order is cosmetic (fixed so rendered diffs stay stable) —
+// all of them must precede geosite-cn.
+var AdRuleSets = []RuleSetSpec{
+	{Tag: rsAdsAll, File: rsAdsAll + ".mrs", Format: "mrs"},
+	{Tag: rsAntiAD, File: rsAntiAD + ".txt", Format: "text"},
+	{Tag: rsCNAMEAds, File: rsCNAMEAds + ".txt", Format: "text"},
+}
 
 // poolRuleSets returns every rule-set tag claimed by any pool, deduped.
 // Used by buildRuleProviders to ensure those tags get a provider even when
@@ -54,20 +81,25 @@ func (r *Renderer) buildRuleProviders() map[string]any {
 	dir := r.cfg.RuleSetsDir
 
 	rp := map[string]any{
-		rsGeositeCN: ruleProvider("domain", filepath.Join(dir, rsGeositeCN+".mrs")),
-		rsGeoipCN:   ruleProvider("ipcidr", filepath.Join(dir, rsGeoipCN+".mrs")),
+		rsGeositeCN: ruleProvider("domain", "mrs", filepath.Join(dir, rsGeositeCN+".mrs")),
+		rsGeoipCN:   ruleProvider("ipcidr", "mrs", filepath.Join(dir, rsGeoipCN+".mrs")),
 	}
 
+	// Ad blocking ships as three sets: mrs for the MetaCubeX one, plain text
+	// for the two community lists (no conversion step, so stage.sh can fetch
+	// them verbatim).
 	if r.cfg.Route.AdBlock {
-		rp[rsAdsAll] = ruleProvider("domain", filepath.Join(dir, rsAdsAll+".mrs"))
+		for _, rs := range AdRuleSets {
+			rp[rs.Tag] = ruleProvider("domain", rs.Format, filepath.Join(dir, rs.File))
+		}
 	}
 
 	if r.cfg.Route.Mode == "whitelist" {
 		for _, tag := range r.cfg.Route.Whitelist.Geosites {
-			rp[tag] = ruleProvider("domain", filepath.Join(dir, tag+".mrs"))
+			rp[tag] = ruleProvider("domain", "mrs", filepath.Join(dir, tag+".mrs"))
 		}
 		for _, tag := range r.cfg.Route.Whitelist.Geoips {
-			rp[tag] = ruleProvider("ipcidr", filepath.Join(dir, tag+".mrs"))
+			rp[tag] = ruleProvider("ipcidr", "mrs", filepath.Join(dir, tag+".mrs"))
 		}
 	}
 	// Pool rule_sets — always present. behavior inferred from tag prefix
@@ -80,15 +112,15 @@ func (r *Renderer) buildRuleProviders() map[string]any {
 		if strings.HasPrefix(tag, "geoip-") {
 			behavior = "ipcidr"
 		}
-		rp[tag] = ruleProvider(behavior, filepath.Join(dir, tag+".mrs"))
+		rp[tag] = ruleProvider(behavior, "mrs", filepath.Join(dir, tag+".mrs"))
 	}
 	return rp
 }
 
-func ruleProvider(behavior, path string) map[string]any {
+func ruleProvider(behavior, format, path string) map[string]any {
 	return map[string]any{
 		"type":     "file",
-		"format":   "mrs",
+		"format":   format,
 		"behavior": behavior,
 		"path":     path,
 	}
@@ -100,6 +132,7 @@ func ruleProvider(behavior, path string) map[string]any {
 //
 //	IP-CIDR,LAN,DIRECT (no-resolve)
 //	GEOIP/RULE-SET ip_is_private DIRECT
+//	[route.ad_block] RULE-SET,{category-ads-all,anti-ad,cname-ads},REJECT
 //	RULE-SET,geosite-cn,DIRECT
 //	RULE-SET,geoip-cn,DIRECT,no-resolve
 //	MATCH,out
@@ -107,6 +140,7 @@ func ruleProvider(behavior, path string) map[string]any {
 // whitelist mode:
 //
 //	IP-CIDR,LAN,DIRECT (no-resolve)
+//	[route.ad_block] RULE-SET,{category-ads-all,anti-ad,cname-ads},REJECT
 //	RULE-SET,geosite-cn,DIRECT
 //	RULE-SET,geoip-cn,DIRECT,no-resolve
 //	[whitelisted geosite tags] → out
@@ -140,9 +174,12 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 
 	// Ad blocking must precede the CN-direct line below: rules are first-match,
 	// so a CN-hosted ad domain would otherwise hit geosite-cn and be forwarded
-	// instead of rejected.
+	// instead of rejected. One line per AdRuleSets entry — they are independent
+	// lists, not fallbacks, so a hit in any of them rejects.
 	if r.cfg.Route.AdBlock {
-		rules = append(rules, "RULE-SET,"+rsAdsAll+",REJECT")
+		for _, rs := range AdRuleSets {
+			rules = append(rules, "RULE-SET,"+rs.Tag+",REJECT")
+		}
 	}
 
 	// CN direct — must come before whitelist hits so CN endpoints of

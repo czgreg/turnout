@@ -6,30 +6,37 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
+	"github.com/turnout-gateway/turnout-gateway/internal/mihomo"
 )
 
-// adsRuleSetFile must match internal/mihomo's rsAdsAll tag + ".mrs": the
-// renderer emits `RULE-SET,category-ads-all,REJECT` and resolves the provider
-// path as <RuleSetsDir>/<tag>.mrs.
-const adsRuleSetFile = "category-ads-all.mrs"
-
-// adBlockState is the GET/PUT shape. RuleSetInstalled is surfaced because it
+// adBlockState is the GET/PUT shape. Missing is surfaced because its absence
 // is the difference between "blocking" and "believing you are blocking": a
-// missing .mrs makes mihomo log an error and keep running with the rule
-// matching nothing (verified against v1.19.26), so the switch would read as
-// on while every ad still loads.
+// missing rule-set makes mihomo log an error and keep serving with the rule
+// matching nothing (verified against v1.19.26), so the switch would read as on
+// while every ad still loads.
 type adBlockState struct {
-	Enabled          bool `json:"enabled"`
-	RuleSetInstalled bool `json:"rule_set_installed"`
+	Enabled          bool     `json:"enabled"`
+	RuleSetInstalled bool     `json:"rule_set_installed"`
+	Missing          []string `json:"missing,omitempty"`
 }
 
+// adBlockState stats every file the renderer will reference. mihomo.AdRuleSets
+// is the single source of truth — duplicating the filenames here is how the two
+// drift apart silently.
 func (s *Server) adBlockState() adBlockState {
-	_, err := os.Stat(filepath.Join(s.deps.Cfg.DataPlane.RuleSetsDir, adsRuleSetFile))
+	var missing []string
+	for _, rs := range mihomo.AdRuleSets {
+		if _, err := os.Stat(filepath.Join(s.deps.Cfg.DataPlane.RuleSetsDir, rs.File)); err != nil {
+			missing = append(missing, rs.File)
+		}
+	}
 	return adBlockState{
 		Enabled:          s.deps.Cfg.DataPlane.Route.AdBlock,
-		RuleSetInstalled: err == nil,
+		RuleSetInstalled: len(missing) == 0,
+		Missing:          missing,
 	}
 }
 
@@ -54,8 +61,8 @@ func (s *Server) handleAdBlockPut(w http.ResponseWriter, r *http.Request) {
 
 	state := s.adBlockState()
 	if *dto.Enabled && !state.RuleSetInstalled {
-		http.Error(w, "cannot enable ad blocking: "+adsRuleSetFile+
-			" is not on disk — redeploy (scripts/stage.sh ships it) and retry", http.StatusConflict)
+		http.Error(w, "cannot enable ad blocking: missing "+strings.Join(state.Missing, ", ")+
+			" — redeploy (scripts/stage.sh ships them) and retry", http.StatusConflict)
 		return
 	}
 	if *dto.Enabled == state.Enabled {

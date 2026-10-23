@@ -912,48 +912,70 @@ func TestRenderer_DNSWhitelistSplit(t *testing.T) {
 	}
 }
 
-// Ad blocking is one REJECT line, and its position is load-bearing: mihomo
-// matches top-down, so a line after geosite-cn would never see CN-hosted ad
-// domains. The provider must also be emitted, or the rule references a set
-// that does not exist.
+// Ad blocking is one REJECT line per rule-set, and their position is
+// load-bearing: mihomo matches top-down, so a line after geosite-cn would
+// never see CN-hosted ad domains. Each provider must also be emitted with the
+// right format — text for the two community lists, mrs for the MetaCubeX one.
 func TestRules_AdBlockPrecedesCNDirect(t *testing.T) {
 	r := newTestRenderer(t)
 	r.cfg.Route.AdBlock = true
 
 	rules, _ := r.buildRules(sampleOutbounds())
-	idxAds, idxCN := -1, -1
+	idxCN := -1
 	for i, line := range rules {
-		if line == "RULE-SET,"+rsAdsAll+",REJECT" {
-			idxAds = i
-		}
 		if strings.HasPrefix(line, "RULE-SET,"+rsGeositeCN+",DIRECT") {
 			idxCN = i
 		}
 	}
-	if idxAds < 0 {
-		t.Fatalf("ad rule missing from rules: %v", rules)
-	}
 	if idxCN < 0 {
 		t.Fatalf("CN-direct rule missing (test premise broken): %v", rules)
 	}
-	if idxAds > idxCN {
-		t.Errorf("ad rule at %d must precede CN-direct at %d", idxAds, idxCN)
+
+	for _, rs := range AdRuleSets {
+		want := "RULE-SET," + rs.Tag + ",REJECT"
+		idx := -1
+		for i, line := range rules {
+			if line == want {
+				idx = i
+			}
+		}
+		if idx < 0 {
+			t.Fatalf("ad rule %q missing from rules: %v", want, rules)
+		}
+		if idx > idxCN {
+			t.Errorf("ad rule %q at %d must precede CN-direct at %d", rs.Tag, idx, idxCN)
+		}
 	}
 
-	if _, ok := r.buildRuleProviders()[rsAdsAll]; !ok {
-		t.Error("ad rule-set provider not emitted while the switch is on")
+	rp := r.buildRuleProviders()
+	for _, rs := range AdRuleSets {
+		p, ok := rp[rs.Tag].(map[string]any)
+		if !ok {
+			t.Errorf("provider %q not emitted while the switch is on", rs.Tag)
+			continue
+		}
+		if p["format"] != rs.Format {
+			t.Errorf("provider %q format = %v, want %s", rs.Tag, p["format"], rs.Format)
+		}
+		if path, _ := p["path"].(string); !strings.HasSuffix(path, rs.File) {
+			t.Errorf("provider %q path = %v, want suffix %s", rs.Tag, p["path"], rs.File)
+		}
 	}
 }
 
 func TestRules_AdBlockOffEmitsNothing(t *testing.T) {
 	r := newTestRenderer(t)
-	for _, line := range mustRules(t, r) {
-		if strings.Contains(line, rsAdsAll) {
-			t.Fatalf("ad rule emitted while the switch is off: %q", line)
+	rules := mustRules(t, r)
+	rp := r.buildRuleProviders()
+	for _, rs := range AdRuleSets {
+		for _, line := range rules {
+			if strings.Contains(line, rs.Tag) {
+				t.Fatalf("ad rule emitted while the switch is off: %q", line)
+			}
 		}
-	}
-	if _, ok := r.buildRuleProviders()[rsAdsAll]; ok {
-		t.Error("ad rule-set provider emitted while the switch is off")
+		if _, ok := rp[rs.Tag]; ok {
+			t.Errorf("ad provider %q emitted while the switch is off", rs.Tag)
+		}
 	}
 }
 

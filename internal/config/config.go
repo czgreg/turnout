@@ -608,22 +608,30 @@ type RouteConfig struct {
 	// Whitelist is consulted only when Mode == "whitelist".
 	Whitelist WhitelistConfig `yaml:"whitelist"`
 
-	// AdBlock rejects connections to domains on MetaCubeX's
-	// geosite-category-ads-all list — the pure-advertising subset, not the
-	// broader category-ads (which mixes in analytics and marketing and has a
-	// much higher false-positive rate).
+	// AdBlock rejects connections to three domain lists, each rendered as
+	// `RULE-SET,<tag>,REJECT` ahead of geosite-cn (mihomo matches top-down, so
+	// a rule after the CN-direct line would never see CN-hosted ad domains):
 	//
-	// Implemented as one `RULE-SET,category-ads-all,REJECT` line placed BEFORE
-	// geosite-cn: mihomo matches top-down, so a rule after the CN-direct line
-	// would never see CN-hosted ad domains. There is deliberately no
-	// per-domain exclusion list — the operator's only rollback is this switch
-	// (flip it off, re-render, no restart needed).
+	//	category-ads-all  MetaCubeX's superset (903). It is the BROADER list,
+	//	                  not the narrower category-ads (843): the 60 extra
+	//	                  entries are where the mainstream ad exchanges live
+	//	                  (adnxs, casalemedia, openx, pubmatic, taboola). The
+	//	                  same 60 also carry tracker/dev domains
+	//	                  (+.sentry.io, +.segment.io, +.clearbit.com).
+	//	anti-ad           anti-AD, CN-oriented plain text (~112k domains).
+	//	cname-ads         AdGuard cname-trackers' disguised domains (~11.7k):
+	//	                  first-party-looking names that CNAME to ad servers.
+	//	                  A domain-level REJECT reaches those only via this list.
+	//
+	// There is deliberately no per-domain exclusion list — the operator's only
+	// rollback is this switch (flip it off, re-render, no restart needed). The
+	// accepted cost is the ad-list tail that shares a name with real content,
+	// e.g. img1.126.net (163's image CDN) is on anti-AD.
 	//
 	// Default false. Turning it on changes behaviour for EVERY terminal on
-	// the diverted segment, and the rule-set must already be on disk
-	// (scripts/stage.sh ships it) — see the API handler, which refuses to
-	// enable it when the file is missing rather than silently blocking
-	// nothing.
+	// the diverted segment. Every file must be on disk (scripts/stage.sh ships
+	// them) — the API handler refuses to enable the switch when any is
+	// missing rather than silently blocking nothing.
 	AdBlock bool `yaml:"ad_block"`
 }
 

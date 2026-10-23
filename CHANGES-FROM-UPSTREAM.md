@@ -318,29 +318,41 @@ PLAN.md P3 第 2 条的表格已按此更新。
 上线原因：被引流网段终端零配置，网络层拦广告是这套旁挂架构唯一不需要
 装客户端的形态。
 
-实现只有一行规则：
+实现是三行规则，对应三份域名表：
 
 ```yaml
 rules:
   - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
   ...
   - RULE-SET,category-ads-all,REJECT   # 必须早于 geosite-cn,DIRECT
+  - RULE-SET,anti-ad,REJECT
+  - RULE-SET,cname-ads,REJECT
   - RULE-SET,geosite-cn,DIRECT
 ```
+
+| 表 | 规模 | 作用 |
+|---|---|---|
+| `category-ads-all` | 903 | MetaCubeX，广告交易所主体 |
+| `anti-ad` | ~11.2 万 | 中文向列表，纯文本，覆盖中文 App 埋点与广告 SDK |
+| `cname-ads` | ~1.17 万 | AdGuard cname-trackers 的"伪装第一方域名" |
 
 三处刻意的取舍：
 
 - **位置**：mihomo 首条匹配，规则若放在 `geosite-cn,DIRECT` 之后，国内站点
   上的广告域名会先命中 CN 直连而永远拦不到。
-- **列表**：`geosite-category-ads-all` 是纯广告子集，比 `category-ads` 窄，
-  后者混入统计与营销域名，误杀率明显更高。
+- **列表**：`category-ads-all` 是 `category-ads`（843）的**超集**，不是子集。
+  多出的 60 条正是 adnxs / casalemedia / openx / pubmatic / taboola 这些主流
+  广告交易所，同时也带进 `+.sentry.io` / `+.segment.io` / `+.clearbit.com`
+  这类追踪与开发者域名——选它是因为交易所的覆盖，代价一并接受。
 - **没有排除名单**：按产品决定不做。代价是误杀只能整体关闭——这一点写进了
-  控制台开关的确认弹窗和 `docs/api.md`，不留给运维自己发现。
+  控制台开关的确认弹窗和 `docs/api.md`，不留给运维自己发现。已知的第一例是
+  `img1.126.net`（163 系图片 CDN，在 anti-AD 里）。
 
 规则集缺失是**静默**的：实测 mihomo 对该情况只打一行
 `initial rule provider ... no such file` 然后继续服务，规则匹配不到任何东西。
-所以 `scripts/stage.sh` 无条件打包它（8 KB）并在下载失败时**中断构建**，
-`PUT /api/ad-block` 在文件缺失时返回 409 拒绝开启——"以为在拦"比"没拦"更糟。
+所以 `scripts/stage.sh` 无条件打包三份文件（下载失败时**中断构建**），并对两份
+文本表做归一化（去注释行、去 `*.` 前缀），`PUT /api/ad-block` 在任一份缺失时
+返回 409 并列出文件名——"以为在拦"比"没拦"更糟。
 
 控制台位置：「分流白名单 → 广告拦截」卡片，走独立端点 `GET/PUT /api/ad-block`，
 不并入白名单的整存模型（它不是白名单文档的一部分，且立即生效）。
