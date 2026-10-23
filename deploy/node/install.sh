@@ -290,11 +290,17 @@ install_turnout() {
   source /etc/turnout/env
   log "env file written: subnet=${TURNOUT_CLIENT_SUBNET:-?} tproxy_port=${TURNOUT_TPROXY_PORT:-0} ingress=${TURNOUT_INGRESS_IFACE:-?}"
 
-  # rule-sets — baked into the tarball by stage.sh as .mrs files.
-  if [ -d "$SCRIPT_DIR/rule-sets" ] && compgen -G "$SCRIPT_DIR/rule-sets/*.mrs" >/dev/null; then
-    install -m 0644 "$SCRIPT_DIR"/rule-sets/*.mrs /var/lib/turnout/mihomo/rule-sets/
-    n=$(find "$SCRIPT_DIR/rule-sets" -name '*.mrs' | wc -l | tr -d ' ')
-    log "rule-sets installed ($n .mrs in /var/lib/turnout/mihomo/rule-sets/)"
+  # rule-sets — baked into the tarball by stage.sh. Mostly MetaCubeX .mrs,
+  # but the ad lists (anti-ad.txt, cname-ads.txt) and pool rule_lists
+  # (<tag>.list) are plain text; copying only *.mrs leaves those providers
+  # pointing at nonexistent files, and mihomo only logs an error and keeps
+  # serving — the rules silently match nothing.
+  if [ -d "$SCRIPT_DIR/rule-sets" ]; then
+    n=$(find "$SCRIPT_DIR/rule-sets" -maxdepth 1 -type f | wc -l | tr -d ' ')
+    if [ "$n" -gt 0 ]; then
+      install -m 0644 "$SCRIPT_DIR"/rule-sets/* /var/lib/turnout/mihomo/rule-sets/
+      log "rule-sets installed ($n files in /var/lib/turnout/mihomo/rule-sets/)"
+    fi
   fi
 
   # mihomo's geoip.metadb (used by the geoip-cn routing rule). If staged,
