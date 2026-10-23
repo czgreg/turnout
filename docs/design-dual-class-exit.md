@@ -92,7 +92,12 @@ pools:
   global pattern and every pool pattern; `computePoolMembers` selects class
   members from all qualified nodes by pattern, ranks by long EWMA, caps at
   `Size`, and keeps incumbents unless a challenger beats the worst by
-  `SwapThresholdScore`.
+  `SwapThresholdScore`. The global `node_pattern` is also a **hard routing
+  filter** for the default pool: a non-matching node stays scored and
+  url-tested (class pools and recovery need it) but cannot enter the default
+  top-K. Without this, changing the default region is blocked by the old
+  region's incumbents in `state` (observed 2026-10-23: the pattern moved to
+  Asia but the K-gating kept selecting the US momo nodes).
 - `internal/mihomo/groups.go` — `poolDispatchMembers()` resolves a pool's
   members (scorer list → pattern → default-pool) and class pools emit their own
   per-terminal fallback groups. An empty pool renders a `select [DIRECT]`

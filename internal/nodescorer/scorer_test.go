@@ -204,6 +204,21 @@ func TestFilterCandidates_MultiPattern(t *testing.T) {
 	}
 }
 
+func TestFilterByNodePattern(t *testing.T) {
+	nodes := []NodeHealth{
+		{Name: "asia/hk-01", Qualified: true},
+		{Name: "us/lax-01", Qualified: true},
+		{Name: "asia/dead", Qualified: false},
+	}
+	got := filterByNodePattern(nodes, `^asia/`)
+	if len(got) != 1 || got[0].Name != "asia/hk-01" {
+		t.Fatalf("filterByNodePattern(^asia/) kept %d nodes, want only asia/hk-01", len(got))
+	}
+	if got := filterByNodePattern(nodes, ""); len(got) != 2 {
+		t.Fatalf("empty pattern must keep all qualified nodes, got %d", len(got))
+	}
+}
+
 // TestInTrialConfigurable pins the trial_duration knob: a deliberate
 // region migration needs a shorter trial than the 24h default, while zero
 // must keep the historical behavior.

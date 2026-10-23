@@ -666,12 +666,10 @@ func (s *Scorer) score(ctx context.Context) {
 	// small + uniformly high-quality so HRW never lands a terminal on a
 	// degraded node. Pool changes are slow (readmit throttle), so each
 	// terminal's egress IP is stable for hours-to-days.
-	qualifiedNodes := make([]*NodeHealth, 0, len(nodes))
-	for i := range nodes {
-		if nodes[i].Qualified {
-			qualifiedNodes = append(qualifiedNodes, &nodes[i])
-		}
-	}
+	// The global pattern is a HARD routing filter for the default pool.
+	// Non-matching nodes stay scored/probed (class pools and recovery need
+	// them) but cannot enter the default routing top-K.
+	qualifiedNodes := filterByNodePattern(nodes, s.nodePattern)
 	kTarget, supplyLimited := computeK(s.cfg.PoolSizing, len(qualifiedNodes))
 	minPool := s.cfg.PoolSizing.MinPoolSize
 	if minPool <= 0 {
@@ -1637,6 +1635,35 @@ func (s *Scorer) computeEligibleSetLocked(nodes []NodeHealth, minPool int, now t
 		}
 	}
 	return eligible
+}
+
+// filterByNodePattern returns the qualified nodes whose tag matches the
+// global url_test.node_pattern. This is a ROUTING filter, not just
+// discovery: a pattern change must evict old-region nodes from the default
+// pool even though they remain in the probing set/state for recovery.
+// Observed 2026-10-23: after the default pattern switched from momo HK/SG to
+// the broader Asia set, the K-gating still selected the US momo nodes from
+// state because the pattern only fed candidate discovery.
+//
+// An empty pattern matches everything (the legacy tests and configs rely on
+// that); an invalid pattern is treated the same way rather than silently
+// emptying the pool — config.Load rejects invalid patterns at startup.
+func filterByNodePattern(nodes []NodeHealth, pattern string) []*NodeHealth {
+	var re *regexp.Regexp
+	if pattern != "" {
+		re, _ = regexp.Compile(pattern)
+	}
+	out := make([]*NodeHealth, 0, len(nodes))
+	for i := range nodes {
+		if !nodes[i].Qualified {
+			continue
+		}
+		if re != nil && !re.MatchString(nodes[i].Name) {
+			continue
+		}
+		out = append(out, &nodes[i])
+	}
+	return out
 }
 
 // computePoolMembers maps each configured pool → its member node tags.
