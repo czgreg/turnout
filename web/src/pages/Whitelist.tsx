@@ -11,12 +11,13 @@ import {
   Radio,
   Select,
   Space,
+  Switch,
   Tag,
 } from '@arco-design/web-react';
 import { IconSave, IconUndo } from '@arco-design/web-react/icon';
 import * as api from '../api';
 import type { Snapshot } from '../snapshot';
-import type { RuleSetEntry, Whitelist } from '../types';
+import type { AdBlockState, RuleSetEntry, Whitelist } from '../types';
 
 /* Whitelist editor.
  *
@@ -91,6 +92,99 @@ function diffList(label: string, before: string[], after: string[]) {
   const removed = sorted(before.filter((x) => !a.has(x)));
   if (!added.length && !removed.length) return null;
   return { label, added, removed };
+}
+
+/* AdBlockCard — the ad-blocking switch.
+ *
+ * Kept out of the page's draft/baseline model on purpose: it is not part of
+ * the whitelist document, it applies immediately, and it is not protected by
+ * the "save the whole list" semantics. A toggle here re-renders and
+ * hot-reloads mihomo (3–5s), no restart.
+ *
+ * The one thing this card must not hide: rule_set_installed=false means the
+ * .mrs is not on disk. mihomo does NOT fail in that case — it logs an error
+ * and keeps serving, with the rule matching nothing. So the server refuses to
+ * enable (409) and the card says redeploy, rather than letting the operator
+ * believe ads are being blocked.
+ */
+function AdBlockCard() {
+  const [state, setState] = useState<AdBlockState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    api
+      .getAdBlock()
+      .then(setState)
+      .catch((e: Error) => setErr(e.message));
+  }, []);
+
+  const apply = async (enabled: boolean) => {
+    setBusy(true);
+    try {
+      setState(await api.putAdBlock(enabled));
+      setErr('');
+      Message.success(enabled ? '已开启广告拦截' : '已关闭广告拦截');
+    } catch (e) {
+      setErr((e as Error).message);
+      Message.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onChange = (next: boolean) => {
+    if (busy || !state) return;
+    if (!next) {
+      apply(false);
+      return;
+    }
+    Modal.confirm({
+      title: '开启广告拦截？',
+      content: (
+        <div>
+          <p>
+            所有被引流终端对广告域名的请求会被直接拒绝。<b>没有按域名豁免的入口</b>，
+            误杀的处置方式只有回到这里整体关闭。
+          </p>
+          <p className="small">
+            保存后重载 mihomo，约 3–5 秒；只影响新建立的连接，已有连接不受影响。
+          </p>
+        </div>
+      ),
+      okText: '开启',
+      cancelText: '取消',
+      onOk: () => apply(true),
+    });
+  };
+
+  return (
+    <Card
+      bordered={false}
+      className="mb"
+      title="广告拦截"
+      extra={<span className="dim">PUT /api/ad-block</span>}
+    >
+      {err && <Alert className="mb" type="error" content={err} />}
+      <Space>
+        <Switch
+          checked={!!state?.enabled}
+          loading={busy}
+          disabled={!state}
+          onChange={onChange}
+        />
+        <span>{state?.enabled ? '已开启' : '已关闭'}</span>
+        {state && !state.rule_set_installed && (
+          <Tag color="orange">规则集缺失，需重新部署后才能开启</Tag>
+        )}
+      </Space>
+      <p className="dim mt">
+        拦截 MetaCubeX 的 <code>geosite-category-ads-all</code>（纯广告域名）。靠 TLS SNI /
+        HTTP Host 识别，终端零配置，对全部终端生效；规则位于 CN 直连之前。
+        它只阻断广告<i>请求</i>——不会隐藏页面里的广告位，也不拦与正文同域的广告。
+      </p>
+    </Card>
+  );
 }
 
 export default function WhitelistPage({
@@ -292,6 +386,8 @@ export default function WhitelistPage({
           />
         )}
       </Card>
+
+      <AdBlockCard />
 
       <Card
         bordered={false}

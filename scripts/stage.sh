@@ -143,6 +143,12 @@ mkdir -p "$RULESETS_CACHE" "$STAGE_DIR/rule-sets"
 RULESET_ENTRIES=(
   "geosite-cn.mrs|https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs"
   "geoip-cn.mrs|https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs"
+  # Ad blocking. Shipped unconditionally, even when route.ad_block is off:
+  # the switch is flipped from the console at runtime and a toggle cannot
+  # download anything. A missing .mrs does NOT stop mihomo (verified: it
+  # logs "initial rule provider ... no such file" and keeps serving), so
+  # the rule would silently match nothing — see the hard check below.
+  "category-ads-all.mrs|https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ads-all.mrs"
 )
 
 # Tags requested by gateway.yaml as full URLs — legacy form, kept for yaml
@@ -282,6 +288,11 @@ for entry in "${DEDUPED_ENTRIES[@]:-}"; do
   fetched=$((fetched+1))
 done
 log "rule-sets staged: $fetched ok, $skipped skipped ($(du -sh "$STAGE_DIR/rule-sets" | cut -f1))"
+
+# Ad blocking is the one rule-set whose absence is silent at runtime, so it
+# gets a hard gate instead of the tolerate-and-continue treatment above.
+[ -s "$STAGE_DIR/rule-sets/category-ads-all.mrs" ] \
+  || fail "category-ads-all.mrs missing — ad blocking would silently match nothing; check network or the STAGE_CACHE/rule-sets copy"
 
 # 7. Tarball.
 TARBALL="$OUT_DIR/turnout-stage.tgz"

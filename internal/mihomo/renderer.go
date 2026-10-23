@@ -196,6 +196,15 @@ func (r *Renderer) SetWhitelist(mode string, wl config.WhitelistConfig) {
 	r.cfg.Route.Whitelist = wl
 }
 
+// SetAdBlock re-seats the ad-blocking switch. Called by PUT /api/ad-block
+// after the config is persisted; without it the renderer keeps the value it
+// captured at construction and the toggle would need a process restart.
+func (r *Renderer) SetAdBlock(enabled bool) {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	r.cfg.Route.AdBlock = enabled
+}
+
 // SetFakeIPSkip re-seats the DNS skip-suffix list. Called by the API
 // layer after PUT /api/whitelist so the updated nameserver-policy is
 // emitted in the next Write without needing a full config reload. Under

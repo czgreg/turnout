@@ -269,6 +269,10 @@ func (s *Server) rerenderAndReload(ctx context.Context) error {
 	// fields after a Mutate before Write reads stale state.
 	wl := s.deps.Cfg.DataPlane.Route.Whitelist
 	s.deps.Renderer.SetWhitelist(s.deps.Cfg.DataPlane.Route.Mode, wl)
+	// Ad blocking is a sibling of the whitelist in the rule table; re-seat it
+	// on every render so a toggle made through /api/ad-block survives renders
+	// triggered from other endpoints.
+	s.deps.Renderer.SetAdBlock(s.deps.Cfg.DataPlane.Route.AdBlock)
 	// Sync fake_ip_skip to the renderer's DNS config layer so the updated
 	// nameserver-policy is emitted without requiring a full config reload.
 	s.deps.Renderer.SetFakeIPSkip(s.deps.Cfg.DataPlane.DNS.FakeIPSkipSuffixes)

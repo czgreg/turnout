@@ -911,3 +911,54 @@ func TestRenderer_DNSWhitelistSplit(t *testing.T) {
 		t.Error("geoip rule-sets must not appear in nameserver-policy")
 	}
 }
+
+// Ad blocking is one REJECT line, and its position is load-bearing: mihomo
+// matches top-down, so a line after geosite-cn would never see CN-hosted ad
+// domains. The provider must also be emitted, or the rule references a set
+// that does not exist.
+func TestRules_AdBlockPrecedesCNDirect(t *testing.T) {
+	r := newTestRenderer(t)
+	r.cfg.Route.AdBlock = true
+
+	rules, _ := r.buildRules(sampleOutbounds())
+	idxAds, idxCN := -1, -1
+	for i, line := range rules {
+		if line == "RULE-SET,"+rsAdsAll+",REJECT" {
+			idxAds = i
+		}
+		if strings.HasPrefix(line, "RULE-SET,"+rsGeositeCN+",DIRECT") {
+			idxCN = i
+		}
+	}
+	if idxAds < 0 {
+		t.Fatalf("ad rule missing from rules: %v", rules)
+	}
+	if idxCN < 0 {
+		t.Fatalf("CN-direct rule missing (test premise broken): %v", rules)
+	}
+	if idxAds > idxCN {
+		t.Errorf("ad rule at %d must precede CN-direct at %d", idxAds, idxCN)
+	}
+
+	if _, ok := r.buildRuleProviders()[rsAdsAll]; !ok {
+		t.Error("ad rule-set provider not emitted while the switch is on")
+	}
+}
+
+func TestRules_AdBlockOffEmitsNothing(t *testing.T) {
+	r := newTestRenderer(t)
+	for _, line := range mustRules(t, r) {
+		if strings.Contains(line, rsAdsAll) {
+			t.Fatalf("ad rule emitted while the switch is off: %q", line)
+		}
+	}
+	if _, ok := r.buildRuleProviders()[rsAdsAll]; ok {
+		t.Error("ad rule-set provider emitted while the switch is off")
+	}
+}
+
+func mustRules(t *testing.T, r *Renderer) []string {
+	t.Helper()
+	rules, _ := r.buildRules(sampleOutbounds())
+	return rules
+}

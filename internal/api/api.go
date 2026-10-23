@@ -76,6 +76,9 @@ type Renderer interface {
 	// Synced on every PUT /api/whitelist so the renderer emits the updated
 	// nameserver-policy without a separate config reload.
 	SetFakeIPSkip(suffixes []string)
+	// SetAdBlock re-seats the ad-blocking switch. Synced on every
+	// PUT /api/ad-block before the re-render.
+	SetAdBlock(enabled bool)
 	// SetNode re-seats the node role info (client_subnet, ingress address,
 	// egress iface). Synced on every PUT /api/node/network so per-terminal
 	// fb-<ip> groups follow the new subnet instead of the one captured at
@@ -118,6 +121,12 @@ func NewServer(deps Deps) *Server {
 	mux.HandleFunc("PUT /api/whitelist", s.auth(s.handleWhitelistPut))
 
 	mux.HandleFunc("GET /api/rule-sets", s.auth(s.handleRuleSetsGet))
+
+	// Ad blocking — one REJECT rule ahead of the CN-direct line. Toggling
+	// hot-reloads mihomo; see adblock.go for why a missing rule-set is a 409
+	// rather than a silent no-op.
+	mux.HandleFunc("GET /api/ad-block", s.auth(s.handleAdBlockGet))
+	mux.HandleFunc("PUT /api/ad-block", s.auth(s.handleAdBlockPut))
 
 	// Node network — the diverted office segment. Editing client_subnet
 	// escapes this process: it fans out to /etc/turnout/env, nft.conf,

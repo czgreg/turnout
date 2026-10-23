@@ -4,6 +4,7 @@
 // egress uses TEST-NET-3 (203.0.113.0/24).
 import type {
   Active,
+  AdBlockState,
   Healthz,
   NodeHealth,
   NodeNetwork,
@@ -434,8 +435,7 @@ export function signal(): NodeSignal {
   };
 }
 
-/** GET /api/watchdog/status — enough shape for the network page's signal card. */
-export function watchdogStatus(autoFailover: boolean) {
+/** GET /api/watchdog/status — enough shape for the network page's signal card. */export function watchdogStatus(autoFailover: boolean) {
   return {
     state: 'healthy' as const,
     at: new Date().toISOString(),
@@ -488,4 +488,9 @@ export function notificationLog(): NotificationEntry[] {
     row(97, 'webhook_failed', 'node_dead', 'node us-04 failed 3 consecutive probes', 'lark: HTTP 400 msg_type invalid'),
     row(150, 'dropped_dedup_or_rate_limit', 'node_slow', 'node us-07 RTT p50 above threshold'),
   ] as NotificationEntry[];
+}
+
+/** GET /api/ad-block — starts off, rule-set present on a healthy node. */
+export function adBlock(): AdBlockState {
+  return { enabled: false, rule_set_installed: true };
 }

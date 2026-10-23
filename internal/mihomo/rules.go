@@ -17,6 +17,10 @@ import (
 const (
 	rsGeositeCN = "geosite-cn"
 	rsGeoipCN   = "geoip-cn"
+	// rsAdsAll is MetaCubeX's pure-advertising domain set. The tag doubles as
+	// the provider key AND the on-disk filename (<tag>.mrs), so stage.sh must
+	// save the fetched file under exactly this stem.
+	rsAdsAll = "category-ads-all"
 )
 
 // poolForRuleSet returns the name of the pool a given rule-set tag routes
@@ -66,6 +70,10 @@ func (r *Renderer) buildRuleProviders() map[string]any {
 	rp := map[string]any{
 		rsGeositeCN: ruleProvider("domain", filepath.Join(dir, rsGeositeCN+".mrs")),
 		rsGeoipCN:   ruleProvider("ipcidr", filepath.Join(dir, rsGeoipCN+".mrs")),
+	}
+
+	if r.cfg.Route.AdBlock {
+		rp[rsAdsAll] = ruleProvider("domain", filepath.Join(dir, rsAdsAll+".mrs"))
 	}
 
 	if r.cfg.Route.Mode == "whitelist" {
@@ -143,6 +151,13 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 		"IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
 		"IP-CIDR,224.0.0.0/4,DIRECT,no-resolve",
 	)
+
+	// Ad blocking must precede the CN-direct line below: rules are first-match,
+	// so a CN-hosted ad domain would otherwise hit geosite-cn and be forwarded
+	// instead of rejected.
+	if r.cfg.Route.AdBlock {
+		rules = append(rules, "RULE-SET,"+rsAdsAll+",REJECT")
+	}
 
 	// CN direct — must come before whitelist hits so CN endpoints of
 	// global services (e.g. apple.com.cn) don't get routed via airport.

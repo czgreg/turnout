@@ -412,3 +412,15 @@ export interface NotificationEntry {
   extra?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
+
+/* ── Ad blocking (GET /api/ad-block) ─────────────────────────────────────
+ *
+ * rule_set_installed is the difference between "blocking" and "believing you
+ * are blocking": a missing .mrs makes mihomo log an error and keep running
+ * with the rule matching nothing, so the switch would read as on while every
+ * ad still loads. The API refuses to enable while this is false.
+ */
+export interface AdBlockState {
+  enabled: boolean;
+  rule_set_installed: boolean;
+}

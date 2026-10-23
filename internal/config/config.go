@@ -606,6 +606,24 @@ type RouteConfig struct {
 
 	// Whitelist is consulted only when Mode == "whitelist".
 	Whitelist WhitelistConfig `yaml:"whitelist"`
+
+	// AdBlock rejects connections to domains on MetaCubeX's
+	// geosite-category-ads-all list — the pure-advertising subset, not the
+	// broader category-ads (which mixes in analytics and marketing and has a
+	// much higher false-positive rate).
+	//
+	// Implemented as one `RULE-SET,category-ads-all,REJECT` line placed BEFORE
+	// geosite-cn: mihomo matches top-down, so a rule after the CN-direct line
+	// would never see CN-hosted ad domains. There is deliberately no
+	// per-domain exclusion list — the operator's only rollback is this switch
+	// (flip it off, re-render, no restart needed).
+	//
+	// Default false. Turning it on changes behaviour for EVERY terminal on
+	// the diverted segment, and the rule-set must already be on disk
+	// (scripts/stage.sh ships it) — see the API handler, which refuses to
+	// enable it when the file is missing rather than silently blocking
+	// nothing.
+	AdBlock bool `yaml:"ad_block"`
 }
 
 // WhitelistConfig enumerates what's allowed through the airport in

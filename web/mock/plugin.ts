@@ -44,6 +44,7 @@ function handler(): Connect.NextHandleFunction {
   let signal = data.signal();
   let notif = data.notifications();
   let notifLog = data.notificationLog();
+  let adBlock = data.adBlock();
 
   return async (req, res, next) => {
     const url = new URL(req.url || '/', 'http://mock');
@@ -144,6 +145,20 @@ function handler(): Connect.NextHandleFunction {
     if (path === '/api/watchdog/status') return send(res, 200, data.watchdogStatus(signal.auto_failover));
 
     if (path === '/api/notifications/status') return send(res, 200, notif);
+
+    if (path === '/api/ad-block') {
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        if (b.enabled === undefined) return send(res, 400, { error: 'enabled field is required' });
+        if (b.enabled && !adBlock.rule_set_installed) {
+          return send(res, 409, { error: 'cannot enable ad blocking: category-ads-all.mrs is not on disk' });
+        }
+        await sleep(2500); // mihomo re-render + hot reload
+        adBlock = { ...adBlock, enabled: !!b.enabled };
+        return send(res, 200, adBlock);
+      }
+      return send(res, 200, adBlock);
+    }
 
     if (path === '/api/notifications/lark') {
       if (method === 'POST') {

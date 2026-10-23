@@ -18,6 +18,7 @@
  */
 import type {
   Active,
+  AdBlockState,
   Healthz,
   NodeNetwork,
   NodeSignal,
@@ -155,6 +156,17 @@ export const getWhitelist = () => request<Whitelist>('/api/whitelist');
 export const putWhitelist = (wl: Whitelist) =>
   request<Whitelist>('/api/whitelist', { method: 'PUT', ...json(wl) });
 export const getRuleSets = () => request<RuleSets>('/api/rule-sets');
+
+/**
+ * Ad blocking — one REJECT rule ahead of the CN-direct line.
+ *
+ * putAdBlock re-renders and hot-reloads mihomo (3–5s), no restart. It can
+ * answer 409 when the rule-set is not on disk; the server refuses to turn the
+ * switch on in that state rather than block nothing silently.
+ */
+export const getAdBlock = () => request<AdBlockState>('/api/ad-block');
+export const putAdBlock = (enabled: boolean) =>
+  request<AdBlockState>('/api/ad-block', { method: 'PUT', ...json({ enabled }) });
 
 /**
  * Node network — the diverted office segment.

@@ -37,6 +37,8 @@ token 为空时不鉴权。
 | GET | `/api/whitelist` | 白名单配置 | ✓ |
 | PUT | `/api/whitelist` | 整体替换白名单 | ✓ |
 | GET | `/api/rule-sets` | 可用 geosite/geoip catalog | ✓ |
+| GET | `/api/ad-block` | 广告拦截开关状态 + 规则集是否就位 | ✓ |
+| PUT | `/api/ad-block` | 开关广告拦截（热重载 mihomo） | ✓ |
 | GET | `/api/node/network` | 引流网段 + 入口网卡/地址 | ✓ |
 | PUT | `/api/node/network` | 修改 `client_subnet`（重建防火墙规则并重启相关单元） | ✓ |
 | GET | `/api/node/signal` | 探活地址 + watchdog 开关 | ✓ |
@@ -484,6 +486,35 @@ PUT body 四个字段均可选，只改传入的：
 校验（400）：合法 IPv4；**不得等于 `ingress_ip`**（摘掉会同时断掉 SSH 和 API，
 失去排查手段）；**不得等于 `return.gateway_ip`**（那是防火墙自己的地址）。
 与 `install.sh` precheck 的三条守卫一致。
+
+---
+
+## GET / PUT /api/ad-block
+
+广告拦截开关。开启后，渲染出的规则表在 **CN 直连之前**多一行：
+
+```
+RULE-SET,category-ads-all,REJECT
+```
+
+```json
+{ "enabled": true, "rule_set_installed": true }
+```
+
+`rule_set_installed` 是「真的在拦」与「以为在拦」的分界：`.mrs` 缺失时
+mihomo **不会**启动失败，只打一条 `initial rule provider ... no such file`
+然后继续服务，那条规则匹配不到任何东西。所以 PUT 在文件缺失时返回 **409**，
+拒绝打开开关，而不是让它静默空转。
+
+PUT body：`{"enabled": true}`。变更走「落盘 → 重渲染 → 热重载 mihomo」，
+不重启进程，约 3–5 秒，只影响新连接。
+
+语义边界：
+
+- 只阻断广告**请求**（连接建立前 REJECT），不隐藏页面广告位，不拦同域广告。
+- 域名来自 TLS SNI / HTTP Host，所以终端自建 DoH 也拦得住；纯 IP 无 SNI 的连接不匹配。
+- 对**全部被引流终端**生效，**没有按域名豁免**——误杀的处置方式只有整体关闭。
+- 规则集由 `scripts/stage.sh` 无条件打包（8 KB），下载失败会让 stage 直接失败。
 
 ---
 
