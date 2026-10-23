@@ -145,10 +145,18 @@ RULESET_ENTRIES=(
   "geoip-cn.mrs|https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs"
   # Ad blocking. Shipped unconditionally, even when route.ad_block is off:
   # the switch is flipped from the console at runtime and a toggle cannot
-  # download anything. A missing .mrs does NOT stop mihomo (verified: it
+  # download anything. A missing file does NOT stop mihomo (verified: it
   # logs "initial rule provider ... no such file" and keeps serving), so
   # the rule would silently match nothing — see the hard check below.
+  #
+  # Three sets, all of them referenced by internal/mihomo.AdRuleSets:
+  #   category-ads-all  MetaCubeX .mrs, the ad-exchange core (903)
+  #   anti-ad           CN-oriented plain-text list (~112k)
+  #   cname-ads         AdGuard disguised-CNAME domains, plain text (~11.7k)
+  # The last two are text so no conversion step is needed.
   "category-ads-all.mrs|https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ads-all.mrs"
+  "anti-ad.txt|https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-domains.txt"
+  "cname-ads.txt|https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_ads_justdomains.txt"
 )
 
 # Tags requested by gateway.yaml as full URLs — legacy form, kept for yaml
@@ -268,7 +276,7 @@ for e in "${RULESET_ENTRIES[@]:-}"; do
   esac
 done
 
-log "fetching ${#DEDUPED_ENTRIES[@]} rule-set .mrs files (cn infra + gateway.yaml whitelist)"
+log "fetching ${#DEDUPED_ENTRIES[@]} rule-set files (cn infra + ads + gateway.yaml whitelist)"
 fetched=0
 skipped=0
 for entry in "${DEDUPED_ENTRIES[@]:-}"; do
@@ -289,10 +297,26 @@ for entry in "${DEDUPED_ENTRIES[@]:-}"; do
 done
 log "rule-sets staged: $fetched ok, $skipped skipped ($(du -sh "$STAGE_DIR/rule-sets" | cut -f1))"
 
-# Ad blocking is the one rule-set whose absence is silent at runtime, so it
-# gets a hard gate instead of the tolerate-and-continue treatment above.
-[ -s "$STAGE_DIR/rule-sets/category-ads-all.mrs" ] \
-  || fail "category-ads-all.mrs missing — ad blocking would silently match nothing; check network or the STAGE_CACHE/rule-sets copy"
+# Normalize the two plain-text ad lists. Both ship with '#' headers; the
+# AdGuard list also carries a few "*.domain" wildcards. mihomo's text provider
+# would treat those lines as literal strings, so they would silently never
+# match — the same class of failure as a missing .mrs, which is why it is done
+# here rather than trusted to the upstream format.
+# Portable form: BSD sed has no -i without an argument, so write and rename.
+for f in anti-ad.txt cname-ads.txt; do
+  src="$STAGE_DIR/rule-sets/$f"
+  [ -s "$src" ] || continue
+  grep -v '^#' "$src" | grep -v '^[[:space:]]*$' | sed 's/^\*\.//' > "$src.tmp"
+  mv "$src.tmp" "$src"
+done
+
+# Ad blocking is the one rule-set group whose absence is silent at runtime, so
+# it gets a hard gate instead of the tolerate-and-continue treatment above.
+# internal/mihomo.AdRuleSets is the source of truth; keep this list in step.
+for f in category-ads-all.mrs anti-ad.txt cname-ads.txt; do
+  [ -s "$STAGE_DIR/rule-sets/$f" ] \
+    || fail "$f missing — ad blocking would silently match nothing; check network or the STAGE_CACHE/rule-sets copy"
+done
 
 # 7. Tarball.
 TARBALL="$OUT_DIR/turnout-stage.tgz"

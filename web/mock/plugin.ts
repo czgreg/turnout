@@ -152,7 +152,7 @@ function handler(): Connect.NextHandleFunction {
         const b = await readBody(req);
         if (b.enabled === undefined) return send(res, 400, { error: 'enabled field is required' });
         if (b.enabled && !adBlock.rule_set_installed) {
-          return send(res, 409, { error: 'cannot enable ad blocking: category-ads-all.mrs is not on disk' });
+          return send(res, 409, { error: 'cannot enable ad blocking: missing category-ads-all.mrs — redeploy (scripts/stage.sh ships them) and retry' });
         }
         await sleep(2500); // mihomo re-render + hot reload
         adBlock = { ...adBlock, enabled: !!b.enabled };

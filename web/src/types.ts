@@ -460,4 +460,6 @@ export interface NotificationEntry {
 export interface AdBlockState {
   enabled: boolean;
   rule_set_installed: boolean;
+  /** Files stage.sh ships that are missing on the node; empty when installed. */
+  missing?: string[];
 }

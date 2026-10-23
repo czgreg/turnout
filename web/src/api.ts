@@ -161,7 +161,7 @@ export const putWhitelist = (wl: Whitelist) =>
 export const getRuleSets = () => request<RuleSets>('/api/rule-sets');
 
 /**
- * Ad blocking — one REJECT rule ahead of the CN-direct line.
+ * Ad blocking — three REJECT rules ahead of the CN-direct line.
  *
  * putAdBlock re-renders and hot-reloads mihomo (3–5s), no restart. It can
  * answer 409 when the rule-set is not on disk; the server refuses to turn the

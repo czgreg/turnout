@@ -496,30 +496,51 @@ PUT body 四个字段均可选，只改传入的：
 
 ## GET / PUT /api/ad-block
 
-广告拦截开关。开启后，渲染出的规则表在 **CN 直连之前**多一行：
+广告拦截开关。开启后，渲染出的规则表在 **CN 直连之前**多三行：
 
 ```
 RULE-SET,category-ads-all,REJECT
+RULE-SET,anti-ad,REJECT
+RULE-SET,cname-ads,REJECT
 ```
+
+三份域名表（都由 `scripts/stage.sh` 随部署打包，运行时不下载）：
+
+| tag | 文件 | 规模 | 说明 |
+|---|---|---|---|
+| `category-ads-all` | `category-ads-all.mrs` | 903 | MetaCubeX，广告交易所主体 |
+| `anti-ad` | `anti-ad.txt` | ~11.2 万 | 中文向列表，纯文本 |
+| `cname-ads` | `cname-ads.txt` | ~1.17 万 | 伪装成第一方域名的投放域名 |
 
 ```json
 { "enabled": true, "rule_set_installed": true }
 ```
 
-`rule_set_installed` 是「真的在拦」与「以为在拦」的分界：`.mrs` 缺失时
-mihomo **不会**启动失败，只打一条 `initial rule provider ... no such file`
-然后继续服务，那条规则匹配不到任何东西。所以 PUT 在文件缺失时返回 **409**，
-拒绝打开开关，而不是让它静默空转。
+任一份缺失时：
+
+```json
+{ "enabled": false, "rule_set_installed": false, "missing": ["anti-ad.txt"] }
+```
+
+`rule_set_installed` 是「真的在拦」与「以为在拦」的分界：文件缺失时 mihomo
+**不会**启动失败，只打一条 `initial rule provider ... no such file`
+然后继续服务，那条规则匹配不到任何东西。所以 PUT 在任一份缺失时返回 **409**，
+列出缺的文件名，拒绝打开开关，而不是让它静默空转。
 
 PUT body：`{"enabled": true}`。变更走「落盘 → 重渲染 → 热重载 mihomo」，
-不重启进程，约 3–5 秒，只影响新连接。
+不重启进程，约 3–5 秒（三份表合计约 12.4 万域名，首次加载可能更久），只影响
+新连接。
 
 语义边界：
 
 - 只阻断广告**请求**（连接建立前 REJECT），不隐藏页面广告位，不拦同域广告。
 - 域名来自 TLS SNI / HTTP Host，所以终端自建 DoH 也拦得住；纯 IP 无 SNI 的连接不匹配。
+- **CNAME 伪装**：被 AdGuard cname-trackers 收录的伪装域名（约 1.17 万条）拦得到
+  ——客户端连的就是伪装域，SNI 正是它本身。未收录的新伪装域拦不到。
 - 对**全部被引流终端**生效，**没有按域名豁免**——误杀的处置方式只有整体关闭。
-- 规则集由 `scripts/stage.sh` 无条件打包（8 KB），下载失败会让 stage 直接失败。
+  已知第一例：`img1.126.net`（163 系图片 CDN）在 anti-AD 中。
+- 规则集由 `scripts/stage.sh` 无条件打包（约 2.4 MB），任何一份下载失败都会让
+  stage 直接失败；两份文本表在打包时去掉注释行与 `*.` 前缀。
 
 ---
 
