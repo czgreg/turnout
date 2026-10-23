@@ -228,6 +228,16 @@ type Scorer struct {
 	httpc      *http.Client // clash-api client
 	probeHTTPc *http.Client // dials through the turnout-probe listener
 
+	// reloadHTTPc is a SEPARATE client for PUT /configs. A reload re-parses
+	// the whole rendered config (~2k proxy groups here) and runs every
+	// group's first health check before mihomo answers: measured 6.2-6.7s
+	// on 10.100.6.15 (2026-10-23), i.e. longer than httpc's 5s timeout, so
+	// every reload overran the client while mihomo applied it anyway (38 of
+	// 97 attempts logged as failures in 24h). The other httpc calls
+	// (/proxies, /connections, selector flips) are cheap and keep the short
+	// timeout — a hung /proxies should not stall a scoring round for 30s.
+	reloadHTTPc *http.Client
+
 	// throughput tracking: previous /connections snapshot, keyed by
 	// CONNECTION ID (not node). Keyed by node until 2026-08-12, which made
 	// the delta wrong in both directions — see updateThroughput.
@@ -391,6 +401,7 @@ func New(
 		rollbackQuarantine: map[string]time.Time{},
 		ewma:               map[string]*nodeEWMA{},
 		httpc:              &http.Client{Timeout: 5 * time.Second},
+		reloadHTTPc:        &http.Client{Timeout: 30 * time.Second},
 		probeHTTPc: &http.Client{
 			Timeout:   12 * time.Second,
 			Transport: &http.Transport{Proxy: http.ProxyURL(probeProxy)},
@@ -1977,7 +1988,79 @@ func (s *Scorer) scoreNode(tag string, pData map[string]interface{}, throughputB
 	return h
 }
 
+// probeSample is one url-test result for a node, as mihomo recorded it.
+type probeSample struct {
+	Delay int
+	At    time.Time
+}
+
+// probeSampleMinSpacing is the minimum wall-clock gap for two probe results to
+// count as independent observations.
+//
+// Why this exists: mihomo health-checks per PROXY GROUP, so a node that is a
+// member of N groups is dialled N times in the same instant whenever those
+// groups are (re)created — which is what every PUT /configs does. The rendered
+// config here has ~2k fallback groups and each routing member sits in 250-500
+// of them, so one reload fires hundreds of concurrent dials at the same node.
+// Most queue or time out, and mihomo appends all of them to the same per-proxy
+// history. Measured on 10.100.6.15 (2026-10-23): after a reload a routing
+// member's 10-entry window was written within 3ms with 8 of them delay=0,
+// while the probes that followed at the normal 30s cadence were 56-60ms.
+// Scoring those as ten independent samples is what made a healthy node read
+// fail_rate 0.5-0.8 and get cycled out of the pool.
+//
+// 20s sits above the width of a reload burst (a few seconds) and below the
+// configured 30s health-check interval, so steady-state probes are never
+// merged. If the interval is lowered below 20s, samples merge rather than
+// double-count — fewer observations, still valid ones.
+const probeSampleMinSpacing = 20 * time.Second
+
+// sampleProbes collapses bursts into one observation each, preserving
+// mihomo's oldest→newest order. The LAST entry of a burst wins: it is the
+// most recent truth about the node, and when a burst is followed by a normal
+// health check inside the same window it is that uncontended probe.
+//
+// Entries without a parseable timestamp cannot be told apart from a burst, so
+// the raw history is returned unchanged (the pre-sampling behaviour) rather
+// than inventing an ordering.
+func sampleProbes(samples []probeSample) []int {
+	for _, sp := range samples {
+		if sp.At.IsZero() {
+			raw := make([]int, len(samples))
+			for i, s := range samples {
+				raw[i] = s.Delay
+			}
+			return raw
+		}
+	}
+	out := make([]int, 0, len(samples))
+	var anchor time.Time
+	latest := 0
+	open := false
+	for _, sp := range samples {
+		if !open || sp.At.Sub(anchor) >= probeSampleMinSpacing {
+			if open {
+				out = append(out, latest)
+			}
+			anchor, latest, open = sp.At, sp.Delay, true
+			continue
+		}
+		latest = sp.Delay
+	}
+	if open {
+		out = append(out, latest)
+	}
+	return out
+}
+
+// extractHistory returns the node's probe delays, one per independent probe
+// burst (see probeSampleMinSpacing), oldest first.
 func (s *Scorer) extractHistory(pData map[string]interface{}) []int {
+	return sampleProbes(s.probeSamples(pData))
+}
+
+// probeSamples parses mihomo's per-url probe history into timestamped samples.
+func (s *Scorer) probeSamples(pData map[string]interface{}) []probeSample {
 	// mihomo stores per-url history under extra["<probeURL>"].history
 	extra, _ := pData["extra"].(map[string]interface{})
 	if extra == nil {
@@ -1995,14 +2078,19 @@ func (s *Scorer) extractHistory(pData map[string]interface{}) []int {
 		return nil
 	}
 	rawHist, _ := urlData["history"].([]interface{})
-	out := make([]int, 0, len(rawHist))
+	out := make([]probeSample, 0, len(rawHist))
 	for _, entry := range rawHist {
 		m, _ := entry.(map[string]interface{})
 		if m == nil {
 			continue
 		}
 		d, _ := m["delay"].(float64)
-		out = append(out, int(d))
+		ts, _ := m["time"].(string)
+		at, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			at = time.Time{}
+		}
+		out = append(out, probeSample{Delay: int(d), At: at})
 	}
 	return out
 }
@@ -2085,22 +2173,35 @@ func (s *Scorer) hotReload(ctx context.Context, defaultPool, routingMembers []st
 	if s.renderer == nil {
 		return
 	}
+	start := time.Now()
+	// fail records the failure and RE-ARMS the render trigger. The set the
+	// scorer already committed to poolSet was never applied to mihomo, so
+	// the next scoring round must see defaultPoolChanged=true and retry
+	// instead of comparing against an intent that never landed.
+	fail := func(msg string, err error) {
+		slog.Error(msg, "err", err, "duration", time.Since(start).Round(time.Millisecond))
+		s.mu.Lock()
+		s.lastDefaultPoolRendered = nil
+		s.mu.Unlock()
+	}
 	outbounds := s.subscribe()
 	data, err := s.renderer.RenderWithPools(outbounds, defaultPool, routingMembers, poolMembers)
 	if err != nil {
-		slog.Error("nodescorer: re-render failed", "err", err)
+		fail("nodescorer: re-render failed", err)
 		return
 	}
 	if err := writeAtomic(s.renderer.Path(), data); err != nil {
-		slog.Error("nodescorer: write config failed", "err", err)
+		fail("nodescorer: write config failed", err)
 		return
 	}
 	if err := s.mihomoHotReload(ctx); err != nil {
-		slog.Error("nodescorer: hot-reload failed", "err", err)
+		fail("nodescorer: hot-reload failed", err)
 		return
 	}
 	slog.Info("nodescorer: pool updated + hot-reloaded",
-		"default_pool", len(defaultPool), "routing", len(routingMembers), "named_pools", len(poolMembers))
+		"default_pool", len(defaultPool), "routing", len(routingMembers),
+		"named_pools", len(poolMembers),
+		"duration", time.Since(start).Round(time.Millisecond))
 }
 
 func (s *Scorer) mihomoHotReload(ctx context.Context) error {
@@ -2115,7 +2216,7 @@ func (s *Scorer) mihomoHotReload(ctx context.Context) error {
 	if s.apiSecret != "" {
 		req.Header.Set("Authorization", "Bearer "+s.apiSecret)
 	}
-	resp, err := s.httpc.Do(req)
+	resp, err := s.reloadHTTPc.Do(req)
 	if err != nil {
 		return err
 	}

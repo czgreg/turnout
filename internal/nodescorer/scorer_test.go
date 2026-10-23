@@ -8,11 +8,19 @@ import (
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
 
+// probeFixtureBase is the oldest timestamp buildProxyEntry emits; entries are
+// spaced one health-check interval apart from it.
+var probeFixtureBase = time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC)
+
 func buildProxyEntry(alive bool, probeURL string, delays []int) map[string]interface{} {
+	// One entry per 30s health-check interval, oldest first — the shape
+	// mihomo actually produces. Entries sharing a timestamp are collapsed by
+	// sampleProbes as a single burst, so a fixture with one repeated
+	// timestamp would silently shrink every history to one sample.
 	history := make([]interface{}, len(delays))
 	for i, d := range delays {
 		history[i] = map[string]interface{}{
-			"time":  "2026-06-05T00:00:00Z",
+			"time":  probeFixtureBase.Add(time.Duration(i) * 30 * time.Second).Format(time.RFC3339Nano),
 			"delay": float64(d),
 		}
 	}
