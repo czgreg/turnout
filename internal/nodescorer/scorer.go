@@ -463,7 +463,7 @@ func (s *Scorer) Run(ctx context.Context) {
 		return
 	case <-warmup.C:
 	}
-	s.score(ctx)
+	s.scoreWithStartupRetry(ctx)
 
 	// Probe loop runs independently on its own cadence — flipping the
 	// probe-out selector is serialized within that single goroutine, so it
@@ -488,6 +488,44 @@ func (s *Scorer) Run(ctx context.Context) {
 	}
 }
 
+// scoreWithStartupRetry runs the first scoring round, retrying briefly when
+// the round cannot produce a candidate set.
+//
+// Both inputs the round needs can still be missing 10s after process start:
+// mihomo may be loading a (large) rendered config and answer /proxies with an
+// empty or partial map, and the first subscription refresh may not have
+// landed yet (AllOutbounds empty). Before 2026-10-23 one such miss parked the
+// scorer for a full ScoringInterval, because the initial score ignored its
+// outcome and the next attempt waited on the 5-minute ticker. Measured on
+// 10.100.6.15 after every redeploy: the first round logged "default-pool not
+// found in /proxies and no nodes matched node_pattern", and the node served
+// the heavy bootstrap render (one group per terminal unit) for five minutes.
+//
+// Bounded retry rather than an infinite one: if mihomo or the subscriptions
+// stay broken, the normal ticker and its error logs are the right surface.
+func (s *Scorer) scoreWithStartupRetry(ctx context.Context) {
+	const (
+		attempts = 6
+		interval = 10 * time.Second
+	)
+	for i := 1; i <= attempts; i++ {
+		if s.score(ctx) {
+			return
+		}
+		slog.Warn("nodescorer: startup scoring round incomplete — retrying",
+			"attempt", i, "of", attempts, "in", interval)
+		t := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+	}
+	slog.Warn("nodescorer: startup scoring still incomplete — falling back to the normal interval",
+		"attempts", attempts, "interval", s.cfg.ScoringInterval)
+}
+
 // GetSnapshot returns a copy of the latest scored state.
 func (s *Scorer) GetSnapshot() Snapshot {
 	s.mu.RLock()
@@ -499,12 +537,16 @@ func (s *Scorer) GetSnapshot() Snapshot {
 	return snap
 }
 
-func (s *Scorer) score(ctx context.Context) {
+// score runs one scoring round. It returns false when the round could not
+// produce a candidate set — /proxies unreachable or not populated yet, or no
+// node discovered from any source. Callers use this only for the STARTUP
+// retry (see scoreWithStartupRetry); a false return makes no state changes.
+func (s *Scorer) score(ctx context.Context) bool {
 	// 1. Fetch /proxies from mihomo.
 	proxies, err := s.fetchProxies(ctx)
 	if err != nil {
 		slog.Warn("nodescorer: /proxies fetch failed", "err", err)
-		return
+		return false
 	}
 
 	// 2. Fetch /connections for passive throughput.
@@ -573,7 +615,7 @@ func (s *Scorer) score(ctx context.Context) {
 		members, _ = defaultPool["all"].([]interface{})
 	} else if len(discovered) == 0 {
 		slog.Warn("nodescorer: default-pool not found in /proxies and no nodes matched node_pattern")
-		return
+		return false
 	} else {
 		slog.Warn("nodescorer: default-pool not found in /proxies — proceeding on pattern discovery",
 			"discovered", len(discovered))
@@ -610,7 +652,7 @@ func (s *Scorer) score(ctx context.Context) {
 	sort.Strings(candidates)
 	if len(candidates) == 0 {
 		slog.Warn("nodescorer: no candidates (default-pool empty, no prior state, no pattern match)")
-		return
+		return false
 	}
 
 	// 4. Score each member.
@@ -1299,6 +1341,7 @@ func (s *Scorer) score(ctx context.Context) {
 		s.lastHotReload = now
 		go s.hotReload(context.Background(), defaultPoolAll, routingMembers, members)
 	}
+	return true
 }
 
 // eligibilityPoolLocked builds newPoolSet under sizing_mode=eligibility:
