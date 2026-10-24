@@ -472,9 +472,25 @@ install_units() {
 # bootstrap config — harmless but noisy in logs.
 
 prerender_config() {
-  /usr/local/bin/turnout-gateway --config /etc/turnout/gateway.yaml --render-once \
-    || fail "turnout-gateway --render-once failed; check gateway.yaml"
-  log "bootstrap mihomo config rendered at /var/lib/turnout/mihomo/config.yaml"
+  # On a re-install, KEEP the last-known-good config. `--render-once` renders
+  # the bootstrap form (no subscription outbounds), so overwriting a working
+  # config here leaves the node with zero proxies until the gateway's first
+  # subscription refresh lands ~5-10s later — during which every proxied flow
+  # AND every whitelisted DNS lookup fails (proxy_doh goes through the pool).
+  # Observed by turnout-healthwatch on 2026-10-24 at 17:56: pool size 0,
+  # 11KB config, claude.ai lookup timed out, youtube delay 504.
+  #
+  # Fresh node (no config) still renders. If the existing config does not
+  # pass mihomo -t, fall back to rendering a fresh one so the install is not
+  # blocked by a broken last state.
+  if [ -s /var/lib/turnout/mihomo/config.yaml ] \
+     && /usr/local/bin/mihomo -d /var/lib/turnout/mihomo -t >/dev/null 2>&1; then
+    log "keeping existing mihomo config (validated; gateway re-renders after subscription refresh)"
+  else
+    /usr/local/bin/turnout-gateway --config /etc/turnout/gateway.yaml --render-once \
+      || fail "turnout-gateway --render-once failed; check gateway.yaml"
+    log "bootstrap mihomo config rendered at /var/lib/turnout/mihomo/config.yaml"
+  fi
   # mihomo -t: validate the rendered YAML before accepting it.
   # Catches config bugs (invalid rule-provider paths, bad proxy syntax) that
   # render-once won't catch — render-once only verifies the renderer produces
