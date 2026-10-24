@@ -856,6 +856,10 @@ func (s *Scorer) score(ctx context.Context) bool {
 			sort.SliceStable(qualifiedNodes, func(i, j int) bool {
 				return s.nodeLongEWMA(qualifiedNodes[i].Name) < s.nodeLongEWMA(qualifiedNodes[j].Name)
 			})
+			qualifiedSet := make(map[string]bool, len(qualifiedNodes))
+			for i := range qualifiedNodes {
+				qualifiedSet[qualifiedNodes[i].Name] = true
+			}
 			preferredSet := make(map[string]bool, kTarget)
 			for i := 0; i < len(qualifiedNodes) && len(preferredSet) < kTarget; i++ {
 				name := qualifiedNodes[i].Name
@@ -930,20 +934,59 @@ func (s *Scorer) score(ctx context.Context) bool {
 			// in top-K by EWMA, we only promote if its long EWMA is
 			// SIGNIFICANTLY better than the worst current pool member's
 			// long EWMA. Default 0 = no extra gate.
+			//
+			// Two things made this gate ineffective until 2026-10-24:
+			//
+			//  1. It filtered CHALLENGERS out of preferredSet, but the
+			//     incumbent they displaced was still evicted (it is no
+			//     longer in top-K → wantInPool=false). The kTarget fill
+			//     post-pass then re-admitted the very challenger this block
+			//     had just rejected, so every marginal ranking flip still
+			//     became a swap.
+			//  2. Nothing protected the incumbent. Measured on 10.100.6.15:
+			//     pool members ranked 263-282 long EWMA, the next eight
+			//     candidates 283-300 — a 1.4-point gap at the K=8 boundary
+			//     — and the pool still ping-ponged (HK03 <-> JP01,
+			//     SG06 <-> SG08) every ~30 min, rotating the primary egress
+			//     IP of ~21% of terminal buckets each time (HRW top-2 over
+			//     the /16's 1024 buckets) for no measurable quality gain.
+			//
+			// Now: only challengers that clear the margin stay in
+			// preferredSet, and when NONE clears it, every current member
+			// keeps its slot (fast-evicted ones excepted). Bootstrap (empty
+			// pool) is exempt — there is no incumbent and no worst member
+			// to compare against.
 			swapThreshold := s.cfg.SwapThresholdScore
-			if swapThreshold > 0 {
-				worstInPoolEWMA := -math.Inf(1)
+			worstInPoolEWMA := math.Inf(-1)
+			if swapThreshold > 0 && len(s.poolSet) > 0 {
 				for tag := range s.poolSet {
 					if e := s.nodeLongEWMA(tag); e > worstInPoolEWMA {
 						worstInPoolEWMA = e
 					}
 				}
+				anyPassing := false
 				for name := range preferredSet {
 					if s.poolSet[name] {
 						continue
 					}
-					if s.nodeLongEWMA(name)+swapThreshold > worstInPoolEWMA {
+					if s.nodeLongEWMA(name)+swapThreshold <= worstInPoolEWMA {
+						anyPassing = true
+					} else {
 						delete(preferredSet, name)
+					}
+				}
+				if !anyPassing {
+					// Only QUALIFIED incumbents are protected. An unqualified
+					// member (fail_rate >= 0.9, or otherwise failing the
+					// liveness gate) must still leave immediately — that is
+					// the one eviction path that must never be damped.
+					// Quarantined members are excluded for the same reason:
+					// quarantine means "recently rolled back, do not carry
+					// traffic", and the top-K loop above already skips them.
+					for name := range s.poolSet {
+						if !evicted[name] && qualifiedSet[name] && !s.inQuarantine(name, now) {
+							preferredSet[name] = true
+						}
 					}
 				}
 			}
@@ -1003,6 +1046,16 @@ func (s *Scorer) score(ctx context.Context) bool {
 			//      such a node out of a full pool, but THIS path bypasses
 			//      ranking, so it was the one way a node that bad could
 			//      start carrying terminals.
+			// Members removed by a gate rather than displaced by a better
+			// challenger (unqualified, or fast-evicted). Their slots may be
+			// backfilled with the best available candidate WITHOUT the swap
+			// margin — running one node short is worse than taking a peer.
+			forcedOut := 0
+			for name := range s.poolSet {
+				if evicted[name] || !qualifiedSet[name] {
+					forcedOut++
+				}
+			}
 			if len(newPoolSet) < kTarget {
 				ceil := s.poolFillCeiling(nodes)
 				for i := 0; i < len(qualifiedNodes); i++ {
@@ -1019,6 +1072,22 @@ func (s *Scorer) score(ctx context.Context) bool {
 								"node", name, "composite", c, "ceiling", ceil)
 							continue
 						}
+					}
+					// Same swap margin as the preferred-set gate above.
+					// Without this the fill was the back door through which
+					// marginal challengers (1-2 EWMA points better) replaced
+					// incumbents. Incumbents are always allowed back: they
+					// were only evicted because a challenger was in top-K,
+					// and at this point no better option has been admitted.
+					//
+					// Fast-evict and unqualified removals are exempt: those
+					// slots were freed by a gate, not contested by a
+					// challenger, so backfilling with the best available
+					// candidate beats running a node short even if that
+					// candidate does not clear the swap margin.
+					if swapThreshold > 0 && len(s.poolSet) > 0 && forcedOut == 0 &&
+						!s.poolSet[name] && s.nodeLongEWMA(name)+swapThreshold > worstInPoolEWMA {
+						continue
 					}
 					newPoolSet[name] = true
 					for j := range nodes {
