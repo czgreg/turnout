@@ -79,6 +79,14 @@ GOOS=linux GOARCH="$GOARCH" CGO_ENABLED=0 go build \
   -o "$STAGE_DIR/turnout-gateway" ./cmd/gateway
 ls -lh "$STAGE_DIR/turnout-gateway" | awk '{print "[stage] turnout-gateway", $5}'
 
+# 1b. Health sampler. Ships with the gateway so every node records the same
+# state (pool churn, reloads, DNS, direct-DNS reachability, resources) for
+# later optimisation. No ldflags: it has no version variable.
+log "building turnout-healthwatch (linux/$GOARCH)"
+GOOS=linux GOARCH="$GOARCH" CGO_ENABLED=0 go build \
+  -o "$STAGE_DIR/turnout-healthwatch" ./cmd/healthwatch
+ls -lh "$STAGE_DIR/turnout-healthwatch" | awk '{print "[stage] turnout-healthwatch", $5}'
+
 # 2. mihomo data-plane binary. Use the "compatible" build (non-AMD64-v3)
 # so it runs on older forwarding-node hardware classes that lack AVX2.
 M_PKG="mihomo-linux-${GOARCH}-compatible-v${MIHOMO_VERSION}"
@@ -122,6 +130,7 @@ cp deploy/node/install.sh \
    deploy/node/turnout-mihomo.service \
    deploy/node/turnout-gateway.service \
    deploy/node/turnout-nft.service \
+   deploy/node/turnout-healthwatch.service \
    "$STAGE_DIR/"
 chmod 0755 "$STAGE_DIR/install.sh" "$STAGE_DIR/iproute.sh" "$STAGE_DIR/render-rules.sh"
 log "deploy/node/* files staged"

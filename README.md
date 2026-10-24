@@ -229,7 +229,44 @@ revertive 语义对齐。`assert.go` 可能在我们下一次自检前就修好�
 
 ---
 
-## 7. 文档
+## 7. 运行观测（turnout-healthwatch）
+
+随包部署的采样器，每 60s 把系统状态写成一行 JSON，落到
+`/var/lib/turnout/health/health-YYYY-MM-DD.jsonl`（保留 30 天）。它独立于
+控制面进程：turnout-gateway 重启期间照常记录 —— 重启正是最容易出问题的
+时刻（见 2026-10-24 的两次启动事故）。
+
+每条记录包含：
+
+- `/healthz` 的数据面断言结论 + 失败项
+- 池大小 / K / tier1 / 最近评分与刷新时间
+- 池内每个节点的 RTT、抖动、fail_rate、探测次数、活动连接
+- 本区间内的换池次数 + 5m/1h/24h 窗口（换池频率优化的主要信号）
+- 渲染配置的 mtime/大小、fallback 组数、per-terminal 规则数
+  （能一眼看出“1027 组”这类退化）
+- 日志增量：热重载次数/失败/耗时、评分轮次、暖机跳过、warn/error、DNS 解析失败
+- 经网关 resolver 解析一个白名单域名的真实时延（按 `preload_domains` 轮换）
+- 直连 `1.1.1.1:853/443`、`8.8.8.8:443` 的连通性
+  （2026-10-24 的故障正是这条直接路径被阻断）
+- 经探测终端的出口分组访问 `https://www.youtube.com` 的端到端时延
+- mihomo / gateway 的 RSS、load1、可用内存、磁盘
+
+配置一个真实终端作为探测目标（可选）：
+
+```bash
+echo 'HEALTHWATCH_PROBE_IP=192.168.13.2' | sudo tee /etc/turnout/healthwatch.env
+sudo systemctl restart turnout-healthwatch
+```
+
+查看最近 24h 汇总：
+
+```bash
+sudo turnout-healthwatch --summary --summary-hours 24
+```
+
+---
+
+## 8. 文档
 
 - [`PLAN.md`](PLAN.md) — 基于 Interchange 的修改开发计划（分阶段、可验证）
 - [`CHANGES-FROM-UPSTREAM.md`](CHANGES-FROM-UPSTREAM.md) — 逐包/逐文件的保留、修改、删除、新增清单

@@ -249,9 +249,18 @@ install_turnout() {
   install -m 0755 "$SCRIPT_DIR/turnout-gateway" /usr/local/bin/turnout-gateway
   log "turnout-gateway installed"
 
+  # Health sampler: records pool/DNS/reload/resource state to
+  # /var/lib/turnout/health for later optimisation. Optional so an older
+  # tarball without the binary still installs.
+  if [ -x "$SCRIPT_DIR/turnout-healthwatch" ]; then
+    install -m 0755 "$SCRIPT_DIR/turnout-healthwatch" /usr/local/bin/turnout-healthwatch
+    log "turnout-healthwatch installed"
+  fi
+
   # Working dirs.
   install -d -m 0755 /etc/turnout /var/lib/turnout
   install -d -m 0755 /var/lib/turnout/mihomo /var/lib/turnout/mihomo/rule-sets
+  install -d -m 0755 /var/lib/turnout/health
 
   if [ -f "$SCRIPT_DIR/gateway.yaml" ]; then
     # Auto-backup whatever is currently at /etc/turnout/gateway.yaml before
@@ -447,7 +456,7 @@ install_units() {
   # turnout-mihomo / turnout-gateway / turnout-nft. This is a greenfield
   # deployment target, so upstream's legacy engine cleanup block is
   # dropped — no node here ever carried that unit.
-  for unit in turnout-mihomo.service turnout-gateway.service turnout-nft.service; do
+  for unit in turnout-mihomo.service turnout-gateway.service turnout-nft.service turnout-healthwatch.service; do
     [ -f "$SCRIPT_DIR/$unit" ] || continue
     install -m 0644 "$SCRIPT_DIR/$unit" "/etc/systemd/system/$unit"
   done
@@ -490,8 +499,15 @@ start_services() {
   systemctl restart turnout-nft.service
   systemctl restart turnout-gateway.service
 
-  systemctl --no-pager status turnout-mihomo.service turnout-gateway.service turnout-nft.service \
-    | head -30 || true
+  # The sampler is optional (older tarballs do not ship it), and it must not
+  # fail the install if the unit is absent.
+  if [ -f /etc/systemd/system/turnout-healthwatch.service ]; then
+    systemctl enable turnout-healthwatch.service
+    systemctl restart turnout-healthwatch.service
+  fi
+
+  systemctl --no-pager status turnout-mihomo.service turnout-gateway.service turnout-nft.service turnout-healthwatch.service \
+    | head -40 || true
 }
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,26 @@
+[Unit]
+Description=turnout health sampler (records pool/DNS/reload state for later analysis)
+# Deliberately NOT bound to turnout-gateway with BindsTo: the sampler must
+# keep recording while the control plane restarts, because restarts are
+# exactly when yesterday's startup incidents happened.
+After=network-online.target turnout-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Optional per-node probe target: HEALTHWATCH_PROBE_IP=<a real terminal IP>.
+# Absent → the sampler still records pool/DNS/reload/resource state, just not
+# the terminal-specific assignment and end-to-end proxy delay.
+EnvironmentFile=-/etc/turnout/healthwatch.env
+ExecStart=/usr/local/bin/turnout-healthwatch --config /etc/turnout/gateway.yaml
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+# /var/lib/turnout/health is where the JSONL records land. journalctl only
+# needs read access to the journal, which ProtectSystem=strict permits.
+ReadWritePaths=/var/lib/turnout
+
+[Install]
+WantedBy=multi-user.target
