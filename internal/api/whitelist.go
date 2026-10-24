@@ -273,6 +273,15 @@ func (s *Server) rerenderAndReload(ctx context.Context) error {
 	// on every render so a toggle made through /api/ad-block survives renders
 	// triggered from other endpoints.
 	s.deps.Renderer.SetAdBlock(s.deps.Cfg.DataPlane.Route.AdBlock)
+	// Adult-content blocking is the same kind of sibling: re-seat both the
+	// switch and its exemption list on every render so a toggle or allow-list
+	// edit made through /api/adult-block survives renders triggered from
+	// other endpoints.
+	s.deps.Renderer.SetAdultBlock(
+		s.deps.Cfg.DataPlane.Route.AdultBlock,
+		append([]string(nil), s.deps.Cfg.DataPlane.Route.AdultBlockAllow...),
+	)
+
 	// Sync fake_ip_skip to the renderer's DNS config layer so the updated
 	// nameserver-policy is emitted without requiring a full config reload.
 	s.deps.Renderer.SetFakeIPSkip(s.deps.Cfg.DataPlane.DNS.FakeIPSkipSuffixes)

@@ -32,6 +32,10 @@ const (
 	// first-party-looking domains that CNAME to ad/tracking servers. Blocking
 	// these is the only way a domain-level rule reaches CNAME-cloaked ads.
 	rsCNAMEAds = "cname-ads"
+	// Adult-content sets. rsPorn ships as .mrs (compiled `+.domain`), rsNSFW
+	// as normalized plain text (`+.domain` per line); see AdultRuleSets.
+	rsPorn = "category-porn"
+	rsNSFW = "nsfw"
 )
 
 // RuleSetSpec describes one file ad blocking depends on.
@@ -49,6 +53,18 @@ var AdRuleSets = []RuleSetSpec{
 	{Tag: rsAdsAll, File: rsAdsAll + ".mrs", Format: "mrs"},
 	{Tag: rsAntiAD, File: rsAntiAD + ".txt", Format: "text"},
 	{Tag: rsCNAMEAds, File: rsCNAMEAds + ".txt", Format: "text"},
+}
+
+// Adult-content rule-sets. rsPorn is MetaCubeX's category-porn, whose .mrs
+// entries are compiled as `+.domain` — apex AND all subdomains. rsNSFW is
+// HaGeZi's NSFW list; its upstream form is one BARE domain per line, which
+// mihomo would match exactly, so stage.sh rewrites each line to `+.domain`
+// before it reaches the node. A bare entry only ever matches its own host:
+// verified against mihomo v1.19.26 (bare `x.invalid` did not match
+// `www.x.invalid`; `+.x.invalid` did).
+var AdultRuleSets = []RuleSetSpec{
+	{Tag: rsPorn, File: rsPorn + ".mrs", Format: "mrs"},
+	{Tag: rsNSFW, File: rsNSFW + ".txt", Format: "text"},
 }
 
 // poolRuleSets returns every rule-set tag claimed by any pool, deduped.
@@ -112,6 +128,14 @@ func (r *Renderer) buildRuleProviders() map[string]any {
 		}
 	}
 
+	// Adult-content blocking — same shape as AdBlock. The .mrs is precompiled
+	// with `+.` entries; the text list is normalized by stage.sh.
+	if r.cfg.Route.AdultBlock {
+		for _, rs := range AdultRuleSets {
+			rp[rs.Tag] = ruleProvider("domain", rs.Format, filepath.Join(dir, rs.File))
+		}
+	}
+
 	if r.cfg.Route.Mode == "whitelist" {
 		for _, tag := range r.cfg.Route.Whitelist.Geosites {
 			rp[tag] = ruleProvider("domain", "mrs", filepath.Join(dir, tag+".mrs"))
@@ -168,6 +192,8 @@ func ruleProviderClassical(path string) map[string]any {
 //	IP-CIDR,LAN,DIRECT (no-resolve)
 //	GEOIP/RULE-SET ip_is_private DIRECT
 //	[route.ad_block] RULE-SET,{category-ads-all,anti-ad,cname-ads},REJECT
+//	[route.adult_block] DOMAIN-SUFFIX,<allow>,{DIRECT|out}
+//	[route.adult_block] RULE-SET,{category-porn,nsfw},REJECT
 //	RULE-SET,geosite-cn,DIRECT
 //	RULE-SET,geoip-cn,DIRECT,no-resolve
 //	MATCH,out
@@ -176,6 +202,8 @@ func ruleProviderClassical(path string) map[string]any {
 //
 //	IP-CIDR,LAN,DIRECT (no-resolve)
 //	[route.ad_block] RULE-SET,{category-ads-all,anti-ad,cname-ads},REJECT
+//	[route.adult_block] DOMAIN-SUFFIX,<allow>,{DIRECT|out}
+//	[route.adult_block] RULE-SET,{category-porn,nsfw},REJECT
 //	RULE-SET,geosite-cn,DIRECT
 //	RULE-SET,geoip-cn,DIRECT,no-resolve
 //	[whitelisted geosite tags] → out
@@ -213,6 +241,36 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 	// lists, not fallbacks, so a hit in any of them rejects.
 	if r.cfg.Route.AdBlock {
 		for _, rs := range AdRuleSets {
+			rules = append(rules, "RULE-SET,"+rs.Tag+",REJECT")
+		}
+	}
+
+	// Adult-content blocking. Exemption rules come first: they are the
+	// false-positive escape hatch and must win over the REJECT lines below.
+	// The target mirrors what would happen without the block — DIRECT in
+	// whitelist mode (where MATCH is DIRECT), the normal overseas outbound
+	// otherwise. Note this means an exempt domain that is ALSO on the
+	// whitelist goes direct, not through the pool; the config docs say not
+	// to do that.
+	//
+	// Entries are normalized here because gateway.yaml is hand-editable:
+	// accept "example.com", "+.example.com" and "*.example.com" alike.
+	if r.cfg.Route.AdultBlock {
+		exemptTarget := outSelector
+		if r.cfg.Route.Mode == "whitelist" {
+			exemptTarget = "DIRECT"
+		}
+		for _, d := range r.cfg.Route.AdultBlockAllow {
+			d = strings.ToLower(strings.TrimSpace(d))
+			d = strings.TrimPrefix(d, "+.")
+			d = strings.TrimPrefix(d, "*.")
+			d = strings.TrimPrefix(d, ".")
+			if d == "" || strings.ContainsAny(d, " \t/:") {
+				continue
+			}
+			rules = append(rules, "DOMAIN-SUFFIX,"+d+","+exemptTarget)
+		}
+		for _, rs := range AdultRuleSets {
 			rules = append(rules, "RULE-SET,"+rs.Tag+",REJECT")
 		}
 	}

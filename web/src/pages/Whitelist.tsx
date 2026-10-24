@@ -17,7 +17,7 @@ import {
 import { IconSave, IconUndo } from '@arco-design/web-react/icon';
 import * as api from '../api';
 import type { Snapshot } from '../snapshot';
-import type { AdBlockState, RuleSetEntry, Whitelist } from '../types';
+import type { AdultBlockState, AdBlockState, RuleSetEntry, Whitelist } from '../types';
 
 /* Whitelist editor.
  *
@@ -188,6 +188,144 @@ function AdBlockCard() {
         识别，终端零配置，对全部终端生效；规则位于 CN 直连之前。
         它只阻断广告<i>请求</i>——不会隐藏页面里的广告位，也不拦与正文同域的广告。
       </p>
+    </Card>
+  );
+}
+
+/* AdultBlockCard — the adult-content switch plus its exemption list.
+ *
+ * Same model as AdBlockCard: independent of the whitelist document, applies
+ * immediately, hot-reloads mihomo. The exemption list exists because adult
+ * lists produce false positives on health / education / art sites far more
+ * often than ad lists do, and the alternative would be turning the whole
+ * feature off.
+ *
+ * Copy must not over-claim: this is a DOMAIN-LIST match, not content
+ * recognition. A site not in either list is not detected, and ECH defeats
+ * the SNI the rule depends on.
+ */
+function AdultBlockCard() {
+  const [state, setState] = useState<AdultBlockState | null>(null);
+  const [allow, setAllow] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    api
+      .getAdultBlock()
+      .then((s) => {
+        setState(s);
+        setAllow(s.allow);
+      })
+      .catch((e: Error) => setErr(e.message));
+  }, []);
+
+  const allowDirty = useMemo(() => {
+    if (!state) return false;
+    const a = [...allow].sort();
+    const b = [...state.allow].sort();
+    return a.length !== b.length || a.some((x, i) => x !== b[i]);
+  }, [allow, state]);
+
+  const apply = async (enabled: boolean, nextAllow: string[]) => {
+    setBusy(true);
+    try {
+      const next = await api.putAdultBlock(enabled, nextAllow);
+      setState(next);
+      setAllow(next.allow);
+      setErr('');
+      Message.success('成人内容封禁设置已保存');
+    } catch (e) {
+      setErr((e as Error).message);
+      Message.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onChange = (next: boolean) => {
+    if (busy || !state) return;
+    if (next === state.enabled) return;
+    if (!next) {
+      apply(false, allow);
+      return;
+    }
+    Modal.confirm({
+      title: '开启成人内容封禁？',
+      content: (
+        <div>
+          <p>
+            所有被引流终端对名单内成人站点的请求会被直接拒绝。这是<b>域名名单匹配</b>，
+            不是内容识别：名单外的站点不会被识别；浏览器启用 ECH 时也拦不到。
+          </p>
+          <p className="small">
+            没有提示页，表现为连接被重置。规则位于 CN 直连之前，保存后重载 mihomo
+            约 3–5 秒，只影响新建立的连接。
+          </p>
+        </div>
+      ),
+      okText: '开启',
+      cancelText: '取消',
+      onOk: () => apply(true, allow),
+    });
+  };
+
+  return (
+    <Card
+      bordered={false}
+      className="mb"
+      title="成人内容封禁"
+      extra={<span className="dim">PUT /api/adult-block</span>}
+    >
+      {err && <Alert className="mb" type="error" content={err} />}
+      <Space>
+        <Switch
+          checked={!!state?.enabled}
+          loading={busy}
+          disabled={!state}
+          onChange={onChange}
+        />
+        <span>{state?.enabled ? '已开启' : '已关闭'}</span>
+        {state && !state.rule_set_installed && (
+          <Tag color="orange">
+            规则集缺失
+            {state.missing?.length ? `：${state.missing.join('、')}` : ''}
+            ，需重新部署后才能开启
+          </Tag>
+        )}
+      </Space>
+      <p className="dim mt">
+        两份域名表：MetaCubeX <code>category-porn</code>（编译为{' '}
+        <code>+.domain</code>，覆盖主域及全部子域）与 HaGeZi NSFW（约 9 万条，
+        部署时归一化为 <code>+.domain</code>）。靠 TLS SNI / HTTP Host / QUIC
+        识别，终端零配置，对全部被引流终端生效。
+        它只按域名拦截，不做内容识别；平台内、图片搜索、即时通讯里的内容不在范围内。
+      </p>
+      <div className="wl-field">
+        <label>误杀豁免（DOMAIN-SUFFIX）</label>
+        <InputTag
+          value={allow}
+          onChange={(v) => setAllow(((v as string[]) || []).map((x) => x.trim()).filter(Boolean))}
+          placeholder="输入域名后回车，例如 example-health.org"
+          allowClear
+          style={{ width: '100%' }}
+        />
+        <div style={{ marginTop: 8, textAlign: 'right' }}>
+          <Button
+            type="primary"
+            icon={<IconSave />}
+            loading={busy}
+            disabled={!state || !allowDirty}
+            onClick={() => apply(!!state?.enabled, allow)}
+          >
+            保存豁免
+          </Button>
+        </div>
+        <p className="dim small">
+          豁免规则排在 REJECT 之前，目标是 DIRECT（whitelist 模式）或普通海外出口（overseas
+          模式）。不要把白名单里的域名放进来——它会被强制走直连。
+        </p>
+      </div>
     </Card>
   );
 }
@@ -455,6 +593,7 @@ export default function WhitelistPage({
       )}
 
       <AdBlockCard />
+      <AdultBlockCard />
 
       <Card
         bordered={false}

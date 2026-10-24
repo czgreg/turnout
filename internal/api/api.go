@@ -79,6 +79,9 @@ type Renderer interface {
 	// SetAdBlock re-seats the ad-blocking switch. Synced on every
 	// PUT /api/ad-block before the re-render.
 	SetAdBlock(enabled bool)
+	// SetAdultBlock re-seats the adult-content switch and its exemption
+	// list. Synced on every PUT /api/adult-block before the re-render.
+	SetAdultBlock(enabled bool, allow []string)
 	// SetNode re-seats the node role info (client_subnet, ingress address,
 	// egress iface). Synced on every PUT /api/node/network so per-terminal
 	// fb-<ip> groups follow the new subnet instead of the one captured at
@@ -136,6 +139,11 @@ func NewServer(deps Deps) *Server {
 	// rather than a silent no-op.
 	mux.HandleFunc("GET /api/ad-block", s.auth(s.handleAdBlockGet))
 	mux.HandleFunc("PUT /api/ad-block", s.auth(s.handleAdBlockPut))
+
+	// Adult-content blocking — same shape as ad blocking, plus a per-domain
+	// exemption list for false positives. Toggling hot-reloads mihomo.
+	mux.HandleFunc("GET /api/adult-block", s.auth(s.handleAdultBlockGet))
+	mux.HandleFunc("PUT /api/adult-block", s.auth(s.handleAdultBlockPut))
 
 	// Node network — the diverted office segment. Editing client_subnet
 	// escapes this process: it fans out to /etc/turnout/env, nft.conf,

@@ -2,6 +2,7 @@ package mihomo
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -991,6 +992,104 @@ func TestRules_AdBlockOffEmitsNothing(t *testing.T) {
 		if _, ok := rp[rs.Tag]; ok {
 			t.Errorf("ad provider %q emitted while the switch is off", rs.Tag)
 		}
+	}
+}
+
+// Adult-content blocking has the same ordering constraint as ad blocking:
+// the REJECT rules must precede geosite-cn. It also has an exemption list
+// that must precede the REJECT rules, otherwise it can never take effect.
+func TestRules_AdultBlockPrecedesCNDirect(t *testing.T) {
+	r := newTestRenderer(t)
+	r.cfg.Route.AdultBlock = true
+	r.cfg.Route.AdultBlockAllow = config.StringList{"example-health.org"}
+
+	rules, _ := r.buildRules(sampleOutbounds())
+	idxCN, idxAllow, idxReject := -1, -1, -1
+	for i, line := range rules {
+		switch {
+		case strings.HasPrefix(line, "RULE-SET,"+rsGeositeCN+",DIRECT"):
+			idxCN = i
+		case line == "DOMAIN-SUFFIX,example-health.org,out":
+			idxAllow = i
+		case line == "RULE-SET,"+rsPorn+",REJECT":
+			idxReject = i
+		}
+	}
+	if idxCN < 0 || idxAllow < 0 || idxReject < 0 {
+		t.Fatalf("expected allow/reject/CN lines; got idxCN=%d idxAllow=%d idxReject=%d rules=%v",
+			idxCN, idxAllow, idxReject, rules)
+	}
+	if !(idxAllow < idxReject && idxReject < idxCN) {
+		t.Errorf("want allow(%d) < reject(%d) < CN(%d)", idxAllow, idxReject, idxCN)
+	}
+
+	for _, rs := range AdultRuleSets {
+		want := "RULE-SET," + rs.Tag + ",REJECT"
+		if !slices.Contains(rules, want) {
+			t.Errorf("adult rule %q missing from rules: %v", want, rules)
+		}
+	}
+	rp := r.buildRuleProviders()
+	for _, rs := range AdultRuleSets {
+		p, ok := rp[rs.Tag].(map[string]any)
+		if !ok {
+			t.Errorf("provider %q not emitted while the switch is on", rs.Tag)
+			continue
+		}
+		if p["format"] != rs.Format {
+			t.Errorf("provider %q format = %v, want %s", rs.Tag, p["format"], rs.Format)
+		}
+		if path, _ := p["path"].(string); !strings.HasSuffix(path, rs.File) {
+			t.Errorf("provider %q path = %v, want suffix %s", rs.Tag, p["path"], rs.File)
+		}
+	}
+}
+
+func TestRules_AdultBlockOffEmitsNothing(t *testing.T) {
+	r := newTestRenderer(t)
+	rules := mustRules(t, r)
+	rp := r.buildRuleProviders()
+	for _, rs := range AdultRuleSets {
+		for _, line := range rules {
+			if strings.Contains(line, rs.Tag) {
+				t.Fatalf("adult rule emitted while the switch is off: %q", line)
+			}
+		}
+		if _, ok := rp[rs.Tag]; ok {
+			t.Errorf("adult provider %q emitted while the switch is off", rs.Tag)
+		}
+	}
+}
+
+// The exemption target mirrors the mode's catch-all: DIRECT in whitelist
+// mode, the overseas selector otherwise. Entries are normalized so hand-
+// edited yaml may use +./*. spellings.
+func TestRules_AdultBlockAllowTargetAndNormalization(t *testing.T) {
+	r := newTestRenderer(t)
+	r.cfg.Route.AdultBlock = true
+	r.cfg.Route.AdultBlockAllow = config.StringList{
+		"Example.ORG", "*.example.net", "+.example.io", "bad domain",
+	}
+	rules := mustRules(t, r)
+	for _, want := range []string{
+		"DOMAIN-SUFFIX,example.org,out",
+		"DOMAIN-SUFFIX,example.net,out",
+		"DOMAIN-SUFFIX,example.io,out",
+	} {
+		if !slices.Contains(rules, want) {
+			t.Errorf("missing exemption %q in %v", want, rules)
+		}
+	}
+	for _, line := range rules {
+		if strings.Contains(line, "bad domain") {
+			t.Errorf("invalid exemption must be skipped, got %q", line)
+		}
+	}
+
+	r.cfg.Route.Mode = "whitelist"
+	rules = mustRules(t, r)
+	if !slices.Contains(rules, "DOMAIN-SUFFIX,example.org,DIRECT") {
+		t.Errorf("whitelist mode: exemption must target DIRECT, got %v", rules)
 	}
 }
 

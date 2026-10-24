@@ -166,6 +166,13 @@ RULESET_ENTRIES=(
   "category-ads-all.mrs|https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ads-all.mrs"
   "anti-ad.txt|https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-domains.txt"
   "cname-ads.txt|https://raw.githubusercontent.com/AdguardTeam/cname-trackers/master/data/combined_disguised_ads_justdomains.txt"
+  # Adult-content blocking. Same rationale as ads: shipped unconditionally
+  # (the console toggle cannot download anything), and hard-gated below so a
+  # missing file fails the build instead of silently matching nothing.
+  #   category-porn  MetaCubeX .mrs, compiled with `+.domain` entries
+  #   nsfw           HaGeZi NSFW, plain text; normalized to `+.domain` below
+  "category-porn.mrs|https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-porn.mrs"
+  "nsfw.txt|https://raw.githubusercontent.com/HaGeZi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt"
 )
 
 # Tags requested by gateway.yaml as full URLs — legacy form, kept for yaml
@@ -320,7 +327,7 @@ for e in "${RULESET_ENTRIES[@]:-}"; do
   esac
 done
 
-log "fetching ${#DEDUPED_ENTRIES[@]} rule-set files (cn infra + ads + gateway.yaml whitelist)"
+log "fetching ${#DEDUPED_ENTRIES[@]} rule-set files (cn infra + ads + adult + gateway.yaml whitelist)"
 fetched=0
 skipped=0
 for entry in "${DEDUPED_ENTRIES[@]:-}"; do
@@ -354,12 +361,46 @@ for f in anti-ad.txt cname-ads.txt; do
   mv "$src.tmp" "$src"
 done
 
+# Adult-content list: HaGeZi ships one BARE domain per line. mihomo's
+# behavior=domain matches a bare entry as an EXACT host, so "example.com"
+# would never match www.example.com — verified against v1.19.26 (bare
+# x.invalid did not match www.x.invalid; +.x.invalid did). Rewrite every
+# entry to `+.domain`, which covers the apex and all subdomains. `*.domain`
+# and `.domain` are widened to `+.domain` for the same reason: a blocklist
+# should not silently miss the apex-or-subdomain half of an entry.
+#
+# Deliberately NOT applied to anti-ad/cname-ads: widening those existing
+# lists is a behaviour change with its own false-positive review. This file
+# only normalizes the adult list it added.
+for f in nsfw.txt; do
+  src="$STAGE_DIR/rule-sets/$f"
+  [ -s "$src" ] || continue
+  awk '
+    { gsub(/\r/, ""); sub(/\.$/, "") }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    /[[:space:]\/]/  { next }
+    /^\+\./          { print; next }
+    /^\*\./          { sub(/^\*\./, "+."); print; next }
+    /^\./            { sub(/^\./, "+."); print; next }
+    { print "+." $0 }
+  ' "$src" > "$src.tmp"
+  mv "$src.tmp" "$src"
+done
+
 # Ad blocking is the one rule-set group whose absence is silent at runtime, so
 # it gets a hard gate instead of the tolerate-and-continue treatment above.
 # internal/mihomo.AdRuleSets is the source of truth; keep this list in step.
 for f in category-ads-all.mrs anti-ad.txt cname-ads.txt; do
   [ -s "$STAGE_DIR/rule-sets/$f" ] \
     || fail "$f missing — ad blocking would silently match nothing; check network or the STAGE_CACHE/rule-sets copy"
+done
+
+# Adult-content blocking has the same silent-failure mode, so the same hard
+# gate. internal/mihomo.AdultRuleSets is the source of truth.
+for f in category-porn.mrs nsfw.txt; do
+  [ -s "$STAGE_DIR/rule-sets/$f" ] \
+    || fail "$f missing — adult-content blocking would silently match nothing; check network or the STAGE_CACHE/rule-sets copy"
 done
 
 # Pool rule_lists get the same hard gate. A missing file makes mihomo log

@@ -19,6 +19,7 @@
 import type {
   Active,
   AdBlockState,
+  AdultBlockState,
   Healthz,
   NodeNetwork,
   NodeSignal,
@@ -170,6 +171,22 @@ export const getRuleSets = () => request<RuleSets>('/api/rule-sets');
 export const getAdBlock = () => request<AdBlockState>('/api/ad-block');
 export const putAdBlock = (enabled: boolean) =>
   request<AdBlockState>('/api/ad-block', { method: 'PUT', ...json({ enabled }) });
+
+/**
+ * Adult-content blocking — two REJECT rules ahead of the CN-direct line,
+ * plus a domain exemption list for false positives.
+ *
+ * putAdultBlock re-renders and hot-reloads mihomo (3–5s), no restart. It can
+ * answer 409 when a rule-set is not on disk; the server refuses to turn the
+ * switch on in that state rather than block nothing silently. Omitting
+ * `allow` leaves the stored list unchanged.
+ */
+export const getAdultBlock = () => request<AdultBlockState>('/api/adult-block');
+export const putAdultBlock = (enabled: boolean, allow?: string[]) =>
+  request<AdultBlockState>('/api/adult-block', {
+    method: 'PUT',
+    ...json(allow === undefined ? { enabled } : { enabled, allow }),
+  });
 
 /**
  * Node network — the diverted office segment.

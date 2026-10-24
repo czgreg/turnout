@@ -40,6 +40,8 @@ token 为空时不鉴权。
 | GET | `/api/rule-sets` | 可用 geosite/geoip catalog | ✓ |
 | GET | `/api/ad-block` | 广告拦截开关状态 + 规则集是否就位 | ✓ |
 | PUT | `/api/ad-block` | 开关广告拦截（热重载 mihomo） | ✓ |
+| GET | `/api/adult-block` | 成人内容封禁开关 + 规则集 + 豁免名单 | ✓ |
+| PUT | `/api/adult-block` | 开关成人内容封禁 / 更新豁免（热重载 mihomo） | ✓ |
 | GET | `/api/node/network` | 引流网段 + 入口网卡/地址 | ✓ |
 | PUT | `/api/node/network` | 修改 `client_subnet`（重建防火墙规则并重启相关单元） | ✓ |
 | GET | `/api/node/signal` | 探活地址 + watchdog 开关 | ✓ |
@@ -542,6 +544,75 @@ PUT body：`{"enabled": true}`。变更走「落盘 → 重渲染 → 热重载 
   已知第一例：`img1.126.net`（163 系图片 CDN）在 anti-AD 中。
 - 规则集由 `scripts/stage.sh` 无条件打包（约 2.4 MB），任何一份下载失败都会让
   stage 直接失败；两份文本表在打包时去掉注释行与 `*.` 前缀。
+
+---
+
+## GET / PUT /api/adult-block
+
+成人内容封禁开关。开启后，渲染出的规则表在 **CN 直连之前**、广告拦截之后多两行：
+
+```
+RULE-SET,category-porn,REJECT
+RULE-SET,nsfw,REJECT
+```
+
+若配置了豁免，豁免行排在两条 REJECT **之前**：
+
+```
+DOMAIN-SUFFIX,<domain>,DIRECT   # whitelist 模式（MATCH 也是 DIRECT）
+DOMAIN-SUFFIX,<domain>,out      # overseas 模式（跟随普通海外出口）
+```
+
+两份域名表（都由 `scripts/stage.sh` 随部署打包，运行时不下载）：
+
+| tag | 文件 | 规模 | 说明 |
+|---|---|---|---|
+| `category-porn` | `category-porn.mrs` | 6,520 条 | MetaCubeX；.mrs 里是 `+.domain`，覆盖主域及全部子域 |
+| `nsfw` | `nsfw.txt` | ~9.07 万条 | HaGeZi NSFW；stage 归一化为 `+.domain` |
+
+**匹配语义（关键）**：mihomo 的 `behavior: domain` 对**裸域做精确匹配**，
+只有 `+.domain` 才覆盖"主域 + 所有子域"。v1.19.26 实测：裸 `x.invalid`
+不命中 `www.x.invalid`，`+.x.invalid` 命中。因此：
+
+- MetaCubeX 的 `.mrs` 编译产物已经是 `+.domain`，可直接用；
+- HaGeZi 原始文件是裸域，`stage.sh` 必须逐行改写成 `+.domain`，否则
+  `www.` 与 CDN 子域全部漏拦；
+- 现有的 `anti-ad` / `cname-ads` 仍按裸域下发，属于独立的既有行为，
+  本功能没有改动它们。
+
+```json
+{ "enabled": true, "rule_set_installed": true, "allow": ["example-health.org"] }
+```
+
+GET 的 `allow` 永远是数组，不会是 null。任一份文件缺失时：
+
+```json
+{ "enabled": false, "rule_set_installed": false,
+  "missing": ["nsfw.txt"], "allow": [] }
+```
+
+PUT body：`{"enabled": true, "allow": ["example-health.org"]}`。
+
+- `enabled` 必填；缺失返回 400。
+- `allow` 可省略（保持现有豁免不变），显式 `[]` 表示清空。服务端会小写化、
+  去重，并接受 `+.domain` / `*.domain` 写法，最终都按 `DOMAIN-SUFFIX` 渲染。
+  含空白、`://`、`/` 或没有 `.` 的条目返回 400。
+- 任一份规则集缺失时开启返回 **409** 并列出文件名——与广告拦截相同，
+  mihomo 不会因缺文件而启动失败，只会让规则静默匹配不到。
+- 变更走「落盘 → 重渲染 → 热重载 mihomo」，约 3–5 秒，只影响新连接。
+
+语义边界：
+
+- 这是**域名名单匹配，不是内容识别**。名单外的站点不会被识别；要按页面内容
+  判断需要 TLS 解密或终端 Agent，不在这套旁挂架构里。
+- 靠 TLS SNI / HTTP Host / QUIC 识别，终端自建 DoH 也绕不过；但浏览器启用
+  **ECH** 时 SNI 加密，规则失效。
+- 纯 IP 无 SNI、sniffer 端口范围外（非 443/8443、非 80/8080-8880、非 443 QUIC）
+  的连接不命中。
+- 平台内、搜索引擎图片、即时通讯里的成人内容不在域名名单范围内。
+- 终端没有提示页，命中表现为连接重置。
+- 豁免不要填白名单里的域名：豁免规则先命中，会把该域名强制成直连。
+- 规则集由 `scripts/stage.sh` 硬门禁；缺文件时 stage 直接失败。
 
 ---
 

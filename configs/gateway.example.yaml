@@ -111,7 +111,28 @@ data_plane:
     # img1.126.net（163 系图片 CDN）。
     # 运行时可通过控制台「分流白名单 → 广告拦截」开关热切换（3–5 秒重载）。
     ad_block: false
-  
+
+    # [新] 成人内容封禁。默认关；开启后在被引流网段全局生效，终端零配置。
+    #
+    # 实现：与广告拦截同一位置（CN 直连之前）插入两条 REJECT：
+    #   category-porn  MetaCubeX .mrs，编译后是 `+.domain`，覆盖主域及全部子域
+    #   nsfw           HaGeZi NSFW，约 9 万条；stage.sh 把每行归一化为 `+.domain`
+    #
+    # 为什么必须是 `+.domain`：mihomo 的 behavior=domain 对裸域做**精确匹配**，
+    # 裸 `example.com` 不会命中 `www.example.com`（v1.19.26 实测）。因此
+    # stage.sh 会把 HaGeZi 的裸域逐行改写成 `+.domain`，否则开关看似打开、
+    # 实际只拦住主域本身。
+    #
+    # 这是**域名名单匹配，不是内容识别**：名单外站点不会被识别；浏览器启用
+    # ECH 时 SNI 加密，规则失效；纯 IP、无 SNI、sniffer 端口范围外的连接不覆盖；
+    # 平台内、搜索引擎图片、即时通讯里的成人内容不在范围内。
+    # 没有提示页，命中表现为连接被重置。
+    #
+    # adult_block_allow 是误杀豁免（DOMAIN-SUFFIX，排在 REJECT 之前）。
+    # 不要填白名单里的域名：豁免规则先命中，会把它强制成直连。
+    adult_block: false
+    adult_block_allow: []
+
     whitelist:
       # [不变] 域类白名单（geosite 标签）。命中后按 per-terminal 分配到出口。
       geosites:

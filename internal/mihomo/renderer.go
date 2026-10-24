@@ -205,6 +205,17 @@ func (r *Renderer) SetAdBlock(enabled bool) {
 	r.cfg.Route.AdBlock = enabled
 }
 
+// SetAdultBlock re-seats the adult-content switch and its exemption list.
+// Called by PUT /api/adult-block after the config is persisted; like
+// SetAdBlock, without it the renderer keeps the value captured at
+// construction and the toggle would need a process restart.
+func (r *Renderer) SetAdultBlock(enabled bool, allow []string) {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	r.cfg.Route.AdultBlock = enabled
+	r.cfg.Route.AdultBlockAllow = append(config.StringList(nil), allow...)
+}
+
 // SetFakeIPSkip re-seats the DNS skip-suffix list. Called by the API
 // layer after PUT /api/whitelist so the updated nameserver-policy is
 // emitted in the next Write without needing a full config reload. Under

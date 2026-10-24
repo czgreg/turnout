@@ -465,3 +465,15 @@ export interface AdBlockState {
   /** Files stage.sh ships that are missing on the node; empty when installed. */
   missing?: string[];
 }
+
+/* ── Adult-content blocking (GET /api/adult-block) ───────────────────────
+ *
+ * Same fail-loud shape as AdBlockState, plus the false-positive exemption
+ * list. `allow` is always an array (never null).
+ */
+export interface AdultBlockState {
+  enabled: boolean;
+  rule_set_installed: boolean;
+  missing?: string[];
+  allow: string[];
+}

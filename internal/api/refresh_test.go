@@ -47,6 +47,7 @@ func (b *blockingRenderer) SetSubscriptions(_ []config.SubscriptionEntry)   {}
 func (b *blockingRenderer) SetWhitelist(_ string, _ config.WhitelistConfig) {}
 func (b *blockingRenderer) SetFakeIPSkip(_ []string)                        {}
 func (b *blockingRenderer) SetAdBlock(_ bool)                               {}
+func (b *blockingRenderer) SetAdultBlock(_ bool, _ []string)                {}
 func (b *blockingRenderer) SetNode(_ config.NodeConfig)                     {}
 func (b *blockingRenderer) AssignmentForIP(_ string, _ []subscribe.Outbound) ([]string, bool) {
 	return nil, false

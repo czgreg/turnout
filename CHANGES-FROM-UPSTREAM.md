@@ -389,3 +389,36 @@ rules:
   `behavior=classical` + `format=text` provider——不用 `.mrs`，因为 mrs 只
   支持 domain/ipcidr，会丢掉 `DOMAIN-KEYWORD` 行。声明了却抓不到时 stage
   直接失败，避免规则静默落回默认类。
+
+---
+
+## 九、2026-10-24：成人内容封禁（`route.adult_block`）
+
+与广告拦截同构：两条 `RULE-SET,<tag>,REJECT`，位置同样在 `geosite-cn,DIRECT`
+之前（首条匹配，放在 CN 直连之后国内托管的站点就拦不到）。
+
+| 表 | 规模 | 形式 | 说明 |
+|---|---|---|---|
+| `category-porn` | 6,520 | `.mrs` | MetaCubeX；编译产物是 `+.domain` |
+| `nsfw` | ~9.07 万 | 文本 | HaGeZi NSFW；stage 归一化为 `+.domain` |
+
+**为什么强调 `+.domain`**：mihomo 的 `behavior: domain` 对裸域是**精确匹配**，
+裸 `example.com` 不会命中 `www.example.com`；只有 `+.example.com` 才同时覆盖
+主域与所有子域。这一点用 v1.19.26 的 `convert-ruleset domain mrs` 解码
+`category-porn.mrs` 确认（里面是 `+.` 形式），并用本机 SOCKS 代理做了对照
+实测（裸域不命中 `www.`，`+.` 命中）。所以 `scripts/stage.sh` 新增的文本
+归一化不是"去注释/去 `*.`"，而是把每一行改写成 `+.domain`。
+
+这也暴露了一个**与本功能无关的既有行为**：`anti-ad.txt` / `cname-ads.txt`
+仍按裸域下发，子域只靠列表里恰好列出的具体主机名覆盖。是否把这两份表也
+改写成 `+.domain` 会放宽现有规则、可能增加误杀，留待单独评估；本次没有动。
+
+- **配置**：`data_plane.route.adult_block`（默认 false）与
+  `adult_block_allow`（误杀豁免，`DOMAIN-SUFFIX`，排在 REJECT 之前）。
+- **API/UI**：`GET/PUT /api/adult-block` + 控制台「成人内容封禁」卡片；
+  任一份规则集缺失时 PUT 返回 409，拒绝"以为在拦"。
+- **边界**（写进 `docs/api.md` 与卡片文案）：域名名单匹配而非内容识别；
+  ECH 加密 SNI、纯 IP 无 SNI、sniffer 端口范围外、平台内/图片搜索/即时通讯
+  内容均不覆盖；命中表现为连接重置，没有提示页。
+- **部署**：两份文件由 `scripts/stage.sh` 无条件打包并硬门禁；`install.sh`
+  已有的整目录复制即可，无需改动。

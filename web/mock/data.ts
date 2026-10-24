@@ -5,6 +5,7 @@
 import type {
   Active,
   AdBlockState,
+  AdultBlockState,
   Healthz,
   NodeHealth,
   NodeNetwork,
@@ -534,4 +535,13 @@ export function notificationLog(): NotificationEntry[] {
 /** GET /api/ad-block — starts off, rule-set present on a healthy node. */
 export function adBlock(): AdBlockState {
   return { enabled: false, rule_set_installed: true };
+}
+
+/** GET /api/adult-block — starts off, both rule-sets present, one exemption. */
+export function adultBlock(): AdultBlockState {
+  return {
+    enabled: false,
+    rule_set_installed: true,
+    allow: ['example-health.org'],
+  };
 }

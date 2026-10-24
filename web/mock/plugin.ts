@@ -45,6 +45,7 @@ function handler(): Connect.NextHandleFunction {
   let notif = data.notifications();
   let notifLog = data.notificationLog();
   let adBlock = data.adBlock();
+  let adultBlock = data.adultBlock();
 
   return async (req, res, next) => {
     const url = new URL(req.url || '/', 'http://mock');
@@ -159,6 +160,23 @@ function handler(): Connect.NextHandleFunction {
         return send(res, 200, adBlock);
       }
       return send(res, 200, adBlock);
+    }
+
+    if (path === '/api/adult-block') {
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        if (b.enabled === undefined) return send(res, 400, { error: 'enabled field is required' });
+        if (b.enabled && !adultBlock.rule_set_installed) {
+          return send(res, 409, { error: 'cannot enable adult-content blocking: missing category-porn.mrs — redeploy (scripts/stage.sh ships them) and retry' });
+        }
+        await sleep(2500); // mihomo re-render + hot reload
+        const allow = Array.isArray(b.allow)
+          ? b.allow.map((x: string) => String(x).trim()).filter(Boolean)
+          : adultBlock.allow;
+        adultBlock = { ...adultBlock, enabled: !!b.enabled, allow };
+        return send(res, 200, adultBlock);
+      }
+      return send(res, 200, adultBlock);
     }
 
     if (path === '/api/notifications/lark') {

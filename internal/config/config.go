@@ -677,6 +677,38 @@ type RouteConfig struct {
 	// them) — the API handler refuses to enable the switch when any is
 	// missing rather than silently blocking nothing.
 	AdBlock bool `yaml:"ad_block"`
+
+	// AdultBlock rejects connections to adult-content domain lists, rendered
+	// as `RULE-SET,<tag>,REJECT` in the same position as AdBlock — before
+	// geosite-cn, because rules are first-match and a CN-hosted adult domain
+	// would otherwise be forwarded by the CN-direct line.
+	//
+	//	category-porn  MetaCubeX .mrs. Its compiled form is `+.domain`, i.e.
+	//	               the apex AND every subdomain. That distinction is
+	//	               load-bearing: mihomo's `behavior: domain` treats a
+	//	               BARE entry as an exact host, so a list shipped as
+	//	               "example.com" matches only example.com, never
+	//	               www.example.com. stage.sh normalizes the text list
+	//	               below to `+.domain` for exactly this reason.
+	//	nsfw           HaGeZi NSFW, ~90k domains, plain text. Shipped as
+	//	               `+.domain` after normalization.
+	//
+	// This is a DOMAIN-LIST match, not content classification: a site that
+	// is not in either list is not detected, and TLS-encrypted SNI (ECH)
+	// defeats it. Adult content hosted on general platforms (social media,
+	// image search, messaging) is out of scope.
+	//
+	// AdultBlockAllow is the false-positive escape hatch. Entries are emitted
+	// as DOMAIN-SUFFIX ahead of the REJECT lines, targeting DIRECT in
+	// whitelist mode and the normal overseas outbound otherwise. Do NOT list
+	// a domain that is also on the whitelist: the exemption rule comes first
+	// and would force it direct instead of through the pool.
+	//
+	// Default false. Turning it on changes behaviour for EVERY terminal on
+	// the diverted segment. Every file must be on disk (scripts/stage.sh
+	// ships them); the API refuses to enable the switch when any is missing.
+	AdultBlock      bool       `yaml:"adult_block"`
+	AdultBlockAllow StringList `yaml:"adult_block_allow"`
 }
 
 // WhitelistConfig enumerates what's allowed through the airport in
