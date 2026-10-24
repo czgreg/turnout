@@ -14,6 +14,7 @@ package dataplane
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,6 +24,12 @@ import (
 
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
+
+// errConfigRejected marks an HTTP 4xx from clash-api: the data plane is up
+// and answered, and it refused the config. Restarting it would re-read the
+// same file and fail the same way (turnout-mihomo's ExecStartPre runs
+// `mihomo -t` on it), so this must never reach the systemctl fallback.
+var errConfigRejected = errors.New("data plane rejected the config")
 
 // Loopback HTTP-proxy ports the renderer always emits for turnout-gateway's
 // own outbound use:
@@ -93,13 +100,22 @@ func NewController(api config.ClashAPIConfig) *Controller {
 // systemctl path — used when the caller doesn't have a renderer handy.
 func (c *Controller) Reload(ctx context.Context, configPath string) error {
 	if configPath != "" && c.api.ExternalController != "" {
-		if err := c.hotReload(ctx, configPath); err == nil {
+		err := c.hotReload(ctx, configPath)
+		if err == nil {
 			c.notifyReload()
 			return nil
-		} else {
-			slog.Warn("dataplane: clash-api hot-reload failed, falling back to systemctl restart",
-				"err", err, "path", configPath)
 		}
+		// 4xx = the engine is reachable and rejected the config. A restart
+		// cannot help: it re-reads the same file, and ExecStartPre's
+		// `mihomo -t` keeps the unit down. Keep serving the config already
+		// in memory and report the error instead.
+		if errors.Is(err, errConfigRejected) {
+			slog.Error("dataplane: config rejected — keeping the running config",
+				"err", err, "path", configPath)
+			return err
+		}
+		slog.Warn("dataplane: clash-api hot-reload failed, falling back to systemctl restart",
+			"err", err, "path", configPath)
 	}
 	// The fallback deliberately does NOT inherit ctx. A cancelled context
 	// disables hot-reload and its own fallback simultaneously, so the single
@@ -155,6 +171,11 @@ func (c *Controller) hotReload(ctx context.Context, configPath string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		// 4xx is a verdict on the config, not a broken engine: classify it
+		// so Reload does not turn a rejected render into a restart loop.
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return fmt.Errorf("%w: status %d: %s", errConfigRejected, resp.StatusCode, b)
+		}
 		return fmt.Errorf("clash-api PUT /configs status %d: %s", resp.StatusCode, b)
 	}
 	return nil

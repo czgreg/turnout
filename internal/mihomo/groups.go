@@ -233,6 +233,18 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 				"proxies": []string{"DIRECT"},
 			},
 		}
+		// probe-out must exist whenever build() emits the probe listener:
+		// its `proxy: probe-out` is a hard reference, and an empty pool is
+		// exactly the bootstrap state (--render-once, or every subscription
+		// failed). Without this stub the rendered config points at a group
+		// that does not exist.
+		if r.probeListener {
+			out = append(out, map[string]any{
+				"name":    probeOutSelector,
+				"type":    "select",
+				"proxies": []string{"DIRECT"},
+			})
+		}
 		for _, p := range r.pools {
 			out = append(out, map[string]any{
 				"name":    p.Name,

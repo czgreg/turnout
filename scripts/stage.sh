@@ -412,6 +412,18 @@ for tag in "${RULE_LIST_TAGS[@]:-}"; do
     || fail "$tag.list missing — pool rule_lists would silently route through the default class; check network or the STAGE_CACHE/rule-sets copy"
 done
 
+# Whitelist tags: same silent-failure mode, and the one gap the other gates
+# did not cover. --validate only checks pool rule-sets, and the runtime
+# EnsureInstalled path only runs when a tag is selected through the API — a
+# tag already in gateway.yaml has nobody to retry it. A missing <tag>.mrs
+# makes mihomo log "no such file" and keep serving, so the whitelisted
+# service (Claude / ChatGPT / Gemini) would quietly route DIRECT and fail.
+for tag in "${WL_GEOSITES[@]:-}" "${WL_GEOIPS[@]:-}"; do
+  [ -n "$tag" ] || continue
+  [ -s "$STAGE_DIR/rule-sets/$tag.mrs" ] \
+    || fail "whitelist rule-set $tag.mrs missing — whitelisted traffic would silently route DIRECT; check network or the STAGE_CACHE/rule-sets copy"
+done
+
 # 7. Tarball.
 TARBALL="$OUT_DIR/turnout-stage.tgz"
 tar -czf "$TARBALL" -C "$OUT_DIR" turnout-stage
