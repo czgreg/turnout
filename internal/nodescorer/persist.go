@@ -113,6 +113,7 @@ func (s *Scorer) loadState() {
 				for _, tag := range v3.PoolSet {
 					s.poolSet[tag] = true
 				}
+				s.publishRestoredRoutingMembers()
 			}
 			slog.Info("nodescorer: restored state v3",
 				"nodes", len(v3.Nodes),
@@ -281,5 +282,25 @@ func (s *Scorer) saveStateLocked() {
 	}
 	if err := os.Rename(tmp, s.stateFile()); err != nil {
 		slog.Warn("nodescorer: rename state failed", "err", err)
+	}
+}
+
+// publishRestoredRoutingMembers hands the restored pool to the renderer.
+//
+// The first subscription refresh runs ~5s after start, before the scorer's
+// first round, and renders through Write() rather than RenderWithPools. With
+// an empty routing set perTerminalMembers falls back to every candidate —
+// 1027 fallback groups instead of 68 on a /16, and terminals pinned to
+// unmeasured pairs (10.100.6.15, 2026-10-24). Publishing the restored set
+// keeps the first render on the last-good routing pool.
+//
+// Type assertion rather than an interface method: nodescorer.Renderer is
+// implemented by test fakes too, and only the real renderer needs the setter.
+func (s *Scorer) publishRestoredRoutingMembers() {
+	if s.renderer == nil || len(s.poolSet) == 0 {
+		return
+	}
+	if p, ok := s.renderer.(interface{ SetRoutingMembers([]string) }); ok {
+		p.SetRoutingMembers(setToSortedSlice(s.poolSet))
 	}
 }

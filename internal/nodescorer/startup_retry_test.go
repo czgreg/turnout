@@ -29,6 +29,28 @@ func TestScore_ReturnsTrueWithCandidates(t *testing.T) {
 	}
 }
 
+// A restarted mihomo answers /proxies before its first url-test round has
+// covered every group. Deciding on that data built a 3-node pool from the
+// first few finishers and dropped routingMembers to zero (1027 groups instead
+// of 68, terminals on unmeasured pairs) — observed on 10.100.6.15 at 17:45.
+func TestScore_SkipsRoundWhileProbeHistoryWarmsUp(t *testing.T) {
+	nodes := map[string]proxyNode{
+		"sub/n1": {alive: true}, // no history yet
+		"sub/n2": {alive: true},
+		"sub/n3": {alive: true},
+		"sub/n4": {alive: true},
+	}
+	s, _, _ := newDecisionScorer(t, kGatingCfg(3), nodes)
+	s.poolSet = map[string]bool{"sub/kept": true}
+
+	if s.score(context.Background()) {
+		t.Error("score reported success while every candidate had empty probe history")
+	}
+	if !s.poolSet["sub/kept"] || len(s.poolSet) != 1 {
+		t.Errorf("warming-up round mutated poolSet: %v", s.poolSet)
+	}
+}
+
 // The ticker path ignores the result (a failed round just retries on the next
 // interval), so the only behavioural contract here is that a failed round
 // leaves no pool state behind.

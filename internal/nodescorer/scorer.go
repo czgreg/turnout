@@ -655,6 +655,36 @@ func (s *Scorer) score(ctx context.Context) bool {
 		return false
 	}
 
+	// Cold-start guard: mihomo populates probe history asynchronously, and a
+	// freshly restarted instance answers /proxies long before its first
+	// url-test round has reached every group. Deciding then builds the pool
+	// from whichever few nodes finished first. Measured 2026-10-24 17:45 on
+	// 10.100.6.15: 25s after restart only 3 of 225 candidates had history,
+	// none of them matched the global node_pattern, k_target collapsed to 0,
+	// routingMembers became empty, and the renderer fell back to per-unit
+	// groups (1027 instead of 68) with terminals pinned to unmeasured pairs.
+	//
+	// Guard only when a pool already exists (restored from state) — a genuine
+	// first boot must still fill the floor from cold nodes — and not in
+	// eligibility mode, whose cold-start design deliberately keeps
+	// unmeasured incumbents and fills from unmeasured candidates.
+	//
+	// "Most candidates unmeasured" means the round is still warming up; a
+	// genuinely failing network still produces history entries (delay 0), so
+	// this does not mask real outages. Returning false lets the startup retry
+	// (10s) try again; on the periodic path the next ScoringInterval does.
+	minPool := s.cfg.PoolSizing.MinPoolSize
+	if minPool <= 0 {
+		minPool = 3
+	}
+	if s.cfg.SizingMode != "eligibility" && len(s.poolSet) > 0 {
+		if measured := s.measuredCandidates(proxies, candidates); measured < minPool && measured*2 < len(candidates) {
+			slog.Warn("nodescorer: probe history still warming up — skipping this round",
+				"measured", measured, "candidates", len(candidates))
+			return false
+		}
+	}
+
 	// 4. Score each member.
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -742,10 +772,6 @@ func (s *Scorer) score(ctx context.Context) bool {
 	// them) but cannot enter the default routing top-K.
 	qualifiedNodes := filterByNodePattern(nodes, s.nodePattern)
 	kTarget, supplyLimited := computeK(s.cfg.PoolSizing, len(qualifiedNodes))
-	minPool := s.cfg.PoolSizing.MinPoolSize
-	if minPool <= 0 {
-		minPool = 3
-	}
 	now := time.Now()
 
 	switch s.cfg.PoolMode {
@@ -2187,6 +2213,25 @@ func sampleProbes(samples []probeSample) []int {
 // burst (see probeSampleMinSpacing), oldest first.
 func (s *Scorer) extractHistory(pData map[string]interface{}) []int {
 	return sampleProbes(s.probeSamples(pData))
+}
+
+// measuredCandidates counts candidates whose mihomo probe history for the
+// configured probe URL is non-empty. A cold mihomo answers /proxies before
+// its first url-test round has covered every group; deciding on that data
+// builds a pool from whichever few nodes finished first (see the cold-start
+// guard in score).
+func (s *Scorer) measuredCandidates(proxies map[string]map[string]interface{}, candidates []string) int {
+	measured := 0
+	for _, tag := range candidates {
+		pData, ok := proxies[tag]
+		if !ok {
+			continue
+		}
+		if len(s.probeSamples(pData)) > 0 {
+			measured++
+		}
+	}
+	return measured
 }
 
 // probeSamples parses mihomo's per-url probe history into timestamped samples.

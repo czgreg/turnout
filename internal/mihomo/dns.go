@@ -31,9 +31,8 @@
 //   - default-nameserver: bare-IP UDP, used to bootstrap-resolve the DoH
 //     hostnames in nameserver / nameserver-policy themselves.
 //   - nameserver:        proxy DoH — default for everything not matched
-//                        by nameserver-policy. Routed through default-pool by
-//                        mihomo's outbound dispatch. Overseas domains
-//                        resolve through the proxy, dodging CN poisoning.
+//                        by nameserver-policy. Must carry a `#<group>`
+//                        suffix (see below) in bypass deployments.
 //   - nameserver-policy: domain-keyed routing. CN domains and intranet
 //                        skip-suffixes resolve direct via CN DoH; this
 //                        short-circuits the parallel-fallback pattern
@@ -46,6 +45,23 @@
 //                        intermittently returns NXDOMAIN for live names.
 //                        Deterministic map lookup, NOT a race — see
 //                        buildProxyServerNameserverPolicy.
+//
+// ⚠️ DNS upstreams are dialed DIRECT unless the entry names a proxy.
+// mihomo's dns client parses the URL fragment as a proxy/group name
+// (config/config.go: u.Fragment → proxyName) and only then routes the
+// upstream connection through the tunnel; `respect-rules` is the other
+// opt-in, and in whitelist mode an IP destination like 1.1.1.1 matches
+// MATCH,DIRECT, so it would not help. This matters most on a bypass node:
+// the office network can block direct access to the resolver. Measured on
+// 10.100.6.15 (2026-10-24): direct TCP to 1.1.1.1:853/443 and 8.8.8.8:853
+// all timed out while the airport pool was healthy (265-454ms). Every
+// whitelisted domain returned SERVFAIL and browsers showed "cannot find
+// the server IP address" until the upstream gained the `#out` suffix.
+//
+// Hence the default and the example use `https://1.1.1.1/dns-query#out`
+// (port 443 is rarely blocked at a node's egress; 853 is not always
+// allowed) and a second `8.8.8.8` upstream for redundancy. `out` always
+// exists — groups.go emits it even in the empty-pool DIRECT stub.
 //
 // Why no fallback-filter:
 //   The earlier setup used `nameserver: cnDoH; fallback: proxyDoH;
@@ -75,7 +91,7 @@ func (r *Renderer) buildDNS() map[string]any {
 	}
 	proxyDoH := r.cfg.DNS.ProxyDoH
 	if len(proxyDoH) == 0 {
-		proxyDoH = []string{"tls://1.1.1.1:853"}
+		proxyDoH = []string{"https://1.1.1.1/dns-query#out", "https://8.8.8.8/dns-query#out"}
 	}
 	bootstrap := r.cfg.DNS.BootstrapResolver
 	if bootstrap == "" {

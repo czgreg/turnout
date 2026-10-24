@@ -161,8 +161,17 @@ data_plane:
     # 2026-07-06 从 fake-ip 切回 redir-host，血泪在此。
   
     # [不变] 国内外 DoH 上游。
+    #
+    # ⚠️ 海外上游必须带 `#<组名>`（这里用 out）。mihomo 的 DNS 客户端默认
+    # **直连**拨上游；只有 URL fragment 指定了代理/组名才会走隧道。
+    # 旁挂节点上办公网可能封掉直连的 1.1.1.1:853/443（2026-10-24 实测全部
+    # 超时），此时所有白名单域名会 SERVFAIL，浏览器报“找不到服务器 IP”。
+    # 用 443 端口的 DoH 比 853 的 DoT 更不容易被节点出口拦截；第二个上游
+    # 用于冗余。`out` 组始终存在（空池时也会渲染成 DIRECT stub）。
     cn_doh:    ["https://doh.pub/dns-query"]
-    proxy_doh: ["tls://1.1.1.1:853"]
+    proxy_doh:
+      - "https://1.1.1.1/dns-query#out"
+      - "https://8.8.8.8/dns-query#out"
     bootstrap_resolver: "udp://119.29.29.29"
   
     # [改] 上游的内网后缀 → 办公网内网后缀。这些域走 CN DoH 解析，避免

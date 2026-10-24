@@ -1355,9 +1355,14 @@ func (c *DataPlaneConfig) ApplyDefaults() {
 		}
 	}
 	if len(c.DNS.ProxyDoH) == 0 {
+		// `#out` is load-bearing: without a proxy suffix mihomo dials the
+		// upstream DIRECT, which a bypass node's office network may block
+		// (measured 2026-10-24: direct 1.1.1.1:853/443 timed out while the
+		// pool was healthy). DoH over 443 survives node egress policies
+		// better than DoT 853; two upstreams for redundancy.
 		c.DNS.ProxyDoH = []string{
-			"tls://1.1.1.1:853",
-			"https://doh.pub/dns-query",
+			"https://1.1.1.1/dns-query#out",
+			"https://8.8.8.8/dns-query#out",
 		}
 	}
 	if c.DNS.BootstrapResolver == "" {

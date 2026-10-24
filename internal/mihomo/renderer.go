@@ -249,6 +249,18 @@ func (r *Renderer) RenderWithPools(outbounds []subscribe.Outbound, defaultPool, 
 	return out, nil
 }
 
+// SetRoutingMembers publishes the routing set used for per-terminal groups
+// WITHOUT rendering. The scorer restores its pool from disk at startup and
+// calls this before the first subscription refresh: that refresh renders
+// through Write(), which bypasses RenderWithPools, and with an empty routing
+// set perTerminalMembers falls back to every candidate — on a /16 that
+// produced 1027 fallback groups (instead of 68) at 10.100.6.15 on 2026-10-24.
+func (r *Renderer) SetRoutingMembers(members []string) {
+	r.stateMu.Lock()
+	r.routingMembers = append([]string(nil), members...)
+	r.stateMu.Unlock()
+}
+
 // Path returns the on-disk path the rendered config should be written to.
 // For mihomo this is typically /etc/turnout/mihomo/config.yaml.
 func (r *Renderer) Path() string { return r.cfg.ConfigPath }
