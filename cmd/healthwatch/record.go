@@ -405,15 +405,17 @@ func (s *sampler) sample(ctx context.Context, now time.Time, window time.Duratio
 	sample.Direct = probeDirectDNS()
 
 	// 11. End-to-end proxy delay through the probe terminal's pair group.
-	if group == "" {
-		group = "default-pool"
+	// Only when the assignment is known: default-pool is a candidate-wide
+	// load-balancer, NOT the path an in-subnet terminal takes, and during
+	// startup its hash pick produced false "proxy failed" samples.
+	if group != "" {
+		ms, perr := proxyDelay(ctx, s.clash, group, "https://www.youtube.com", 5*time.Second)
+		p := &ProxyPart{Group: group, URL: "https://www.youtube.com", Ms: ms, OK: perr == nil}
+		if perr != nil {
+			p.Err = perr.Error()
+		}
+		sample.Proxy = p
 	}
-	ms, perr := proxyDelay(ctx, s.clash, group, "https://www.youtube.com", 5*time.Second)
-	p := &ProxyPart{Group: group, URL: "https://www.youtube.com", Ms: ms, OK: perr == nil}
-	if perr != nil {
-		p.Err = perr.Error()
-	}
-	sample.Proxy = p
 
 	// 12. Resources.
 	sample.Res = readResources()
