@@ -79,6 +79,13 @@ type ReloadPart struct {
 	ScoredRounds   int    `json:"scored_rounds"`
 	WarmupSkips    int    `json:"warmup_skips"`
 	LastDurationMs int    `json:"last_duration_ms,omitempty"`
+	// Change attribution from the most recent "nodescorer: scored" line.
+	// pool_changed alone conflated routing swaps with named-pool churn, which
+	// sent the 2026-10-25 analysis through journald instead of the records.
+	RoutingChanged bool `json:"routing_changed,omitempty"`
+	ProbingChanged bool `json:"probing_changed,omitempty"`
+	NamedChanged   bool `json:"named_changed,omitempty"`
+	NamedDeferred  bool `json:"named_deferred,omitempty"`
 }
 
 type NodePart struct {
@@ -95,13 +102,36 @@ type NodePart struct {
 }
 
 type TermPart struct {
-	IP         string `json:"ip"`
+	IP          string  `json:"ip"`
+	Group       string  `json:"group,omitempty"`
+	ActiveNode  string  `json:"active_node,omitempty"`
+	Primary     string  `json:"primary,omitempty"`
+	Secondary   string  `json:"secondary,omitempty"`
+	PrimaryOK   bool    `json:"primary_alive"`
+	SecondOK    bool    `json:"secondary_alive"`
+	PrimaryP50  int     `json:"primary_p50_ms,omitempty"`
+	PrimaryP95  int     `json:"primary_p95_ms,omitempty"`
+	SecondP50   int     `json:"secondary_p50_ms,omitempty"`
+	SecondP95   int     `json:"secondary_p95_ms,omitempty"`
+	PrimaryFail float64 `json:"primary_fail_rate,omitempty"`
+	SecondFail  float64 `json:"secondary_fail_rate,omitempty"`
+	// Pools carries the class-pool assignments (e.g. ai-pool). They are the
+	// user-visible path for ChatGPT/Claude traffic and the most sensitive to
+	// named-pool churn, so they get the same detail as the default pair.
+	Pools []PoolAssign `json:"pools,omitempty"`
+}
+
+// PoolAssign is one class pool's assignment for the probe terminal.
+type PoolAssign struct {
+	Pool       string `json:"pool"`
 	Group      string `json:"group,omitempty"`
 	ActiveNode string `json:"active_node,omitempty"`
 	Primary    string `json:"primary,omitempty"`
 	Secondary  string `json:"secondary,omitempty"`
 	PrimaryOK  bool   `json:"primary_alive"`
 	SecondOK   bool   `json:"secondary_alive"`
+	PrimaryP50 int    `json:"primary_p50_ms,omitempty"`
+	PrimaryP95 int    `json:"primary_p95_ms,omitempty"`
 }
 
 type DNSPart struct {
@@ -204,18 +234,34 @@ type transitionsResp struct {
 	} `json:"transitions"`
 }
 
+// nodeHealthLite is the subset of NodeHealth the record keeps for the probe
+// terminal's primary/secondary.
+type nodeHealthLite struct {
+	RTTP50     int     `json:"rtt_p50_ms"`
+	RTTP95     int     `json:"rtt_p95_ms"`
+	FailRate   float64 `json:"fail_rate"`
+	ProbeCount int     `json:"probe_count"`
+}
+
+type terminalNodeResp struct {
+	Name   string          `json:"name"`
+	Alive  bool            `json:"alive"`
+	Health *nodeHealthLite `json:"health"`
+}
+
 type terminalResp struct {
-	IP         string `json:"ip"`
-	GroupName  string `json:"group_name"`
-	ActiveNode string `json:"active_node"`
-	Primary    *struct {
-		Name  string `json:"name"`
-		Alive bool   `json:"alive"`
-	} `json:"primary"`
-	Secondary *struct {
-		Name  string `json:"name"`
-		Alive bool   `json:"alive"`
-	} `json:"secondary"`
+	IP         string            `json:"ip"`
+	GroupName  string            `json:"group_name"`
+	ActiveNode string            `json:"active_node"`
+	Primary    *terminalNodeResp `json:"primary"`
+	Secondary  *terminalNodeResp `json:"secondary"`
+	Pools      []struct {
+		Pool       string            `json:"pool"`
+		GroupName  string            `json:"group_name"`
+		ActiveNode string            `json:"active_node"`
+		Primary    *terminalNodeResp `json:"primary"`
+		Secondary  *terminalNodeResp `json:"secondary"`
+	} `json:"pools"`
 }
 
 // sample collects one record. window is the time since the previous sample
@@ -337,9 +383,28 @@ func (s *sampler) sample(ctx context.Context, now time.Time, window time.Duratio
 			t := &TermPart{IP: term.IP, Group: term.GroupName, ActiveNode: term.ActiveNode}
 			if term.Primary != nil {
 				t.Primary, t.PrimaryOK = term.Primary.Name, term.Primary.Alive
+				if h := term.Primary.Health; h != nil {
+					t.PrimaryP50, t.PrimaryP95, t.PrimaryFail = h.RTTP50, h.RTTP95, h.FailRate
+				}
 			}
 			if term.Secondary != nil {
 				t.Secondary, t.SecondOK = term.Secondary.Name, term.Secondary.Alive
+				if h := term.Secondary.Health; h != nil {
+					t.SecondP50, t.SecondP95, t.SecondFail = h.RTTP50, h.RTTP95, h.FailRate
+				}
+			}
+			for _, p := range term.Pools {
+				pa := PoolAssign{Pool: p.Pool, Group: p.GroupName, ActiveNode: p.ActiveNode}
+				if p.Primary != nil {
+					pa.Primary, pa.PrimaryOK = p.Primary.Name, p.Primary.Alive
+					if h := p.Primary.Health; h != nil {
+						pa.PrimaryP50, pa.PrimaryP95 = h.RTTP50, h.RTTP95
+					}
+				}
+				if p.Secondary != nil {
+					pa.Secondary, pa.SecondOK = p.Secondary.Name, p.Secondary.Alive
+				}
+				t.Pools = append(t.Pools, pa)
 			}
 			sample.Terminal = t
 			group = term.GroupName
@@ -380,6 +445,11 @@ func (s *sampler) sample(ctx context.Context, now time.Time, window time.Duratio
 		sample.Reload.ScoredRounds = sample.Journal.ScoredRounds
 		sample.Reload.WarmupSkips = sample.Journal.WarmupSkips
 		sample.Reload.LastDurationMs = sample.Journal.LastDurationMs
+		routing, probing, named, namedDeferred := lastScoredFlags(gwText)
+		sample.Reload.RoutingChanged = routing
+		sample.Reload.ProbingChanged = probing
+		sample.Reload.NamedChanged = named
+		sample.Reload.NamedDeferred = namedDeferred
 	}
 	miText, err := scanJournal(ctx, "turnout-mihomo", gwSince)
 	if err != nil {

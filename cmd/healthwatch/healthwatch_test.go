@@ -131,3 +131,23 @@ func TestSummaryAdd(t *testing.T) {
 		t.Errorf("healthBad = %d, want 1", s.healthBad)
 	}
 }
+
+func TestLastScoredFlags(t *testing.T) {
+	routing := `msg="nodescorer: scored" qualified=8 total=225 pool_changed=true default_pool_changed=false routing_changed=true named_changed=false named_deferred=false deferred=false`
+	r, p, n, d := lastScoredFlags("noise\n" + routing)
+	if !r || p || n || d {
+		t.Errorf("routing line → r=%v p=%v n=%v d=%v", r, p, n, d)
+	}
+	deferred := `msg="nodescorer: scored" pool_changed=false default_pool_changed=true routing_changed=false named_changed=false named_deferred=true`
+	r, p, n, d = lastScoredFlags(deferred + "\nolder line")
+	if r || !p || n || !d {
+		t.Errorf("deferred line → r=%v p=%v n=%v d=%v", r, p, n, d)
+	}
+	applied := `msg="nodescorer: scored" routing_changed=false named_changed=true named_deferred=false`
+	if r, p, n, d = lastScoredFlags(applied); r || p || !n || d {
+		t.Errorf("named-applied line → r=%v p=%v n=%v d=%v", r, p, n, d)
+	}
+	if r, p, n, d = lastScoredFlags("no scored line"); r || p || n || d {
+		t.Errorf("no line → r=%v p=%v n=%v d=%v", r, p, n, d)
+	}
+}

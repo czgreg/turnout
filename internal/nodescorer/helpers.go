@@ -215,3 +215,44 @@ func computeK(p config.PoolSizingConfig, qualifiedCount int) (k int, supplyLimit
 	}
 	return k, false
 }
+
+// copyPoolMembers deep-copies a named-pool membership map so a deferred
+// proposal cannot alias state that a later round rewrites.
+func copyPoolMembers(in map[string][]string) map[string][]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for k, v := range in {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
+// namedChangeUrgent reports whether a named-pool membership change removes a
+// member that is no longer usable — gone from /proxies, or alive=false.
+// Those changes bypass the two-round confirmation: routing through a dead
+// node is worse than the reload it takes to replace it.
+func namedChangeUrgent(nodes []NodeHealth, old, next map[string][]string) bool {
+	alive := make(map[string]bool, len(nodes))
+	present := make(map[string]bool, len(nodes))
+	for i := range nodes {
+		alive[nodes[i].Name] = nodes[i].Alive
+		present[nodes[i].Name] = true
+	}
+	for pool, prev := range old {
+		keep := make(map[string]bool, len(next[pool]))
+		for _, m := range next[pool] {
+			keep[m] = true
+		}
+		for _, m := range prev {
+			if keep[m] {
+				continue
+			}
+			if !present[m] || !alive[m] {
+				return true
+			}
+		}
+	}
+	return false
+}

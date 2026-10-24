@@ -162,6 +162,26 @@ func lastReloadDuration(text string) int {
 	}
 }
 
+// lastScoredFlags extracts the change attribution from the most recent
+// "nodescorer: scored" line in a journal slice. The gateway emits
+// routing_changed / named_changed / named_deferred alongside the historical
+// pool_changed / default_pool_changed flags (added 2026-10-25); an older
+// binary omits them and every value reads false.
+func lastScoredFlags(text string) (routing, probing, named, namedDeferred bool) {
+	idx := strings.LastIndex(text, "nodescorer: scored")
+	if idx < 0 {
+		return
+	}
+	line := text[idx:]
+	if nl := strings.IndexByte(line, '\n'); nl >= 0 {
+		line = line[:nl]
+	}
+	return strings.Contains(line, "routing_changed=true"),
+		strings.Contains(line, "default_pool_changed=true"),
+		strings.Contains(line, "named_changed=true"),
+		strings.Contains(line, "named_deferred=true")
+}
+
 // countLogSignals counts lines containing each needle (case-insensitive).
 func countLogSignals(text string, needles ...string) int {
 	if text == "" {

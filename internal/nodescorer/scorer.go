@@ -213,6 +213,12 @@ type Scorer struct {
 	// member tags), used to detect when a probe change requires a re-render
 	// even though default-pool itself is unchanged.
 	poolMembers map[string][]string
+	// pendingNamedMembers / pendingNamedRounds hold a named-pool membership
+	// proposed by the previous round and not yet applied (see the
+	// named-pool coalescing block in score). Rounds bounds how long a
+	// continuously-changing set may stay deferred.
+	pendingNamedMembers map[string][]string
+	pendingNamedRounds  int
 	// probeResults[nodeTag][probeName] = latest result. Written by the
 	// probe loop, read by score() to gate pool membership.
 	probeResults map[string]map[string]ProbeResult
@@ -1244,7 +1250,7 @@ func (s *Scorer) score(ctx context.Context) bool {
 	}
 
 	now = time.Now().UTC()
-	poolChanged := !poolSetsEqual(s.poolSet, newPoolSet)
+	routingChanged := !poolSetsEqual(s.poolSet, newPoolSet)
 
 	// The probing set changing is also a reason to re-render, independently of
 	// the routing set. See lastDefaultPoolRendered.
@@ -1255,9 +1261,54 @@ func (s *Scorer) score(ctx context.Context) bool {
 	// probe is treated as NOT passing (conservative — keep unverified
 	// nodes out of the sensitive pool rather than risk a 403).
 	newPoolMembers := s.computePoolMembers(nodes, newPoolSet, kTarget)
-	if !poolMembersEqual(s.poolMembers, newPoolMembers) {
-		poolChanged = true
+	namedChanged := !poolMembersEqual(s.poolMembers, newPoolMembers)
+
+	// Named-pool-only changes are coalesced: the same membership must be
+	// proposed in two consecutive scoring rounds before a reload, unless a
+	// removed member is no longer alive (then it leaves immediately —
+	// carrying traffic through a dead node is worse than a reload).
+	//
+	// Measured on 10.100.6.15 (2026-10-24/25): 8 of 12 steady-state reloads
+	// were ai-pool-only membership swaps (BGP_C → BGP_E), clustered in
+	// 10-15 minute windows as nodes crossed the alive/quality line. Each
+	// rebuilt all 68 groups (~0.8s) and cleared the DNS cache even though the
+	// default routing set had not changed.
+	//
+	// A continuously-changing set is applied after pendingNamedRounds reaches
+	// 2 (third round, ~10 min), so staleness is bounded.
+	namedOnly := namedChanged && !routingChanged && !defaultPoolChanged
+	namedDeferred := false
+	if namedOnly {
+		switch {
+		case namedChangeUrgent(nodes, s.poolMembers, newPoolMembers):
+			s.pendingNamedMembers = nil
+			s.pendingNamedRounds = 0
+		case s.pendingNamedMembers != nil && poolMembersEqual(s.pendingNamedMembers, newPoolMembers):
+			// Confirmed by a second consecutive round → apply below.
+			s.pendingNamedMembers = nil
+			s.pendingNamedRounds = 0
+		case s.pendingNamedMembers != nil && s.pendingNamedRounds >= 2:
+			slog.Info("nodescorer: named-pool change applied after deferral limit",
+				"pending_rounds", s.pendingNamedRounds)
+			s.pendingNamedMembers = nil
+			s.pendingNamedRounds = 0
+		default:
+			s.pendingNamedMembers = copyPoolMembers(newPoolMembers)
+			s.pendingNamedRounds++
+			namedDeferred = true
+			slog.Info("nodescorer: named-pool change awaiting confirmation",
+				"round", s.pendingNamedRounds,
+				"applied_members", s.poolMembers,
+				"proposed_members", newPoolMembers)
+		}
+	} else {
+		s.pendingNamedMembers = nil
+		s.pendingNamedRounds = 0
 	}
+
+	// poolChanged keeps its prior meaning for the audit log / last-update
+	// timestamp: a change that is actually applied this round.
+	poolChanged := routingChanged || (namedChanged && !namedDeferred)
 
 	lastPoolUpdate := s.snap.LastPoolUpdate
 	if poolChanged {
@@ -1369,7 +1420,12 @@ func (s *Scorer) score(ctx context.Context) bool {
 			}
 		}
 		s.poolSet = newPoolSet
-		s.poolMembers = newPoolMembers
+		// A deferred named-pool change keeps the applied membership so the
+		// next round's sticky selection compares against what mihomo
+		// actually has.
+		if !namedDeferred {
+			s.poolMembers = newPoolMembers
+		}
 		// Record the probing set we are about to render, so the next round can
 		// tell whether it changed. Set here (not at the render call) so it stays
 		// in lockstep with poolSet under the same lock and the same
@@ -1382,6 +1438,11 @@ func (s *Scorer) score(ctx context.Context) bool {
 		"total", len(nodes),
 		"pool_changed", poolChanged,
 		"default_pool_changed", defaultPoolChanged,
+		// Attribution split for turnout-healthwatch: pool_changed alone
+		// conflated routing swaps with named-pool churn.
+		"routing_changed", routingChanged,
+		"named_changed", namedChanged && !namedDeferred,
+		"named_deferred", namedDeferred,
 		"deferred", poolChangePending,
 		"k_target", kTarget,
 		"k_current", len(newPoolSet),
@@ -1433,6 +1494,11 @@ func (s *Scorer) score(ctx context.Context) bool {
 			routingMembers = setToSortedSlice(newPoolSet)
 		}
 		members := newPoolMembers
+		if namedDeferred {
+			// A reload triggered by the routing/probing set must NOT smuggle
+			// in the unconfirmed named-pool membership.
+			members = s.poolMembers
+		}
 		s.lastHotReload = now
 		go s.hotReload(context.Background(), defaultPoolAll, routingMembers, members)
 	}
