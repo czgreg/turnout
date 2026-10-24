@@ -56,12 +56,19 @@
 // 10.100.6.15 (2026-10-24): direct TCP to 1.1.1.1:853/443 and 8.8.8.8:853
 // all timed out while the airport pool was healthy (265-454ms). Every
 // whitelisted domain returned SERVFAIL and browsers showed "cannot find
-// the server IP address" until the upstream gained the `#out` suffix.
+// the server IP address" until the upstream gained the `#dns-out` suffix.
 //
-// Hence the default and the example use `https://1.1.1.1/dns-query#out`
+// Hence the default and the example use `https://1.1.1.1/dns-query#dns-out`
 // (port 443 is rarely blocked at a node's egress; 853 is not always
-// allowed) and a second `8.8.8.8` upstream for redundancy. `out` always
-// exists — groups.go emits it even in the empty-pool DIRECT stub.
+// allowed) and a second `8.8.8.8` upstream for redundancy.
+//
+// The group is `dns-out`, NOT `out`. groups.go emits dns-out over the
+// scorer's routing set (top-K), falling back to a DIRECT stub when no nodes
+// exist. `out` leads with default-pool, which is a load-balancer over every
+// pattern-matched candidate; on 2026-10-24 its consistent hash sent
+// 1.1.1.1:443 to an unqualified candidate that could not reach it and every
+// whitelisted lookup SERVFAILed. Resolver traffic should only ever transit
+// nodes the scorer has actually qualified.
 //
 // Why no fallback-filter:
 //   The earlier setup used `nameserver: cnDoH; fallback: proxyDoH;
@@ -91,7 +98,7 @@ func (r *Renderer) buildDNS() map[string]any {
 	}
 	proxyDoH := r.cfg.DNS.ProxyDoH
 	if len(proxyDoH) == 0 {
-		proxyDoH = []string{"https://1.1.1.1/dns-query#out", "https://8.8.8.8/dns-query#out"}
+		proxyDoH = []string{"https://1.1.1.1/dns-query#dns-out", "https://8.8.8.8/dns-query#dns-out"}
 	}
 	bootstrap := r.cfg.DNS.BootstrapResolver
 	if bootstrap == "" {

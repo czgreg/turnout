@@ -118,19 +118,26 @@ func TestRenderer_OverseasMode(t *testing.T) {
 		t.Errorf("proxies count = %d, want 5", len(proxies))
 	}
 
-	// proxy-groups: out, default-pool, pin
+	// proxy-groups: out, default-pool, pin, dns-out
 	groups, _ := doc["proxy-groups"].([]any)
-	if len(groups) != 3 {
-		t.Fatalf("proxy-groups count = %d, want 3", len(groups))
+	if len(groups) != 4 {
+		t.Fatalf("proxy-groups count = %d, want 4", len(groups))
 	}
 	gNames := []string{}
 	var usp map[string]any
+	var dnsOut map[string]any
 	for _, g := range groups {
 		m, _ := g.(map[string]any)
 		gNames = append(gNames, m["name"].(string))
 		if m["name"] == "default-pool" {
 			usp = m
 		}
+		if m["name"] == dnsOutSelector {
+			dnsOut = m
+		}
+	}
+	if dnsOut == nil {
+		t.Fatalf("dns-out group missing; groups=%v", gNames)
 	}
 	if usp == nil {
 		t.Fatal("default-pool group missing")
@@ -290,17 +297,25 @@ func TestRenderer_EmptyPoolFallsBackToDirect(t *testing.T) {
 	_ = yaml.Unmarshal(body, &doc)
 
 	groups, _ := doc["proxy-groups"].([]any)
-	// Should collapse to single 'out' selector → DIRECT
-	if len(groups) != 1 {
-		t.Errorf("empty bootstrap want 1 group, got %d", len(groups))
+	// Bootstrap collapses to out + dns-out, both DIRECT.
+	if len(groups) != 2 {
+		t.Errorf("empty bootstrap want 2 groups (out, dns-out), got %d", len(groups))
 	}
-	g, _ := groups[0].(map[string]any)
-	if g["name"] != "out" {
-		t.Errorf("group[0].name = %v, want out", g["name"])
+	byName := map[string]map[string]any{}
+	for _, g := range groups {
+		m, _ := g.(map[string]any)
+		byName[m["name"].(string)] = m
 	}
-	pl, _ := g["proxies"].([]any)
-	if len(pl) != 1 || pl[0] != "DIRECT" {
-		t.Errorf("bootstrap group proxies = %v, want [DIRECT]", pl)
+	for _, name := range []string{"out", dnsOutSelector} {
+		g := byName[name]
+		if g == nil {
+			t.Errorf("bootstrap group %q missing", name)
+			continue
+		}
+		pl, _ := g["proxies"].([]any)
+		if len(pl) != 1 || pl[0] != "DIRECT" {
+			t.Errorf("bootstrap group %q proxies = %v, want [DIRECT]", name, pl)
+		}
 	}
 }
 

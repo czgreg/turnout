@@ -170,8 +170,8 @@ data_plane:
     # 用于冗余。`out` 组始终存在（空池时也会渲染成 DIRECT stub）。
     cn_doh:    ["https://doh.pub/dns-query"]
     proxy_doh:
-      - "https://1.1.1.1/dns-query#out"
-      - "https://8.8.8.8/dns-query#out"
+      - "https://1.1.1.1/dns-query#dns-out"
+      - "https://8.8.8.8/dns-query#dns-out"
     bootstrap_resolver: "udp://119.29.29.29"
   
     # [改] 上游的内网后缀 → 办公网内网后缀。这些域走 CN DoH 解析，避免

@@ -36,6 +36,15 @@ const (
 	// underlying group/proxy actually carries it.
 	outSelector = "out"
 
+	// dnsOutSelector is the resolver egress. proxy_doh upstreams carry
+	// `#dns-out` so the DoH/DoT dial transits the QUALIFIED routing set
+	// (top-K) rather than default-pool. default-pool is a load-balancer over
+	// every candidate — on 2026-10-24 its consistent hash sent
+	// 1.1.1.1:443 to a candidate that could not reach it, and every
+	// whitelisted lookup SERVFAILed until the process restarted onto a
+	// different hash pick.
+	dnsOutSelector = "dns-out"
+
 	// probeOutSelector is a select group over every candidate node, flipped
 	// one node at a time by nodescorer to run site-specific probes through
 	// the turnout-probe listener.
@@ -130,6 +139,23 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 		},
 	}
 
+	// Dedicated resolver egress (see dnsOutSelector). Members are the routing
+	// set: perTerminalMembers returns the scorer's top-K, or the candidate
+	// pool during the bootstrap window. load-balance rehashes away from a
+	// member whose alive bit goes false; lazy=true keeps the check cadence
+	// tied to actual DNS traffic instead of the static group size.
+	if dnsMembers := r.perTerminalMembers(outbounds); len(dnsMembers) > 0 {
+		groups = append(groups, map[string]any{
+			"name":     dnsOutSelector,
+			"type":     "load-balance",
+			"strategy": "consistent-hashing",
+			"proxies":  dnsMembers,
+			"url":      probeURL,
+			"interval": intervalSec,
+			"lazy":     true,
+		})
+	}
+
 	// Build a presence set for all currently-available node tags. Used below
 	// to filter stale poolMembers entries: nodescorer writes poolMembers
 	// asynchronously; if a subscription is deleted between two scorer rounds,
@@ -195,6 +221,14 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 		out := []map[string]any{
 			{
 				"name":    outSelector,
+				"type":    "select",
+				"proxies": []string{"DIRECT"},
+			},
+			{
+				// Keep the resolver group name resolvable so a
+				// `#dns-out` upstream is not mistaken for an interface
+				// name. With no nodes there is nothing to proxy through.
+				"name":    dnsOutSelector,
 				"type":    "select",
 				"proxies": []string{"DIRECT"},
 			},
