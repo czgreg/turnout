@@ -309,6 +309,19 @@ func main() {
 			cfg.Watchdog.Checks.EgressProbeURL,
 			cfg.Watchdog.Checks.EgressProbeTimeout))
 	}
+	// DNS resolution through this node's own listener. The other checks can
+	// all be green while every whitelisted lookup fails (2026-10-24): the
+	// engine, TPROXY rules and node pool know nothing about DNS. A skipped
+	// result (no listener address) is configuration, not a fault — the
+	// checker reports Skipped.
+	if cfg.Watchdog.Checks.CheckDNSProbe() {
+		if dnsAddr := dnsListenAddr(cfg); dnsAddr != "" {
+			checkers = append(checkers, watchdog.NewDNSChecker(
+				dnsAddr,
+				cfg.Watchdog.Checks.DNSProbeDomain,
+				cfg.Watchdog.Checks.DNSProbeTimeout))
+		}
+	}
 	wd := watchdog.New(
 		cfg.Watchdog,
 		checkers,

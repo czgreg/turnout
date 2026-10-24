@@ -375,6 +375,33 @@ type WatchdogChecks struct {
 
 	// EgressProbeTimeout caps each end-to-end probe. Default 5s.
 	EgressProbeTimeout time.Duration `yaml:"egress_probe_timeout"`
+
+	// DNSProbe verifies that a whitelisted domain resolves through this
+	// node's own DNS listener (data_plane.dns.listen, else ingress_ip:53).
+	//
+	// Why this exists: every other check can stay green while resolution is
+	// dead. Observed 2026-10-24 — the office network began blocking direct
+	// access to the proxy_doh upstreams, every whitelisted domain returned
+	// SERVFAIL, terminals showed "cannot find the server IP address", and the
+	// watchdog reported healthy because the engine, TPROXY rules and node
+	// pool were all fine. DNS is the single point every terminal depends on
+	// (hijacked :53), so it earns its own check.
+	//
+	// nil/true = on. The domain must be one whose lookups go through
+	// proxy_doh (i.e. a whitelisted overseas domain), otherwise the check
+	// exercises only the domestic resolver.
+	DNSProbe *bool `yaml:"dns_probe"`
+
+	// DNSProbeDomain is the domain resolved by DNSProbe. Default
+	// www.youtube.com — whitelisted in the shipped config and cheap to
+	// resolve. Answers are cached by mihomo, so a warm cache passing the
+	// check is correct: it means terminals can resolve right now.
+	DNSProbeDomain string `yaml:"dns_probe_domain"`
+
+	// DNSProbeTimeout caps one resolution. Default 3s: longer than a cold
+	// cross-border DoH round trip (~0.2-1.2s measured), short enough that the
+	// 10s watchdog cadence is not starved by a black-holed resolver.
+	DNSProbeTimeout time.Duration `yaml:"dns_probe_timeout"`
 }
 
 // CheckEngineAlive reports whether the engine check is enabled (default true).
@@ -393,6 +420,10 @@ func (c WatchdogChecks) EffectivePoolHealthyMin() int {
 	}
 	return *c.PoolHealthyMin
 }
+
+// CheckDNSProbe reports whether the DNS resolution check is enabled
+// (default true). The checker itself skips when no listener address is known.
+func (c WatchdogChecks) CheckDNSProbe() bool { return c.DNSProbe == nil || *c.DNSProbe }
 
 // DataPlaneConfig describes the proxy data plane (mihomo) the control plane
 // renders to + reloads. mihomo is the only supported engine; the field name
@@ -1260,6 +1291,12 @@ func (w *WatchdogConfig) applyDefaults() {
 	}
 	if w.Checks.EgressProbeTimeout == 0 {
 		w.Checks.EgressProbeTimeout = 5 * time.Second
+	}
+	if w.Checks.DNSProbeDomain == "" {
+		w.Checks.DNSProbeDomain = "www.youtube.com"
+	}
+	if w.Checks.DNSProbeTimeout == 0 {
+		w.Checks.DNSProbeTimeout = 3 * time.Second
 	}
 }
 

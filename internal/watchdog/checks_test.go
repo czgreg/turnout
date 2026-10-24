@@ -1,6 +1,6 @@
 package watchdog
 
-// Tests for the four self-checks.
+// Tests for the five self-checks.
 //
 // The checks share one contract that every case below pins: report what was
 // observed, never repair, and treat "could not run meaningfully" as skipped
@@ -11,6 +11,7 @@ package watchdog
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -233,5 +234,84 @@ func TestEgressChecker_StatusRanges(t *testing.T) {
 	}
 	if !strings.Contains(res.Detail, "11080") {
 		t.Errorf("detail should name the proxy, got %q", res.Detail)
+	}
+}
+
+// ── dns_resolve ─────────────────────────────────────────────────────────────
+
+func TestDNSChecker_Resolves(t *testing.T) {
+	c := &dnsChecker{
+		addr: "10.0.0.1:53", domain: "www.youtube.com", timeout: time.Second,
+		lookup: func(context.Context, string) ([]string, error) { return []string{"142.250.1.1"}, nil },
+	}
+	res := c.Check(context.Background())
+	if !res.OK || res.Skipped {
+		t.Fatalf("result = %+v, want OK", res)
+	}
+	if !strings.Contains(res.Detail, "142.250.1.1") || !strings.Contains(res.Detail, "www.youtube.com") {
+		t.Errorf("detail = %q, want domain + answer", res.Detail)
+	}
+}
+
+func TestDNSChecker_FailureIsNotOK(t *testing.T) {
+	c := &dnsChecker{
+		addr: "10.0.0.1:53", domain: "www.youtube.com", timeout: time.Second,
+		lookup: func(context.Context, string) ([]string, error) { return nil, errors.New("i/o timeout") },
+	}
+	res := c.Check(context.Background())
+	if res.OK || res.Skipped {
+		t.Fatalf("result = %+v, want a non-skipped failure", res)
+	}
+	if !strings.Contains(res.Detail, "i/o timeout") {
+		t.Errorf("detail = %q, want the lookup error", res.Detail)
+	}
+}
+
+func TestDNSChecker_EmptyAnswerFails(t *testing.T) {
+	c := &dnsChecker{
+		addr: "10.0.0.1:53", domain: "www.youtube.com", timeout: time.Second,
+		lookup: func(context.Context, string) ([]string, error) { return nil, nil },
+	}
+	if res := c.Check(context.Background()); res.OK {
+		t.Errorf("empty answer counted as OK: %+v", res)
+	}
+}
+
+func TestDNSChecker_SkippedWithoutAddr(t *testing.T) {
+	c := &dnsChecker{
+		domain: "www.youtube.com", timeout: time.Second,
+		lookup: func(context.Context, string) ([]string, error) { t.Fatal("lookup must not run"); return nil, nil },
+	}
+	res := c.Check(context.Background())
+	if !res.Skipped || res.OK {
+		t.Errorf("result = %+v, want skipped", res)
+	}
+}
+
+func TestDNSChecker_HonoursTimeout(t *testing.T) {
+	c := &dnsChecker{
+		addr: "10.0.0.1:53", domain: "www.youtube.com", timeout: 50 * time.Millisecond,
+		lookup: func(ctx context.Context, _ string) ([]string, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	start := time.Now()
+	res := c.Check(context.Background())
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("check took %s, timeout not honoured", elapsed)
+	}
+	if res.OK {
+		t.Errorf("timed-out lookup counted as OK: %+v", res)
+	}
+}
+
+func TestNewDNSChecker_Defaults(t *testing.T) {
+	c, ok := NewDNSChecker("10.0.0.1:53", "", 0).(*dnsChecker)
+	if !ok {
+		t.Fatal("wrong concrete type")
+	}
+	if c.domain != "www.youtube.com" || c.timeout != 3*time.Second {
+		t.Errorf("defaults = domain %q timeout %s", c.domain, c.timeout)
 	}
 }

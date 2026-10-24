@@ -16,6 +16,7 @@ package watchdog
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -282,5 +283,83 @@ func (c *egressChecker) Check(ctx context.Context) CheckResult {
 		return res
 	}
 	res.Detail = fmt.Sprintf("probe returned HTTP %d via %s in %s", resp.StatusCode, c.proxyURL, elapsed)
+	return res
+}
+
+// ── dns_resolve ─────────────────────────────────────────────────────────────
+
+// dnsLookup resolves a domain and returns its addresses. Injectable so tests
+// need no DNS server; production pins mihomo's own listener.
+type dnsLookup func(ctx context.Context, domain string) ([]string, error)
+
+type dnsChecker struct {
+	addr    string
+	domain  string
+	timeout time.Duration
+	lookup  dnsLookup
+}
+
+// NewDNSChecker builds the resolution check.
+//
+// addr is this node's DNS listener (node.ingress_ip:53, or the
+// data_plane.dns.listen override). domain must resolve through proxy_doh —
+// i.e. be a whitelisted overseas name — otherwise the check only exercises
+// the domestic resolver and cannot see the failure mode it exists for.
+//
+// History: 2026-10-24, the office network began blocking direct access to
+// the proxy_doh upstreams. Every whitelisted lookup returned SERVFAIL and
+// users saw "cannot find the server IP address", while engine_alive,
+// dataplane_rules and pool_healthy all stayed green — the watchdog had no
+// signal for DNS at all.
+func NewDNSChecker(addr, domain string, timeout time.Duration) Checker {
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	if domain == "" {
+		domain = "www.youtube.com"
+	}
+	return &dnsChecker{
+		addr:    addr,
+		domain:  domain,
+		timeout: timeout,
+		lookup: func(ctx context.Context, name string) ([]string, error) {
+			r := &net.Resolver{
+				PreferGo: true,
+				Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					// Pin to this node's listener: the system resolver on the
+					// host points elsewhere and would test the wrong path.
+					d := net.Dialer{}
+					return d.DialContext(ctx, "udp", addr)
+				},
+			}
+			return r.LookupHost(ctx, name)
+		},
+	}
+}
+
+func (c *dnsChecker) Name() CheckName { return CheckDNSResolve }
+
+func (c *dnsChecker) Check(ctx context.Context) CheckResult {
+	res := CheckResult{Name: CheckDNSResolve}
+	if c.addr == "" {
+		res.Skipped = true
+		res.Detail = "no DNS listener address (set node.ingress_ip or data_plane.dns.listen)"
+		return res
+	}
+	cctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	start := time.Now()
+	addrs, err := c.lookup(cctx, c.domain)
+	elapsed := time.Since(start).Round(time.Millisecond)
+	if err != nil {
+		res.Detail = fmt.Sprintf("resolve %s via %s failed after %s: %v", c.domain, c.addr, elapsed, err)
+		return res
+	}
+	if len(addrs) == 0 {
+		res.Detail = fmt.Sprintf("resolve %s via %s returned no addresses after %s", c.domain, c.addr, elapsed)
+		return res
+	}
+	res.OK = true
+	res.Detail = fmt.Sprintf("%s -> %s via %s in %s", c.domain, addrs[0], c.addr, elapsed)
 	return res
 }

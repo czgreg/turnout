@@ -299,6 +299,18 @@ watchdog:
     egress_probe_url: "http://cp.cloudflare.com/generate_204"
     egress_probe_timeout: "5s"
 
+    # DNS 解析检查：经本机 DNS 监听（ingress_ip:53 或 dns.listen）解析一个
+    # 白名单域名。省略 = 开。
+    #
+    # 为什么单独需要：其余检查全绿时解析仍可能全挂。2026-10-24 办公网开始
+    # 阻断直连 DoH 上游，所有白名单域名 SERVFAIL、终端报"找不到服务器 IP"，
+    # 而 watchdog 因为引擎/规则/池都正常而一直显示 healthy。
+    # ⚠️ 域名必须是走 proxy_doh 的白名单海外域名，否则只测到国内解析器。
+    # ⚠️ 该检查计入整体健康判定：auto_failover=true 时连续失败会摘探活地址。
+    dns_probe: true
+    dns_probe_domain: "www.youtube.com"
+    dns_probe_timeout: "3s"
+
   # ───────────────────────────────────────────────────────────
   # 探活地址 —— 防火墙上 IP-Link 的探测目标
   # ───────────────────────────────────────────────────────────

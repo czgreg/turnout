@@ -81,6 +81,7 @@ const (
 	CheckDataplaneRules CheckName = "dataplane_rules"
 	CheckPoolHealthy    CheckName = "pool_healthy"
 	CheckEgressProbe    CheckName = "egress_probe"
+	CheckDNSResolve     CheckName = "dns_resolve"
 )
 
 // CheckResult is one check's outcome for one round.
