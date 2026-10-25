@@ -257,6 +257,10 @@ pools:
   # - name: ai-pool
   #   node_pattern: "美国|🇺🇸|\\bUS"
   #   size: 4                 # 按 long-EWMA 取 top-4
+  #   # size 也是一道门槛：池满后换人要求挑战者领先最差成员
+  #   # swap_threshold_score（默认 400），而空位可以直接吸收下一名。
+  #   # 池内成员质量差距较大时（AI 池实测 448–548），把 size 调大一格
+  #   # 比等待换人更划算——既吸收更好的节点，又避免一次重载。
   #   per_terminal: true      # 每终端一个稳定美国 IP（fb-ai-pool-*）
   #   rule_sets:
   #     - geosite-openai

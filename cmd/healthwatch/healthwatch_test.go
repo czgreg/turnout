@@ -102,7 +102,7 @@ func TestSummaryAdd(t *testing.T) {
 		TS:      now,
 		Health:  HealthPart{OK: false},
 		Churn:   &ChurnPart{Interval: 1},
-		Reload:  ReloadPart{FallbackGroups: 68},
+		Reload:  ReloadPart{FallbackGroups: 68, ProbingChanged: true, NamedChanged: true},
 		Journal: JournalPart{HotReloads: 1, LastDurationMs: 800, GatewayWarns: 1},
 		DNS:     &DNSPart{Domain: "b", OK: false, Ms: 5000},
 		Direct:  map[string]int{"1.1.1.1:853": 30},
@@ -129,6 +129,10 @@ func TestSummaryAdd(t *testing.T) {
 	}
 	if s.healthBad != 1 {
 		t.Errorf("healthBad = %d, want 1", s.healthBad)
+	}
+	if s.probingChanges != 1 || s.namedApplied != 1 || s.routingChanges != 0 || s.namedDeferred != 0 {
+		t.Errorf("attribution: routing=%d probing=%d named=%d deferred=%d",
+			s.routingChanges, s.probingChanges, s.namedApplied, s.namedDeferred)
 	}
 }
 

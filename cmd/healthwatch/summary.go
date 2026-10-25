@@ -30,6 +30,14 @@ type summary struct {
 
 	transitions int
 
+	// Change attribution, counted once per scoring round seen in a sample
+	// window. A round can set routing and probing together; named applied and
+	// named deferred are mutually exclusive for one round.
+	routingChanges int
+	probingChanges int
+	namedApplied   int
+	namedDeferred  int
+
 	dnsTotal, dnsOK, dnsCached int
 	dnsLatencies               []int
 
@@ -74,6 +82,18 @@ func (s *summary) add(rec Sample) {
 	}
 	if rec.Churn != nil {
 		s.transitions += rec.Churn.Interval
+	}
+	if rec.Reload.RoutingChanged {
+		s.routingChanges++
+	}
+	if rec.Reload.ProbingChanged {
+		s.probingChanges++
+	}
+	if rec.Reload.NamedChanged {
+		s.namedApplied++
+	}
+	if rec.Reload.NamedDeferred {
+		s.namedDeferred++
 	}
 	if rec.DNS != nil {
 		s.dnsTotal++
@@ -218,6 +238,8 @@ func printSummary(dir string, window time.Duration, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "  pool churn    %d transitions observed (%.1f/h)\n",
 		agg.transitions, float64(agg.transitions)/window.Hours())
+	fmt.Fprintf(w, "  change cause  routing %d | probing %d | named applied %d | named deferred %d (rounds observed)\n",
+		agg.routingChanges, agg.probingChanges, agg.namedApplied, agg.namedDeferred)
 	if agg.fallbackN > 0 {
 		fmt.Fprintf(w, "  fallback grps min %d / avg %.0f / max %d\n",
 			agg.fallbackMin, avgFloat(float64(agg.fallbackSum), agg.fallbackN), agg.fallbackMax)
