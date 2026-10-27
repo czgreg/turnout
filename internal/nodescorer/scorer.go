@@ -2031,7 +2031,7 @@ func (s *Scorer) computeBackups(nodes []NodeHealth, qualifiedNodes []*NodeHealth
 			}
 		}
 		s.sortByLongEWMA(eligible)
-		if alts := s.backupsFor(backupClassDefault, routing, eligible); len(alts) > 0 {
+		if alts := s.backupsFor(backupClassDefault, routing, measuredOnly(eligible)); len(alts) > 0 {
 			out[backupClassDefault] = alts
 		}
 	}
@@ -2049,12 +2049,33 @@ func (s *Scorer) computeBackups(nodes []NodeHealth, qualifiedNodes []*NodeHealth
 		if !ok {
 			continue
 		}
-		if alts := s.backupsFor(p.Name, members, eligible); len(alts) > 0 {
+		if alts := s.backupsFor(p.Name, members, measuredOnly(eligible)); len(alts) > 0 {
 			out[p.Name] = alts
 		}
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// measuredOnly drops nodes with no probe history.
+//
+// scoreNode gives an alive node without history "benefit of doubt" so cold
+// nodes can bootstrap into the pool. A backup gets no such benefit: its only
+// job is to be reachable when the primary's ingress is not, and right after a
+// mihomo restart every proxy reads alive=true with empty history. Observed on
+// 10.100.6.15 at 14:20 on 2026-10-27: the first round chose three momo nodes
+// whose whole subscription was down (fail_rate 1.0 one round later), and
+// dns-out logged 12 failed dials until the next round dropped them. With no
+// measured foreign candidate the renderer falls back to same-subscription
+// HRW top-2, i.e. the behaviour before cross-subscription secondaries.
+func measuredOnly(nodes []NodeHealth) []NodeHealth {
+	out := nodes[:0:0]
+	for _, n := range nodes {
+		if n.ProbeCount > 0 {
+			out = append(out, n)
+		}
 	}
 	return out
 }

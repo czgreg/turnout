@@ -110,3 +110,25 @@ func TestBackupSelection_Sticky(t *testing.T) {
 		t.Errorf("fresh pick = %v, want [b/n1]", got)
 	}
 }
+
+// Right after a mihomo restart every proxy reads alive=true with empty
+// history. A backup must have been measured: on 10.100.6.15 (2026-10-27
+// 14:20) the first round picked three momo nodes from a subscription with no
+// remaining quota, and dns-out failed 12 dials until the next round dropped
+// them.
+func TestComputeBackups_RequiresProbeHistory(t *testing.T) {
+	s, _ := backupScorer(t, true)
+	nodes := []NodeHealth{
+		{Name: "b/fresh", Qualified: true, Alive: true, ProbeCount: 0},
+		{Name: "b/measured", Qualified: true, Alive: true, ProbeCount: 5},
+	}
+	q := []*NodeHealth{&nodes[0], &nodes[1]}
+	got := s.computeBackups(nodes, q, []string{"a/n1"}, nil)[backupClassDefault]["a"]
+	if len(got) != 1 || got[0] != "b/measured" {
+		t.Errorf("backups = %v, want only the measured node", got)
+	}
+	nodes[1].ProbeCount = 0
+	if b := s.computeBackups(nodes, q, []string{"a/n1"}, nil); b != nil {
+		t.Errorf("with no measured foreign node backups must be empty (legacy pairing), got %v", b)
+	}
+}
