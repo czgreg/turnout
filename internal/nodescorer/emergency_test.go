@@ -288,7 +288,7 @@ func (r *emergencyTestRenderer) RenderWithQualifiedNodes(_ []subscribe.Outbound,
 	return nil, nil
 }
 
-func (r *emergencyTestRenderer) RenderWithPools(_ []subscribe.Outbound, _, _ []string, _ map[string][]string) ([]byte, error) {
+func (r *emergencyTestRenderer) RenderWithPools(_ []subscribe.Outbound, _, _ []string, _ map[string][]string, _ map[string]map[string][]string) ([]byte, error) {
 	return nil, nil
 }
 

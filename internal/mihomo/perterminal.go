@@ -64,6 +64,7 @@ import (
 	"hash/fnv"
 	"net"
 	"sort"
+	"strings"
 
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 )
@@ -134,6 +135,119 @@ func (r *Renderer) perTerminalMembers(outbounds []subscribe.Outbound) []string {
 	return members
 }
 
+// BackupClassDefault is the backups-map key for the default per-terminal
+// class (fb-*). Class pools use their own pool name. The empty string can
+// never collide: config.Load rejects a pool without a name.
+const BackupClassDefault = ""
+
+// SubscriptionOf returns the subscription prefix of a node tag ("hutao" for
+// "hutao/日本_BGP_B"). Tags are built as "<subscription>/<name>"
+// (subscribe/parser.go); a tag without a slash is its own subscription.
+// Exported so the scorer groups candidates by the same failure domain the
+// renderer pairs on.
+func SubscriptionOf(tag string) string {
+	if i := strings.IndexByte(tag, '/'); i > 0 {
+		return tag[:i]
+	}
+	return tag
+}
+
+// presentBackups filters a class's backup lists to tags that exist in this
+// render's outbounds and that really belong to another subscription than
+// their key. Returns nil when outbounds is empty (validate/bootstrap path),
+// so callers fall back to the legacy pairing.
+//
+// The filter matters: the scorer publishes backups asynchronously, and a
+// subscription removed between two scoring rounds would otherwise leave a
+// fallback group referencing a proxy that is no longer rendered — mihomo
+// rejects the whole config with "proxy not found".
+func (r *Renderer) presentBackups(class string, outbounds []subscribe.Outbound) map[string][]string {
+	return filterPresentBackups(r.backups[class], outbounds)
+}
+
+// lockedPresentBackups is presentBackups for the API read paths, which run
+// against the long-lived renderer concurrently with RenderWithPools
+// publishing new backups under stateMu. Render paths run on a stack-local
+// clone and call presentBackups directly.
+func (r *Renderer) lockedPresentBackups(class string, outbounds []subscribe.Outbound) map[string][]string {
+	r.stateMu.RLock()
+	classAlts := r.backups[class]
+	r.stateMu.RUnlock()
+	return filterPresentBackups(classAlts, outbounds)
+}
+
+func filterPresentBackups(classAlts map[string][]string, outbounds []subscribe.Outbound) map[string][]string {
+	if len(outbounds) == 0 || len(classAlts) == 0 {
+		return nil
+	}
+	present := make(map[string]bool, len(outbounds))
+	for _, o := range outbounds {
+		if t := o.Tag(); t != "" {
+			present[t] = true
+		}
+	}
+	out := make(map[string][]string, len(classAlts))
+	for sub, alts := range classAlts {
+		var keep []string
+		for _, a := range alts {
+			if present[a] && SubscriptionOf(a) != sub {
+				keep = append(keep, a)
+			}
+		}
+		if len(keep) > 0 {
+			out[sub] = keep
+		}
+	}
+	return out
+}
+
+// dnsOutMembers is the routing set followed by every backup not already in
+// it, deduplicated and in a deterministic order (backup keys sorted) so the
+// rendered config is stable across renders.
+func dnsOutMembers(members []string, alts map[string][]string) []string {
+	out := append([]string(nil), members...)
+	seen := make(map[string]bool, len(members))
+	for _, m := range members {
+		seen[m] = true
+	}
+	subs := make([]string, 0, len(alts))
+	for sub := range alts {
+		subs = append(subs, sub)
+	}
+	sort.Strings(subs)
+	for _, sub := range subs {
+		for _, a := range alts[sub] {
+			if !seen[a] {
+				seen[a] = true
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
+// pairFor returns the [primary, secondary] fallback pair for one terminal
+// unit. The primary is HRW top-1 over the routing members, exactly as
+// before — no terminal changes its egress in steady state. The secondary is
+// HRW top-1 over the cross-subscription candidates for the primary's
+// subscription, so a single airport ingress outage does not take both
+// members of a terminal's pair down together.
+//
+// Falls back to the legacy HRW top-2 over members when there are no alts
+// for the primary's subscription (no other subscription has a qualified,
+// alive candidate). Returns fewer than two members only when members itself
+// has fewer than two and no alt exists.
+func pairFor(key string, members []string, alts map[string][]string) []string {
+	primary := hrwTopN(key, members, 1)
+	if len(primary) == 0 {
+		return nil
+	}
+	if cand := alts[SubscriptionOf(primary[0])]; len(cand) > 0 {
+		return []string{primary[0], hrwTopN(key, cand, 1)[0]}
+	}
+	return hrwTopN(key, members, perTerminalFallbackDepth)
+}
+
 // perTerminalSlices returns the `perterm` sub-rule body. Every unit in the
 // client subnet maps to the fallback group that carries its HRW pair, and
 // the MATCH fallback at the end catches sources outside the subnet.
@@ -142,7 +256,7 @@ func (r *Renderer) perTerminalMembers(outbounds []subscribe.Outbound) []string {
 // with empty outbounds, or unconfigured perTerminal); the caller then
 // falls back to a single default-pool MATCH rule.
 func (r *Renderer) perTerminalSlices(outbounds []subscribe.Outbound) []string {
-	return r.perTerminalSlicesFor(r.perTerminalMembers(outbounds), perTerminalGroupPrefix, defaultPool)
+	return r.perTerminalSlicesFor(r.perTerminalMembers(outbounds), r.presentBackups(BackupClassDefault, outbounds), perTerminalGroupPrefix, defaultPool)
 }
 
 // perTerminalSlicesFor is the generalized body of a per-term sub-rule: one
@@ -154,7 +268,7 @@ func (r *Renderer) perTerminalSlices(outbounds []subscribe.Outbound) []string {
 // One rule per UNIT (up to 1024), but only one GROUP per distinct
 // [primary, secondary] pair — many units share a pair and therefore share
 // a group. Rules are cheap; health-checked groups are not.
-func (r *Renderer) perTerminalSlicesFor(members []string, groupPrefix, fallbackGroup string) []string {
+func (r *Renderer) perTerminalSlicesFor(members []string, alts map[string][]string, groupPrefix, fallbackGroup string) []string {
 	// Need at least perTerminalFallbackDepth members to form a useful
 	// fallback chain. Callers check the same condition before emitting the
 	// SRC-IP rules, so the two never diverge.
@@ -167,7 +281,7 @@ func (r *Renderer) perTerminalSlicesFor(members []string, groupPrefix, fallbackG
 	}
 	rules := make([]string, 0, len(units)+1)
 	for _, u := range units {
-		suffix := pairGroupSuffix(hrwTopN(u.key, members, perTerminalFallbackDepth))
+		suffix := pairGroupSuffix(pairFor(u.key, members, alts))
 		rules = append(rules, fmt.Sprintf("%s,%s,%s%s", u.ruleType, u.match, groupPrefix, suffix))
 	}
 	rules = append(rules, "MATCH,"+fallbackGroup)
@@ -187,14 +301,14 @@ func (r *Renderer) perTerminalSlicesFor(members []string, groupPrefix, fallbackG
 // is exactly why the group count must stay bounded by K(K-1) ordered
 // pairs.
 func (r *Renderer) perTerminalFallbackGroups(outbounds []subscribe.Outbound, probeURL string, intervalSec int) []map[string]any {
-	return r.perTerminalFallbackGroupsFor(r.perTerminalMembers(outbounds), perTerminalGroupPrefix, probeURL, intervalSec)
+	return r.perTerminalFallbackGroupsFor(r.perTerminalMembers(outbounds), r.presentBackups(BackupClassDefault, outbounds), perTerminalGroupPrefix, probeURL, intervalSec)
 }
 
 // perTerminalFallbackGroupsFor emits one fallback group per distinct
 // [primary, secondary] pair named groupPrefix+p-<hash>, each containing
-// its two members in HRW order. Shared by the default class and class
+// its two members in pairFor order. Shared by the default class and class
 // pools so their failover semantics stay identical.
-func (r *Renderer) perTerminalFallbackGroupsFor(members []string, groupPrefix, probeURL string, intervalSec int) []map[string]any {
+func (r *Renderer) perTerminalFallbackGroupsFor(members []string, alts map[string][]string, groupPrefix, probeURL string, intervalSec int) []map[string]any {
 	if len(members) < perTerminalFallbackDepth {
 		// Need at least perTerminalFallbackDepth members to form a useful
 		// fallback chain. perTerminalSlicesFor checks the same condition, so
@@ -206,10 +320,10 @@ func (r *Renderer) perTerminalFallbackGroupsFor(members []string, groupPrefix, p
 	if len(units) == 0 {
 		return nil
 	}
-	// Upper bound is K(K-1) ordered pairs; starting at the unit count would
-	// allocate 1024 entries for ~56 groups. K is small by design
-	// (pool_sizing), but fall back to the unit count if members is
-	// unexpectedly huge.
+	// Upper bound is K(K-1) ordered pairs (legacy) or K×|alts| (cross-sub);
+	// starting at the unit count would allocate 1024 entries for ~56 groups.
+	// K is small by design (pool_sizing), but fall back to the unit count if
+	// members is unexpectedly huge.
 	capacity := len(members) * (len(members) - 1)
 	if capacity > len(units) {
 		capacity = len(units)
@@ -217,7 +331,7 @@ func (r *Renderer) perTerminalFallbackGroupsFor(members []string, groupPrefix, p
 	out := make([]map[string]any, 0, capacity)
 	seen := make(map[string]bool, capacity)
 	for _, u := range units {
-		ranked := hrwTopN(u.key, members, perTerminalFallbackDepth)
+		ranked := pairFor(u.key, members, alts)
 		suffix := pairGroupSuffix(ranked)
 		if suffix == "" || seen[suffix] {
 			continue
@@ -262,11 +376,15 @@ func (r *Renderer) AssignmentForIP(ip string, outbounds []subscribe.Outbound) ([
 	if !ipInSubnet(ip, r.node.ClientSubnet) {
 		return nil, false
 	}
-	depth := perTerminalFallbackDepth
-	if depth > len(members) {
-		depth = len(members)
+	key := perTerminalKey(ip, r.node.ClientSubnet)
+	if len(members) < perTerminalFallbackDepth {
+		// No group is rendered below the fallback depth; report the lone
+		// member as the egress the MATCH fallback would pick.
+		return hrwTopN(key, members, len(members)), true
 	}
-	return hrwTopN(perTerminalKey(ip, r.node.ClientSubnet), members, depth), true
+	// Must mirror the renderer exactly, or the API reports a group name
+	// that does not exist in mihomo.
+	return pairFor(key, members, r.lockedPresentBackups(BackupClassDefault, outbounds)), true
 }
 
 // PerTerminalGroupName is the fb-* proxy-group that carries traffic from
@@ -331,11 +449,11 @@ func (r *Renderer) PoolAssignmentForIP(ip, pool string, outbounds []subscribe.Ou
 	if !ipInSubnet(ip, r.node.ClientSubnet) {
 		return nil, false
 	}
-	depth := perTerminalFallbackDepth
-	if depth > len(members) {
-		depth = len(members)
+	key := perTerminalKey(ip, r.node.ClientSubnet)
+	if len(members) < perTerminalFallbackDepth {
+		return hrwTopN(key, members, len(members)), true
 	}
-	return hrwTopN(perTerminalKey(ip, r.node.ClientSubnet), members, depth), true
+	return pairFor(key, members, r.lockedPresentBackups(pool, outbounds)), true
 }
 
 // ptUnit is one per-terminal routing unit: the rule that matches its

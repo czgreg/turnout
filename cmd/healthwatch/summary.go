@@ -38,6 +38,12 @@ type summary struct {
 	namedApplied   int
 	namedDeferred  int
 
+	// Probe-terminal pairs whose primary and secondary share a subscription
+	// (the "sub/name" tag prefix). Before cross-subscription secondaries this
+	// was 99.4% (2026-10-26/27) — one airport ingress outage took both down.
+	pairs, pairsSameSub     int
+	aiPairs, aiPairsSameSub int
+
 	dnsTotal, dnsOK, dnsCached int
 	dnsLatencies               []int
 
@@ -94,6 +100,22 @@ func (s *summary) add(rec Sample) {
 	}
 	if rec.Reload.NamedDeferred {
 		s.namedDeferred++
+	}
+	if t := rec.Terminal; t != nil {
+		if t.Primary != "" && t.Secondary != "" {
+			s.pairs++
+			if subscriptionOf(t.Primary) == subscriptionOf(t.Secondary) {
+				s.pairsSameSub++
+			}
+		}
+		for _, p := range t.Pools {
+			if p.Primary != "" && p.Secondary != "" {
+				s.aiPairs++
+				if subscriptionOf(p.Primary) == subscriptionOf(p.Secondary) {
+					s.aiPairsSameSub++
+				}
+			}
+		}
 	}
 	if rec.DNS != nil {
 		s.dnsTotal++
@@ -240,6 +262,10 @@ func printSummary(dir string, window time.Duration, w io.Writer) error {
 		agg.transitions, float64(agg.transitions)/window.Hours())
 	fmt.Fprintf(w, "  change cause  routing %d | probing %d | named applied %d | named deferred %d (rounds observed)\n",
 		agg.routingChanges, agg.probingChanges, agg.namedApplied, agg.namedDeferred)
+	if agg.pairs > 0 || agg.aiPairs > 0 {
+		fmt.Fprintf(w, "  pair same-sub default %s | class pools %s (probe terminal; lower = failover survives one ingress)\n",
+			ratio(agg.pairsSameSub, agg.pairs), ratio(agg.aiPairsSameSub, agg.aiPairs))
+	}
 	if agg.fallbackN > 0 {
 		fmt.Fprintf(w, "  fallback grps min %d / avg %.0f / max %d\n",
 			agg.fallbackMin, avgFloat(float64(agg.fallbackSum), agg.fallbackN), agg.fallbackMax)
@@ -271,4 +297,20 @@ func sortedKeys(m map[string]int) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// subscriptionOf returns the "<subscription>" prefix of a "<subscription>/<name>"
+// node tag (mirrors mihomo.SubscriptionOf; the sampler does not import it).
+func subscriptionOf(tag string) string {
+	if i := strings.IndexByte(tag, '/'); i > 0 {
+		return tag[:i]
+	}
+	return tag
+}
+
+func ratio(n, d int) string {
+	if d == 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%d/%d (%.1f%%)", n, d, 100*float64(n)/float64(d))
 }

@@ -30,7 +30,7 @@ func (f *terminalFakeRenderer) PoolAssignmentForIP(_ string, pool string, _ []su
 	return []string{"us1", "us2"}, true
 }
 
-func (f *terminalFakeRenderer) RenderWithPools(_ []subscribe.Outbound, _, _ []string, _ map[string][]string) ([]byte, error) {
+func (f *terminalFakeRenderer) RenderWithPools(_ []subscribe.Outbound, _, _ []string, _ map[string][]string, _ map[string]map[string][]string) ([]byte, error) {
 	return []byte("rendered"), nil
 }
 

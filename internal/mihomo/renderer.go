@@ -85,6 +85,18 @@ type Renderer struct {
 	// to the full default-pool member set (so it works before the first probe
 	// round completes).
 	poolMembers map[string][]string
+	// backups maps a per-terminal class (BackupClassDefault or a class pool
+	// name) → primary subscription → cross-subscription secondary candidates,
+	// best-first. Set by nodescorer at hot-reload time; nil/absent entries
+	// make the class fall back to the legacy HRW top-2 pairing.
+	//
+	// Why: the routing set was single-subscription 89% of the time on
+	// 10.100.6.15 (2026-10-24..27), so a terminal's HRW top-2 primary and
+	// secondary shared one airport ingress and died together in every
+	// ingress incident (52 of 60 proxy failures in 24h). Drawing the
+	// secondary from another subscription lets mihomo's fallback alive bit
+	// move a terminal off a dead ingress without a reload.
+	backups map[string]map[string][]string
 	// probeListener toggles emission of the turnout-probe HTTP listener +
 	// probe-out selector group used by nodescorer's per-node site probes.
 	probeListener bool
@@ -243,11 +255,12 @@ func (r *Renderer) SetFakeIPSkip(suffixes []string) {
 // AssignmentForIP returns the fresh pool. Without this, /api/pool/
 // terminal lags hot-reloads — observed 2026-06-09 with stale cyberguard
 // primary returned for terminals after pool moved to ctc-02.
-func (r *Renderer) RenderWithPools(outbounds []subscribe.Outbound, defaultPool, routingMembers []string, poolMembers map[string][]string) ([]byte, error) {
+func (r *Renderer) RenderWithPools(outbounds []subscribe.Outbound, defaultPool, routingMembers []string, poolMembers map[string][]string, backups map[string]map[string][]string) ([]byte, error) {
 	clone := *r
 	clone.qualifiedOverride = defaultPool
 	clone.routingMembers = routingMembers
 	clone.poolMembers = poolMembers
+	clone.backups = backups
 	out, err := clone.Write(outbounds)
 	if err != nil {
 		return nil, err
@@ -256,6 +269,7 @@ func (r *Renderer) RenderWithPools(outbounds []subscribe.Outbound, defaultPool, 
 	r.qualifiedOverride = append([]string(nil), defaultPool...)
 	r.routingMembers = append([]string(nil), routingMembers...)
 	r.poolMembers = poolMembers
+	r.backups = backups
 	r.stateMu.Unlock()
 	return out, nil
 }

@@ -155,3 +155,22 @@ func TestLastScoredFlags(t *testing.T) {
 		t.Errorf("no line → r=%v p=%v n=%v d=%v", r, p, n, d)
 	}
 }
+
+func TestSummaryPairSameSub(t *testing.T) {
+	now := time.Now().Format(time.RFC3339)
+	var s summary
+	s.add(Sample{TS: now, Terminal: &TermPart{
+		Primary: "hutao/JP-A", Secondary: "hutao/JP-B",
+		Pools: []PoolAssign{{Primary: "momo/US-1", Secondary: "hutao/US-A"}},
+	}})
+	s.add(Sample{TS: now, Terminal: &TermPart{Primary: "hutao/JP-A", Secondary: "momo/HK-1"}})
+	if s.pairs != 2 || s.pairsSameSub != 1 {
+		t.Errorf("default pairs = %d same = %d, want 2/1", s.pairs, s.pairsSameSub)
+	}
+	if s.aiPairs != 1 || s.aiPairsSameSub != 0 {
+		t.Errorf("class pairs = %d same = %d, want 1/0", s.aiPairs, s.aiPairsSameSub)
+	}
+	if got := ratio(1, 2); got != "1/2 (50.0%)" {
+		t.Errorf("ratio = %q", got)
+	}
+}

@@ -154,14 +154,14 @@ func TestHotReload_FailureRearmsRender(t *testing.T) {
 		func() []subscribe.Outbound { return nil })
 
 	s.lastDefaultPoolRendered = map[string]bool{"sub/a": true}
-	s.hotReload(context.Background(), []string{"sub/a"}, []string{"sub/a"}, nil)
+	s.hotReload(context.Background(), []string{"sub/a"}, []string{"sub/a"}, nil, nil)
 	if s.lastDefaultPoolRendered != nil {
 		t.Fatal("failed reload must clear lastDefaultPoolRendered so the next round retries")
 	}
 
 	atomic.StoreInt32(&status, http.StatusNoContent)
 	s.lastDefaultPoolRendered = map[string]bool{"sub/a": true}
-	s.hotReload(context.Background(), []string{"sub/a"}, []string{"sub/a"}, nil)
+	s.hotReload(context.Background(), []string{"sub/a"}, []string{"sub/a"}, nil, nil)
 	if s.lastDefaultPoolRendered == nil {
 		t.Fatal("successful reload must leave lastDefaultPoolRendered alone (score() owns it)")
 	}

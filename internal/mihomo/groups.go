@@ -140,11 +140,15 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 	}
 
 	// Dedicated resolver egress (see dnsOutSelector). Members are the routing
-	// set: perTerminalMembers returns the scorer's top-K, or the candidate
-	// pool during the bootstrap window. load-balance rehashes away from a
-	// member whose alive bit goes false; lazy=true keeps the check cadence
-	// tied to actual DNS traffic instead of the static group size.
-	if dnsMembers := r.perTerminalMembers(outbounds); len(dnsMembers) > 0 {
+	// set plus the default class's cross-subscription backups: perTerminalMembers
+	// returns the scorer's top-K (or the candidate pool during bootstrap), and
+	// the backups put another airport ingress inside the group. load-balance
+	// rehashes away from a member whose alive bit goes false, but only onto
+	// other members of THIS group — with a single-subscription routing set the
+	// whole group shared one ingress, and every whitelisted lookup failed in
+	// each ingress incident (630/238/171 failed dns-out dials, 2026-10-26/27).
+	// lazy=true keeps the check cadence tied to actual DNS traffic.
+	if dnsMembers := dnsOutMembers(r.perTerminalMembers(outbounds), r.presentBackups(BackupClassDefault, outbounds)); len(dnsMembers) > 0 {
 		groups = append(groups, map[string]any{
 			"name":     dnsOutSelector,
 			"type":     "load-balance",
@@ -191,7 +195,7 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 		})
 		if p.PerTerminalEnabled() && r.node.ClientSubnet != "" {
 			groups = append(groups, r.perTerminalFallbackGroupsFor(
-				members, poolGroupPrefix(p.Name), probeURL, intervalSec)...)
+				members, r.presentBackups(p.Name, outbounds), poolGroupPrefix(p.Name), probeURL, intervalSec)...)
 		}
 	}
 

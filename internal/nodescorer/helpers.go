@@ -256,3 +256,55 @@ func namedChangeUrgent(nodes []NodeHealth, old, next map[string][]string) bool {
 	}
 	return false
 }
+
+// backupClassDefault mirrors mihomo.BackupClassDefault. nodescorer does not
+// import the renderer package; the two constants must stay equal.
+const backupClassDefault = ""
+
+// backupsPerSubscription is how many cross-subscription candidates each
+// primary subscription gets. 3 keeps the fallback group count at K×3 (24 for
+// an 8-member routing set, vs 56 ordered pairs before) while still spreading
+// failover load: HRW picks one of three per terminal, so a dead ingress does
+// not land every displaced terminal on the same backup node.
+const backupsPerSubscription = 3
+
+// subscriptionOf mirrors mihomo.SubscriptionOf: tags are
+// "<subscription>/<name>" (subscribe/parser.go).
+func subscriptionOf(tag string) string {
+	for i := 0; i < len(tag); i++ {
+		if tag[i] == '/' {
+			if i == 0 {
+				return tag
+			}
+			return tag[:i]
+		}
+	}
+	return tag
+}
+
+// copyBackups deep-copies a backups map.
+func copyBackups(in map[string]map[string][]string) map[string]map[string][]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]map[string][]string, len(in))
+	for class, subs := range in {
+		out[class] = copyPoolMembers(subs)
+	}
+	return out
+}
+
+// backupsEqual compares two backups maps with poolMembersEqual semantics per
+// class (order-insensitive candidate sets).
+func backupsEqual(a, b map[string]map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for class, as := range a {
+		bs, ok := b[class]
+		if !ok || !poolMembersEqual(as, bs) {
+			return false
+		}
+	}
+	return true
+}

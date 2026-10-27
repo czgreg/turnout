@@ -734,7 +734,7 @@ curl -H "Authorization: Bearer ..." \
 - `primary.name` — HRW top-1 节点名。
 - `primary.alive` — mihomo url-test 的最新探针结果。
 - `primary.health` — 完整 NodeHealth 嵌入：rtt_p50/p95、jitter、fail_rate、probe_count、命名探针每个目标的最近一次状态、被动连接生命周期统计（`passive`）。
-- `secondary.*` — 同 primary，HRW top-2。当前实现固定每个 fb 组 2 个成员。
+- `secondary.*` — 同 primary。另一家订阅有合格且存活的候选时，secondary 从**另一家订阅**的备用集合中按 HRW 选出（跨订阅备用，见 2026-10-27 变更）；否则退回同订阅 HRW top-2。当前实现固定每个 fb 组 2 个成员。
 - `pools` — 仅列出 `per_terminal: true` 的分类池（如 `ai-pool`）。每项含
   `pool`、`group_name`（`fb-<pool>-p-<hash>`）、`primary` / `secondary` /
   `active_node`。顶层 `primary` / `secondary` 仍描述默认「其他」类；`pools`
@@ -1053,7 +1053,23 @@ curl -s $BASE/api/whitelist \
 
 ## 接入变更日志（前端 / 控制平台）
 
-### 2026-10-23（per-terminal 组按节点对收敛 + 重载后 DNS 预热）— 当前版本
+### 2026-10-27（跨订阅 secondary）— 当前版本
+
+**变更（字段语义，非 breaking）**：
+
+- 终端的 primary 不变（仍是路由池内 HRW top-1）。secondary 改为从**另一家订阅**
+  中最好的 3 个合格且存活节点里按 HRW 选出；另一家没有可用节点时退回同订阅
+  HRW top-2。`/api/pool/terminal` 的 `secondary` 与 `group_name` 随之变化。
+- 原因：路由池 89% 时间只来自一家订阅，终端主备 99.4% 同订阅，三次机场入口事故
+  里主备一起失效（24h 内 60 次代理失败中的 52 次）。跨订阅 secondary 让 mihomo
+  的 fallback 在 5–30s 内把受影响终端切到另一家入口，不需要重载、不改变未受
+  影响终端的出口 IP。
+- 按订阅（tag 前缀）划分故障域，而不是 server 主机名：momo 的广州/上海主机名解析到
+  同一 /23，hutao 单一主机名背后的 AWS 东京 IP 会轮换。
+- `dns-out` 成员 = 路由池 + 默认类的跨订阅备用，DNS 不再只依赖一家入口。
+- fallback 组数从 K(K−1) 降到约 K×3。
+
+### 2026-10-23（per-terminal 组按节点对收敛 + 重载后 DNS 预热）
 
 **变更（字段语义，非 breaking）**：
 

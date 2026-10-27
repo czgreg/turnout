@@ -43,7 +43,7 @@ func TestPerTerminalPairGroups_DeduplicatedAndReferenced(t *testing.T) {
 	r.node.ClientSubnet = "192.168.0.0/16"
 	members := liveRoutingPool // 8 members (hrwdist_test.go)
 
-	groups := r.perTerminalFallbackGroupsFor(members, perTerminalGroupPrefix, "http://probe.test/204", 30)
+	groups := r.perTerminalFallbackGroupsFor(members, nil, perTerminalGroupPrefix, "http://probe.test/204", 30)
 	maxPairs := len(members) * (len(members) - 1) // ordered: [A,B] != [B,A]
 	if len(groups) != maxPairs {
 		t.Errorf("emitted %d groups for a %d-member pool; want %d ordered pairs", len(groups), len(members), maxPairs)
@@ -65,7 +65,7 @@ func TestPerTerminalPairGroups_DeduplicatedAndReferenced(t *testing.T) {
 		}
 	}
 
-	rules := r.perTerminalSlicesFor(members, perTerminalGroupPrefix, defaultPool)
+	rules := r.perTerminalSlicesFor(members, nil, perTerminalGroupPrefix, defaultPool)
 	units := perTerminalUnits(r.node.ClientSubnet)
 	if len(rules) != len(units)+1 {
 		t.Fatalf("rules = %d, want %d units + MATCH", len(rules), len(units))
@@ -93,11 +93,11 @@ func TestPerTerminalPairGroups_DeduplicatedAndReferenced(t *testing.T) {
 func TestPerTerminalPairGroups_HostMode(t *testing.T) {
 	r := newTestRenderer(t) // ClientSubnet 10.1.2.0/24
 	members := []string{"n1", "n2", "n3"}
-	groups := r.perTerminalFallbackGroupsFor(members, perTerminalGroupPrefix, "http://probe.test/204", 30)
+	groups := r.perTerminalFallbackGroupsFor(members, nil, perTerminalGroupPrefix, "http://probe.test/204", 30)
 	if len(groups) != 6 {
 		t.Errorf("emitted %d groups, want K(K-1)=6 ordered pairs", len(groups))
 	}
-	if got := len(r.perTerminalSlicesFor(members, perTerminalGroupPrefix, defaultPool)); got != 255 {
+	if got := len(r.perTerminalSlicesFor(members, nil, perTerminalGroupPrefix, defaultPool)); got != 255 {
 		t.Errorf("rules = %d, want 254 hosts + MATCH", got)
 	}
 }

@@ -39,14 +39,16 @@ type fakeRenderer struct {
 	mu              sync.Mutex
 	lastDefaultPool []string
 	lastRouting     []string
+	lastBackups     map[string]map[string][]string
 	renders         int
 }
 
-func (f *fakeRenderer) RenderWithPools(_ []subscribe.Outbound, defaultPool, routing []string, _ map[string][]string) ([]byte, error) {
+func (f *fakeRenderer) RenderWithPools(_ []subscribe.Outbound, defaultPool, routing []string, _ map[string][]string, backups map[string]map[string][]string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastDefaultPool = append([]string(nil), defaultPool...)
 	f.lastRouting = append([]string(nil), routing...)
+	f.lastBackups = backups
 	f.renders++
 	return []byte("rendered: " + strings.Join(routing, ",")), nil
 }

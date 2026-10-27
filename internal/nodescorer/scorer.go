@@ -168,7 +168,7 @@ type Renderer interface {
 	// subset that actually carries traffic via per-terminal HRW (top-K
 	// when K-gating active; nil falls back to defaultPool — legacy behavior).
 	// poolMembers gates named pools (default-pool ∩ probe-passing).
-	RenderWithPools(outbounds []subscribe.Outbound, defaultPool, routingMembers []string, poolMembers map[string][]string) ([]byte, error)
+	RenderWithPools(outbounds []subscribe.Outbound, defaultPool, routingMembers []string, poolMembers map[string][]string, backups map[string]map[string][]string) ([]byte, error)
 	// Path returns the on-disk path of the config file.
 	Path() string
 }
@@ -219,6 +219,16 @@ type Scorer struct {
 	// continuously-changing set may stay deferred.
 	pendingNamedMembers map[string][]string
 	pendingNamedRounds  int
+	// backups is the last-rendered cross-subscription secondary candidates:
+	// per-terminal class (mihomo.BackupClassDefault or a class pool name) →
+	// primary subscription → candidates from OTHER subscriptions,
+	// best-first. Coalesced together with poolMembers (see score) because
+	// both only change secondaries / class membership, never a terminal's
+	// default primary. Not persisted: the first round after a restart always
+	// reloads (probing set changes), which republishes them.
+	backups map[string]map[string][]string
+	// pendingBackups is the proposal paired with pendingNamedMembers.
+	pendingBackups map[string]map[string][]string
 	// probeResults[nodeTag][probeName] = latest result. Written by the
 	// probe loop, read by score() to gate pool membership.
 	probeResults map[string]map[string]ProbeResult
@@ -1261,7 +1271,19 @@ func (s *Scorer) score(ctx context.Context) bool {
 	// probe is treated as NOT passing (conservative — keep unverified
 	// nodes out of the sensitive pool rather than risk a 403).
 	newPoolMembers := s.computePoolMembers(nodes, newPoolSet, kTarget)
-	namedChanged := !poolMembersEqual(s.poolMembers, newPoolMembers)
+
+	// Cross-subscription secondaries for every per-terminal class. They ride
+	// the same coalescing as named-pool membership: both change only
+	// secondaries / class membership, never a terminal's default primary.
+	// Backup changes are deliberately NOT urgent — a dead backup only hurts
+	// when both subscriptions fail at once (never observed in 61h), while an
+	// urgent path would add a reload to every single-subscription incident.
+	var routingForBackups []string
+	if kTarget > 0 {
+		routingForBackups = setToSortedSlice(newPoolSet)
+	}
+	newBackups := s.computeBackups(nodes, qualifiedNodes, routingForBackups, newPoolMembers)
+	namedChanged := !poolMembersEqual(s.poolMembers, newPoolMembers) || !backupsEqual(s.backups, newBackups)
 
 	// Named-pool-only changes are coalesced: the same membership must be
 	// proposed in two consecutive scoring rounds before a reload, unless a
@@ -1282,27 +1304,39 @@ func (s *Scorer) score(ctx context.Context) bool {
 		switch {
 		case namedChangeUrgent(nodes, s.poolMembers, newPoolMembers):
 			s.pendingNamedMembers = nil
+			s.pendingBackups = nil
 			s.pendingNamedRounds = 0
-		case s.pendingNamedMembers != nil && poolMembersEqual(s.pendingNamedMembers, newPoolMembers):
+		case s.pendingNamedMembers != nil && poolMembersEqual(s.pendingNamedMembers, newPoolMembers) &&
+			backupsEqual(s.pendingBackups, newBackups):
 			// Confirmed by a second consecutive round → apply below.
 			s.pendingNamedMembers = nil
+			s.pendingBackups = nil
 			s.pendingNamedRounds = 0
 		case s.pendingNamedMembers != nil && s.pendingNamedRounds >= 2:
 			slog.Info("nodescorer: named-pool change applied after deferral limit",
 				"pending_rounds", s.pendingNamedRounds)
 			s.pendingNamedMembers = nil
+			s.pendingBackups = nil
 			s.pendingNamedRounds = 0
 		default:
 			s.pendingNamedMembers = copyPoolMembers(newPoolMembers)
+			if s.pendingNamedMembers == nil {
+				// Non-nil marks "a proposal is pending" even when the
+				// change is backups-only and there are no named pools.
+				s.pendingNamedMembers = map[string][]string{}
+			}
+			s.pendingBackups = copyBackups(newBackups)
 			s.pendingNamedRounds++
 			namedDeferred = true
 			slog.Info("nodescorer: named-pool change awaiting confirmation",
 				"round", s.pendingNamedRounds,
 				"applied_members", s.poolMembers,
-				"proposed_members", newPoolMembers)
+				"proposed_members", newPoolMembers,
+				"backups_changed", !backupsEqual(s.backups, newBackups))
 		}
 	} else {
 		s.pendingNamedMembers = nil
+		s.pendingBackups = nil
 		s.pendingNamedRounds = 0
 	}
 
@@ -1425,6 +1459,7 @@ func (s *Scorer) score(ctx context.Context) bool {
 		// actually has.
 		if !namedDeferred {
 			s.poolMembers = newPoolMembers
+			s.backups = newBackups
 		}
 		// Record the probing set we are about to render, so the next round can
 		// tell whether it changed. Set here (not at the render call) so it stays
@@ -1493,14 +1528,14 @@ func (s *Scorer) score(ctx context.Context) bool {
 		if kTarget > 0 {
 			routingMembers = setToSortedSlice(newPoolSet)
 		}
-		members := newPoolMembers
+		members, backups := newPoolMembers, newBackups
 		if namedDeferred {
 			// A reload triggered by the routing/probing set must NOT smuggle
-			// in the unconfirmed named-pool membership.
-			members = s.poolMembers
+			// in the unconfirmed named-pool membership or backups.
+			members, backups = s.poolMembers, s.backups
 		}
 		s.lastHotReload = now
-		go s.hotReload(context.Background(), defaultPoolAll, routingMembers, members)
+		go s.hotReload(context.Background(), defaultPoolAll, routingMembers, members, backups)
 	}
 	return true
 }
@@ -1935,47 +1970,10 @@ func (s *Scorer) computePoolMembers(nodes []NodeHealth, defaultPool map[string]b
 			continue
 		}
 
-		var pattern *regexp.Regexp
-		if p.NodePattern != "" {
-			re, err := regexp.Compile(p.NodePattern)
-			if err != nil {
-				// config.Load rejects invalid patterns; this is belt-and-
-				// suspenders for a config mutated through another path.
-				continue
-			}
-			pattern = re
+		eligible, ok := s.classPoolEligible(p, nodes)
+		if !ok {
+			continue
 		}
-
-		eligible := make([]NodeHealth, 0, len(nodes))
-		for i := range nodes {
-			h := &nodes[i]
-			if !h.Qualified || !h.Alive {
-				// Qualified is a diagnostic bit (any successful probe in
-				// the window); it does NOT mean mihomo can dial the node.
-				// A class pool carries production traffic, so never select
-				// a node mihomo marks alive=false. Observed 2026-10-23:
-				// hutao BGP_B/C were qualified with fail_rate 0.2 but
-				// alive=false; the ai-pool's HRW top-2 picked both and every
-				// ChatGPT dial timed out. The renderer's pattern baseline
-				// keeps the pool populated for probing; this filter applies
-				// once mihomo has an alive bit.
-				continue
-			}
-			if pattern != nil && !pattern.MatchString(h.Name) {
-				continue
-			}
-			if len(p.RequiresPassing) > 0 && !s.nodePassesProbes(h.Name, p.RequiresPassing) {
-				continue
-			}
-			eligible = append(eligible, *h)
-		}
-		sort.SliceStable(eligible, func(i, j int) bool {
-			ei, ej := s.nodeLongEWMA(eligible[i].Name), s.nodeLongEWMA(eligible[j].Name)
-			if ei == ej {
-				return eligible[i].Name < eligible[j].Name
-			}
-			return ei < ej
-		})
 
 		size := p.Size
 		if size <= 0 {
@@ -1996,6 +1994,159 @@ func (s *Scorer) computePoolMembers(nodes []NodeHealth, defaultPool map[string]b
 //
 // CALLER MUST HOLD s.mu.
 func (s *Scorer) selectPoolMembersSticky(poolName string, eligible []NodeHealth, size int) []string {
+	return s.stickyTopN(s.poolMembers[poolName], eligible, size)
+}
+
+// computeBackups returns the cross-subscription secondary candidates for
+// every per-terminal class: class → primary subscription → up to
+// backupsPerSubscription qualified, alive candidates from OTHER
+// subscriptions, best-first by long EWMA, sticky against s.backups.
+//
+// Why: the routing set was single-subscription 89% of the time on
+// 10.100.6.15 (2026-10-24..27) and 99.4% of terminal [primary, secondary]
+// pairs shared a subscription, so a terminal's pair died together in each of
+// the three airport ingress incidents (52 of 60 proxy failures in 24h). In
+// every incident the other subscription was healthy. A secondary from
+// another subscription lets mihomo's fallback alive bit move the terminal off
+// the dead ingress in 5-30s, without a reload and without rotating the egress
+// IP of terminals whose primary was unaffected.
+//
+// Subscription, not server hostname, is the failure domain: momo's
+// guangzhou and shanghai hostnames resolve into the same /23, while hutao's
+// single hostname rotates between AWS Tokyo addresses.
+//
+// Primaries are untouched — only the secondary of each pair changes.
+//
+// CALLER MUST HOLD s.mu.
+func (s *Scorer) computeBackups(nodes []NodeHealth, qualifiedNodes []*NodeHealth, routing []string, poolMembers map[string][]string) map[string]map[string][]string {
+	out := map[string]map[string][]string{}
+
+	// Default class: candidates are the qualified, alive, pattern-matching
+	// nodes that may carry default routing traffic.
+	if len(routing) > 0 {
+		var eligible []NodeHealth
+		for _, n := range qualifiedNodes {
+			if n.Alive && !s.inQuarantine(n.Name, time.Now()) {
+				eligible = append(eligible, *n)
+			}
+		}
+		s.sortByLongEWMA(eligible)
+		if alts := s.backupsFor(backupClassDefault, routing, eligible); len(alts) > 0 {
+			out[backupClassDefault] = alts
+		}
+	}
+
+	// Per-terminal class pools: same rule over the pool's own eligible set.
+	for _, p := range s.pools {
+		if !p.IsClassPool() || !p.PerTerminalEnabled() {
+			continue
+		}
+		members := poolMembers[p.Name]
+		if len(members) == 0 {
+			continue
+		}
+		eligible, ok := s.classPoolEligible(p, nodes)
+		if !ok {
+			continue
+		}
+		if alts := s.backupsFor(p.Name, members, eligible); len(alts) > 0 {
+			out[p.Name] = alts
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// backupsFor picks, for each subscription present in routing, the sticky
+// top-backupsPerSubscription eligible candidates from other subscriptions.
+// Subscriptions with no foreign candidate are omitted, which makes the
+// renderer fall back to same-subscription HRW top-2 for them.
+//
+// CALLER MUST HOLD s.mu.
+func (s *Scorer) backupsFor(class string, routing []string, eligible []NodeHealth) map[string][]string {
+	subs := map[string]bool{}
+	for _, m := range routing {
+		subs[subscriptionOf(m)] = true
+	}
+	out := map[string][]string{}
+	for sub := range subs {
+		foreign := make([]NodeHealth, 0, len(eligible))
+		for _, n := range eligible {
+			if subscriptionOf(n.Name) != sub {
+				foreign = append(foreign, n)
+			}
+		}
+		if picked := s.stickyTopN(s.backups[class][sub], foreign, backupsPerSubscription); len(picked) > 0 {
+			out[sub] = picked
+		}
+	}
+	return out
+}
+
+// classPoolEligible returns the class pool's eligible nodes, best-first by
+// long EWMA: qualified AND alive, matching the pool's node_pattern and its
+// required probes. ok=false when the pattern does not compile.
+//
+// CALLER MUST HOLD s.mu.
+func (s *Scorer) classPoolEligible(p config.PoolConfig, nodes []NodeHealth) ([]NodeHealth, bool) {
+	var pattern *regexp.Regexp
+	if p.NodePattern != "" {
+		re, err := regexp.Compile(p.NodePattern)
+		if err != nil {
+			// config.Load rejects invalid patterns; this is belt-and-
+			// suspenders for a config mutated through another path.
+			return nil, false
+		}
+		pattern = re
+	}
+	eligible := make([]NodeHealth, 0, len(nodes))
+	for i := range nodes {
+		h := &nodes[i]
+		if !h.Qualified || !h.Alive {
+			// Qualified is a diagnostic bit (any successful probe in
+			// the window); it does NOT mean mihomo can dial the node.
+			// A class pool carries production traffic, so never select
+			// a node mihomo marks alive=false. Observed 2026-10-23:
+			// hutao BGP_B/C were qualified with fail_rate 0.2 but
+			// alive=false; the ai-pool's HRW top-2 picked both and every
+			// ChatGPT dial timed out. The renderer's pattern baseline
+			// keeps the pool populated for probing; this filter applies
+			// once mihomo has an alive bit.
+			continue
+		}
+		if pattern != nil && !pattern.MatchString(h.Name) {
+			continue
+		}
+		if len(p.RequiresPassing) > 0 && !s.nodePassesProbes(h.Name, p.RequiresPassing) {
+			continue
+		}
+		eligible = append(eligible, *h)
+	}
+	s.sortByLongEWMA(eligible)
+	return eligible, true
+}
+
+// sortByLongEWMA orders nodes best-first by long EWMA, name as tie-break so
+// the order (and therefore every selection built on it) is deterministic.
+func (s *Scorer) sortByLongEWMA(nodes []NodeHealth) {
+	sort.SliceStable(nodes, func(i, j int) bool {
+		ei, ej := s.nodeLongEWMA(nodes[i].Name), s.nodeLongEWMA(nodes[j].Name)
+		if ei == ej {
+			return nodes[i].Name < nodes[j].Name
+		}
+		return ei < ej
+	})
+}
+
+// stickyTopN picks up to size nodes from eligible (best-first). Incumbents
+// keep their slot unless a challenger beats the worst one by
+// SwapThresholdScore. Shared by class pools and cross-subscription backups so
+// both have the same anti-flap behaviour.
+//
+// CALLER MUST HOLD s.mu.
+func (s *Scorer) stickyTopN(incumbents []string, eligible []NodeHealth, size int) []string {
 	if size <= 0 || len(eligible) == 0 {
 		return nil
 	}
@@ -2006,7 +2157,7 @@ func (s *Scorer) selectPoolMembersSticky(poolName string, eligible []NodeHealth,
 	selected := make([]string, 0, size)
 	// Incumbents still eligible, in the same best-first order.
 	for _, h := range eligible {
-		for _, m := range s.poolMembers[poolName] {
+		for _, m := range incumbents {
 			if m == h.Name {
 				selected = append(selected, h.Name)
 				chosen[h.Name] = true
@@ -2410,7 +2561,7 @@ func (s *Scorer) updateThroughput(ctx context.Context, proxies map[string]map[st
 	return result
 }
 
-func (s *Scorer) hotReload(ctx context.Context, defaultPool, routingMembers []string, poolMembers map[string][]string) {
+func (s *Scorer) hotReload(ctx context.Context, defaultPool, routingMembers []string, poolMembers map[string][]string, backups map[string]map[string][]string) {
 	if s.renderer == nil {
 		return
 	}
@@ -2426,7 +2577,7 @@ func (s *Scorer) hotReload(ctx context.Context, defaultPool, routingMembers []st
 		s.mu.Unlock()
 	}
 	outbounds := s.subscribe()
-	data, err := s.renderer.RenderWithPools(outbounds, defaultPool, routingMembers, poolMembers)
+	data, err := s.renderer.RenderWithPools(outbounds, defaultPool, routingMembers, poolMembers, backups)
 	if err != nil {
 		fail("nodescorer: re-render failed", err)
 		return

@@ -358,7 +358,7 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 				len(members) >= perTerminalFallbackDepth
 			subName := "perterm-" + p.Name
 			if classPerTerm {
-				if slices := r.perTerminalSlicesFor(members, poolGroupPrefix(p.Name), p.Name); len(slices) > 0 {
+				if slices := r.perTerminalSlicesFor(members, r.presentBackups(p.Name, outbounds), poolGroupPrefix(p.Name), p.Name); len(slices) > 0 {
 					subRules[subName] = slices
 				} else {
 					classPerTerm = false

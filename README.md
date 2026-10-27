@@ -249,7 +249,9 @@ revertive 语义对齐。`assert.go` 可能在我们下一次自检前就修好�
 - 日志增量：热重载次数/失败/耗时、评分轮次、暖机跳过、warn/error、DNS 解析失败
 - 重载归因：`routing_changed` / `named_changed` / `named_deferred` / `probing_changed`，
   直接区分“路由换人 / 分类池换人 / 探测集变化”
-- 探测终端的默认出口与**分类池（AI）出口**：主备节点、RTT p50/p95、fail_rate
+- 探测终端的默认出口与**分类池（AI）出口**：主备节点、RTT p50/p95、fail_rate；
+  `--summary` 汇总“主备同订阅比例”（跨订阅 secondary 上线前为 99.6%，越低说明
+  单一入口故障时 fallback 越能接住）
 - 经网关 resolver 解析一个白名单域名的真实时延（按 `preload_domains` 轮换）
 - 直连 `1.1.1.1:853/443`、`8.8.8.8:443` 的连通性
   （2026-10-24 的故障正是这条直接路径被阻断）
