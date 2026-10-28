@@ -54,10 +54,13 @@ type poolStatusDTO struct {
 	PoolSize int    `json:"pool_size"`
 	Active   bool   `json:"active"` // whether "out" selector points at this pool
 	// Egress is the IP+geo seen by the public internet when traffic exits
-	// via this pool's currently-selected member. Probed through the turnout-
-	// internal HTTP proxy (TurnoutInternalProxyURL = 127.0.0.1:11080), which
-	// follows mihomo's "out" selector → default-pool. Cached 60s. nil = no
-	// probe has succeeded yet (cold start, or upstream unreachable).
+	// via this pool. Probed through the turnout-egress listener
+	// (TurnoutEgressProbeURL = 127.0.0.1:11082), which is pinned to mihomo's
+	// "out" selector with no rule lookup — the internal proxy (11080) would
+	// send the non-whitelisted echo host DIRECT and report the office exit.
+	// load-balance hashes the echo host to one member, so this is one
+	// member's exit, not every member's. Cached 60s. nil = no probe has
+	// succeeded yet (cold start, or upstream unreachable).
 	Egress *egressInfo `json:"egress,omitempty"`
 	// Nodes is per-member latency from clash-api's last url-test measurement.
 	// One entry per `all` member of the pool. Empty list = clash-api
@@ -112,8 +115,9 @@ func (s *Server) handleProxiesActive(w http.ResponseWriter, r *http.Request) {
 //  1. GET /proxies — bulk dump of every proxy + its history (1 round-trip)
 //  2. From it: pluck the "out" selector's `now` field (default-pool / pin / DIRECT)
 //  3. For default-pool, list its members and per-node latency
-//  4. Kick the lazy egress probe through TurnoutInternalProxyURL (which goes
-//     "out → default-pool" via mihomo, so the IP we sample IS default-pool's egress)
+//  4. Kick the lazy egress probe through TurnoutEgressProbeURL (pinned to
+//     "out" → default-pool with no rule lookup, so the IP we sample IS
+//     default-pool's egress)
 //
 // Returns Reachable=false on any clash-api error so the rest of the response
 // is still useful.
@@ -200,7 +204,7 @@ func (s *Server) queryActiveProxy(ctx context.Context) activeProxyDTO {
 		ps.PoolSize = len(ps.Nodes)
 
 		if ps.Active {
-			ps.Egress = s.egress.GetOrRefresh(name, dataplane.TurnoutInternalProxyURL, pool.Now)
+			ps.Egress = s.egress.GetOrRefresh(name, dataplane.TurnoutEgressProbeURL, pool.Now)
 		}
 		dto.Pools = append(dto.Pools, ps)
 		if ps.Active {

@@ -39,11 +39,18 @@ var errConfigRejected = errors.New("data plane rejected the config")
 //     (raw.githubusercontent and friends are GFW-blocked from inside CN).
 //     Behind mihomo's "out" selector → default-pool by default.
 //
+//   - TurnoutEgressProbePort: pinned to the "out" selector with no rule
+//     lookup. Only for measuring the pool's public exit: the internal
+//     proxy runs the echo host through the rules, and a non-whitelisted
+//     host there goes DIRECT.
+//
 // TurnoutInternalProxyURL is the http:// URL form, ready to pass to
 // http.Transport.Proxy or to turnouthttp.NewClient.
 const (
 	TurnoutInternalProxyPort = 11080
 	TurnoutInternalProxyURL  = "http://127.0.0.1:11080"
+	TurnoutEgressProbePort   = 11082
+	TurnoutEgressProbeURL    = "http://127.0.0.1:11082"
 )
 
 // Controller manages the proxy data-plane process (mihomo). Reload

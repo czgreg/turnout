@@ -564,13 +564,12 @@ func TestRenderer_NamedPool(t *testing.T) {
 	if probeOut == nil {
 		t.Error("probe-out selector group missing (pool gates on probes)")
 	}
-	listeners, _ := doc["listeners"].([]any)
-	if len(listeners) == 0 {
-		t.Fatal("listeners block missing (expected turnout-probe)")
+	probeL := listenerByName(doc, "turnout-probe")
+	if probeL == nil {
+		t.Fatal("turnout-probe listener missing")
 	}
-	l0, _ := listeners[0].(map[string]any)
-	if l0["name"] != "turnout-probe" || l0["proxy"] != "probe-out" {
-		t.Errorf("listener[0] = %v, want turnout-probe pinned to probe-out", l0)
+	if probeL["proxy"] != "probe-out" {
+		t.Errorf("turnout-probe = %v, want pinned to probe-out", probeL)
 	}
 
 	// (c) rules: geosite-openai → openai-pool; geosite-github → out.

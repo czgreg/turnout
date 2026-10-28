@@ -280,22 +280,35 @@ func (r *Renderer) buildProxyGroups(outbounds []subscribe.Outbound) []map[string
 	return groups
 }
 
-// buildListeners emits the `listeners:` array. Currently just the turnout-probe
-// HTTP listener used by nodescorer's per-node site probes: a loopback HTTP
-// proxy on probePort whose traffic is pinned (via `proxy:`) to the
-// probe-out selector group, bypassing the normal rule table. nodescorer
-// PUTs probe-out → <node>, then GETs the probe URLs through probePort to
-// read real status codes + cf-mitigated headers.
+// buildListeners emits the `listeners:` array of loopback HTTP proxies whose
+// traffic is pinned (via `proxy:`) to a group, bypassing the rule table:
+//
+//   - turnout-egress (always): pinned to `out`, so the API's egress probe
+//     measures the exit the default class really uses. `out` exists in every
+//     render, including the bootstrap DIRECT stub.
+//   - turnout-probe (only when a pool gates on probes): pinned to probe-out.
+//     nodescorer PUTs probe-out → <node>, then GETs the probe URLs through
+//     probePort to read real status codes + cf-mitigated headers.
 func (r *Renderer) buildListeners() []map[string]any {
-	return []map[string]any{
+	listeners := []map[string]any{
 		{
+			"name":   "turnout-egress",
+			"type":   "http",
+			"listen": "127.0.0.1",
+			"port":   TurnoutEgressProbePort,
+			"proxy":  outSelector,
+		},
+	}
+	if r.probeListener {
+		listeners = append(listeners, map[string]any{
 			"name":   "turnout-probe",
 			"type":   "http",
 			"listen": "127.0.0.1",
 			"port":   probePort,
 			"proxy":  probeOutSelector,
-		},
+		})
 	}
+	return listeners
 }
 
 // defaultPoolMembers computes the default-pool member tag list: the NodeScorer's

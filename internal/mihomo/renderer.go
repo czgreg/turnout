@@ -49,6 +49,15 @@ const (
 	// uses to fetch .srs blobs through the airport. Equivalent to sing-box
 	// renderer's TurnoutInternalProxyPort (11080).
 	TurnoutInternalProxyPort = 11080
+
+	// TurnoutEgressProbePort: loopback HTTP listener pinned to the `out`
+	// selector, bypassing the rule table. The API's egress probe dials an
+	// IP-echo service through it. Going through mixed-port instead runs the
+	// echo host through the rules, and in whitelist mode a non-whitelisted
+	// host (ipinfo.io) hits MATCH,DIRECT — the probe then reports the
+	// office's direct exit as the pool's. Mirrored by
+	// dataplane.TurnoutEgressProbePort.
+	TurnoutEgressProbePort = 11082
 )
 
 // Renderer turns parsed subscription outbounds + node config into a complete
@@ -386,13 +395,10 @@ func (r *Renderer) build(outbounds []subscribe.Outbound) map[string]any {
 	if len(subRules) > 0 {
 		doc["sub-rules"] = subRules
 	}
-	// Probe listener: a loopback HTTP inbound pinned (via `proxy:`) to the
-	// probe-out selector. nodescorer flips probe-out to each node, then
-	// GETs site URLs through this port to read real status + headers
-	// (cf-mitigated detection). Only emitted when a pool gates on probes.
-	if r.probeListener {
-		doc["listeners"] = r.buildListeners()
-	}
+	// Loopback listeners pinned (via `proxy:`) to a group, bypassing the
+	// rule table: the egress probe (always) and the per-node site probe
+	// (only when a pool gates on probes). See buildListeners.
+	doc["listeners"] = r.buildListeners()
 	// Persist mihomo's cache (DNS answers, fakeip pool if ever re-enabled)
 	// across hot-reloads and restarts. store-fake-ip is false under
 	// redir-host — there are no fakeip mappings to persist; the DNS

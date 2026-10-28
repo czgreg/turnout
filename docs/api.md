@@ -248,6 +248,7 @@ post Plan-A 语义注意：
 | `nodes[]` | 当前 routing pool 成员（K-gating top-K 子集）。scorer 不活跃时降级为全量 default-pool 成员 |
 | `nodes[].fail_rate` | 来自 NodeScorer 的探针失败率（0.0–1.0）。scorer 不可用时为 -1 |
 | `nodes[].delay_ms` | mihomo url-test 最近一次延迟（ms）。0 表示尚无测量 |
+| `pools[].egress` | 该池的公网出口 IP + 地理位置，缓存 60s。经 loopback 监听 `127.0.0.1:11082`（`turnout-egress`，钉在 `out` 上、不查规则表）探测 ipinfo.io，fallback 1.1.1.1 trace。load-balance 按目标哈希，所以这是池内**一个**存活成员的出口，代表池的地区，不代表每个终端的节点（终端的节点看 `/api/pool/terminal`）。mihomo 重启后约 1 分钟内健康检查未完成，可能探测失败或命中刚死的节点 |
 
 `pools[]` 同时包含 `out` 链上的 `default-pool` 和所有命名分类池（如 `ai-pool`）。
 命名池不是 `out` 的成员，因此 `active=false`；`egress` 探针目前只覆盖默认
@@ -1053,7 +1054,18 @@ curl -s $BASE/api/whitelist \
 
 ## 接入变更日志（前端 / 控制平台）
 
-### 2026-10-27（跨订阅 secondary）— 当前版本
+### 2026-10-28（egress 探测走线路池）— 当前版本
+
+**修复（字段值变化，非 breaking）**：
+
+- `/api/proxies/active` 的 `pools[].egress` 以前经 mixed-port（11080）探测，
+  探测目标 ipinfo.io 要过规则表；whitelist 模式下它不在白名单，命中
+  `MATCH,DIRECT`，显示的是公司直连出口（实测 AWS 俄勒冈），而默认类流量实际走
+  日本/香港节点。现在经新增的 loopback 监听 `127.0.0.1:11082`（钉在 `out`，
+  不查规则）探测，显示线路池真实出口。
+- 新监听每次渲染都输出，只绑 127.0.0.1。
+
+### 2026-10-27（跨订阅 secondary）
 
 **变更（字段语义，非 breaking）**：
 
