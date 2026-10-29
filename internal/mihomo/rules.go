@@ -67,6 +67,26 @@ var AdultRuleSets = []RuleSetSpec{
 	{Tag: rsNSFW, File: rsNSFW + ".txt", Format: "text"},
 }
 
+// quicRejectRule rejects QUIC (UDP 443). It heads every sub-rule, whose
+// traffic is all proxied, and guardQUIC builds the conditional form for rules
+// that target a proxy group directly.
+//
+// Why: the airport carries UDP inside its TCP tunnel (hutao is anytls), and
+// QUIC's own congestion control on top of that collapses. Measured on
+// 10.100.6.15 (2026-10-29): a terminal's YouTube video flow over QUIC held
+// 0.4-1.2 Mbps for 30s straight through hutao/日本_BGP_A, while TCP through
+// the same node and terminal ran at 83-89 Mbps. 1080p needs ~5 Mbps.
+// Browsers treat a dead QUIC path as "use TCP", so rejecting is enough.
+const quicRejectRule = "AND,((NETWORK,UDP),(DST-PORT,443)),REJECT"
+
+// guardQUIC returns the rule that rejects QUIC matching cond. Emit it
+// immediately before the proxied rule with the same cond. opts carries the
+// rule's trailing options (",no-resolve" or ""); mihomo parses them inside a
+// logic sub-condition the same way as inside a SUB-RULE one.
+func guardQUIC(cond, opts string) string {
+	return "AND,((NETWORK,UDP),(DST-PORT,443),(" + cond + opts + ")),REJECT"
+}
+
 // poolRuleSets returns every rule-set tag claimed by any pool, deduped.
 // Used by buildRuleProviders to ensure those tags get a provider even when
 // they aren't in the whitelist (overseas mode, or whitelist that doesn't
@@ -220,10 +240,21 @@ func ruleProviderClassical(path string) map[string]any {
 // ip_cidr, no-resolve) still goes to `out` (hardcoded-IP apps don't drift,
 // and no-resolve doesn't translate into a SUB-RULE condition).
 //
+// Proxied QUIC (UDP 443) is rejected so clients fall back to TCP: every
+// sub-rule starts with quicRejectRule, and every rule that targets a proxy
+// group directly is preceded by its guarded copy (see guardQUIC). DIRECT
+// traffic keeps QUIC.
+//
 // Returns (rules, subRules). subRules is empty unless per-terminal is on.
 func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[string]any) {
 	var rules []string
 	subRules := map[string]any{}
+
+	// proxied appends cond → target for a proxy-group target, preceded by
+	// its QUIC guard (see quicRejectRule).
+	proxied := func(cond, target, opts string) {
+		rules = append(rules, guardQUIC(cond, opts), cond+","+target+opts)
+	}
 
 	// Private/LAN — no DNS resolution needed.
 	rules = append(rules,
@@ -268,7 +299,12 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 			if d == "" || strings.ContainsAny(d, " \t/:") {
 				continue
 			}
-			rules = append(rules, "DOMAIN-SUFFIX,"+d+","+exemptTarget)
+			cond := "DOMAIN-SUFFIX," + d
+			if exemptTarget == "DIRECT" {
+				rules = append(rules, cond+",DIRECT")
+			} else {
+				proxied(cond, exemptTarget, "")
+			}
 		}
 		for _, rs := range AdultRuleSets {
 			rules = append(rules, "RULE-SET,"+rs.Tag+",REJECT")
@@ -296,20 +332,21 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 			// than emit a sub-rule that dead-ends.
 			perterm = false
 		} else {
-			subRules["perterm"] = slices
+			subRules["perterm"] = append([]string{quicRejectRule}, slices...)
 		}
 	}
 
-	// domainRule routes a domain-matching condition to either the perterm
+	// addDomain routes a domain-matching condition to either the perterm
 	// sub-rule (per-terminal) or the `out` selector (default).
-	domainRule := func(cond string) string {
+	addDomain := func(cond string) {
 		if perterm {
-			return "SUB-RULE,(" + cond + "),perterm"
+			rules = append(rules, "SUB-RULE,("+cond+"),perterm")
+			return
 		}
-		return cond + "," + outSelector
+		proxied(cond, outSelector, "")
 	}
 
-	// ipRule is domainRule for IP-keyed conditions. no-resolve must survive
+	// addIP is addDomain for IP-keyed conditions. no-resolve must survive
 	// inside the SUB-RULE condition — verified against mihomo v1.19.26 on the
 	// node (`mihomo -t` accepts "SUB-RULE,(RULE-SET,geoip-x,no-resolve),perterm").
 	//
@@ -319,11 +356,12 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 	// Telegram MTProto) were spread across every egress while its
 	// domain-matched flows stayed pinned — exactly the multi-IP pattern
 	// per-terminal exists to prevent.
-	ipRule := func(cond string) string {
+	addIP := func(cond string) {
 		if perterm {
-			return "SUB-RULE,(" + cond + ",no-resolve),perterm"
+			rules = append(rules, "SUB-RULE,("+cond+",no-resolve),perterm")
+			return
 		}
-		return cond + "," + outSelector + ",no-resolve"
+		proxied(cond, outSelector, ",no-resolve")
 	}
 
 	// Pool routing. Class pools (node_pattern / size / per_terminal /
@@ -359,7 +397,7 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 			subName := "perterm-" + p.Name
 			if classPerTerm {
 				if slices := r.perTerminalSlicesFor(members, r.presentBackups(p.Name, outbounds), poolGroupPrefix(p.Name), p.Name); len(slices) > 0 {
-					subRules[subName] = slices
+					subRules[subName] = append([]string{quicRejectRule}, slices...)
 				} else {
 					classPerTerm = false
 				}
@@ -368,7 +406,7 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 				if classPerTerm {
 					rules = append(rules, "SUB-RULE,(DOMAIN-SUFFIX,"+d+"),"+subName)
 				} else {
-					rules = append(rules, "DOMAIN-SUFFIX,"+d+","+p.Name)
+					proxied("DOMAIN-SUFFIX,"+d, p.Name, "")
 				}
 			}
 			for _, tag := range p.RuleSets {
@@ -382,7 +420,7 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 				if classPerTerm {
 					rules = append(rules, "SUB-RULE,(RULE-SET,"+tag+noResolve+"),"+subName)
 				} else {
-					rules = append(rules, "RULE-SET,"+tag+","+p.Name+noResolve)
+					proxied("RULE-SET,"+tag, p.Name, noResolve)
 				}
 				poolRouted[tag] = true
 			}
@@ -396,7 +434,7 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 				if classPerTerm {
 					rules = append(rules, "SUB-RULE,(RULE-SET,"+rl.Tag+"),"+subName)
 				} else {
-					rules = append(rules, "RULE-SET,"+rl.Tag+","+p.Name)
+					proxied("RULE-SET,"+rl.Tag, p.Name, "")
 				}
 				poolRouted[rl.Tag] = true
 			}
@@ -409,16 +447,16 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 			}
 			if perterm {
 				if strings.HasPrefix(tag, "geoip-") {
-					rules = append(rules, ipRule("RULE-SET,"+tag))
+					addIP("RULE-SET," + tag)
 				} else {
-					rules = append(rules, domainRule("RULE-SET,"+tag))
+					addDomain("RULE-SET," + tag)
 				}
 			} else {
 				noResolve := ""
 				if strings.HasPrefix(tag, "geoip-") {
 					noResolve = ",no-resolve"
 				}
-				rules = append(rules, "RULE-SET,"+tag+","+p.Name+noResolve)
+				proxied("RULE-SET,"+tag, p.Name, noResolve)
 			}
 			poolRouted[tag] = true
 		}
@@ -427,9 +465,9 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 				continue
 			}
 			if perterm {
-				rules = append(rules, domainRule("RULE-SET,"+rl.Tag))
+				addDomain("RULE-SET," + rl.Tag)
 			} else {
-				rules = append(rules, "RULE-SET,"+rl.Tag+","+p.Name)
+				proxied("RULE-SET,"+rl.Tag, p.Name, "")
 			}
 			poolRouted[rl.Tag] = true
 		}
@@ -440,30 +478,32 @@ func (r *Renderer) buildRules(outbounds []subscribe.Outbound) ([]string, map[str
 			if poolRouted[tag] {
 				continue
 			}
-			rules = append(rules, domainRule("RULE-SET,"+tag))
+			addDomain("RULE-SET," + tag)
 		}
 		for _, sx := range r.cfg.Route.Whitelist.DomainSuffix {
-			rules = append(rules, domainRule("DOMAIN-SUFFIX,"+sx))
+			addDomain("DOMAIN-SUFFIX," + sx)
 		}
 		// IP-based whitelist (no-resolve; hardcoded-IP apps like Telegram
-		// MTProto). Pinned per terminal like everything else — see ipRule.
+		// MTProto). Pinned per terminal like everything else — see addIP.
 		for _, tag := range r.cfg.Route.Whitelist.Geoips {
 			if poolRouted[tag] {
 				continue
 			}
-			rules = append(rules, ipRule("RULE-SET,"+tag))
+			addIP("RULE-SET," + tag)
 		}
 		for _, cidr := range r.cfg.Route.Whitelist.IPCIDR {
-			rules = append(rules, ipRule("IP-CIDR,"+cidr))
+			addIP("IP-CIDR," + cidr)
 		}
 		rules = append(rules, "MATCH,DIRECT")
 	} else {
 		// overseas mode: everything non-CN goes overseas. Per-terminal
-		// dispatches the catch-all through perterm; else straight to out.
+		// dispatches the catch-all through perterm (which carries the QUIC
+		// guard); else straight to out, behind an unconditional guard —
+		// everything reaching this line is proxied.
 		if perterm {
 			rules = append(rules, "SUB-RULE,(MATCH),perterm")
 		} else {
-			rules = append(rules, "MATCH,"+outSelector)
+			rules = append(rules, quicRejectRule, "MATCH,"+outSelector)
 		}
 	}
 

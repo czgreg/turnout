@@ -1054,7 +1054,20 @@ curl -s $BASE/api/whitelist \
 
 ## 接入变更日志（前端 / 控制平台）
 
-### 2026-10-28（egress 探测走线路池）— 当前版本
+### 2026-10-29（走代理的 QUIC 回退 TCP）— 当前版本
+
+**变更（数据面行为，非 breaking，无 API 字段变化）**：
+
+- 走代理的 UDP 443（QUIC / HTTP/3）一律 REJECT，浏览器自动回退 TCP。直连
+  （`geosite-cn` / 白名单外的 `MATCH,DIRECT`）不受影响，仍可用 QUIC。
+- 原因：机场把 UDP 装在 TCP 隧道里转发（hutao 为 anytls），QUIC 自带的拥塞控制
+  叠在上面会崩。10.100.6.15 实测（2026-10-29）同一终端、同一日本节点：YouTube
+  视频流走 QUIC 持续 0.4–1.2 Mbps，走 TCP 83–89 Mbps；1080p 需要约 5 Mbps。
+- 渲染形状：每个 sub-rule（`perterm`、`perterm-<pool>`）首行
+  `AND,((NETWORK,UDP),(DST-PORT,443)),REJECT`；直接指向代理组的规则前面各有一条
+  同条件的 `AND,((NETWORK,UDP),(DST-PORT,443),(<条件>)),REJECT`。
+
+### 2026-10-28（egress 探测走线路池）
 
 **修复（字段值变化，非 breaking）**：
 
