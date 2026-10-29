@@ -97,6 +97,10 @@ func main() {
 	mgr := subscribe.NewManagerWithFetchAndProxy(
 		cfg.Subscriptions, cfg.Subscribe.HTTPTimeout, cfg.Subscribe.UserAgent,
 		dataplane.TurnoutInternalProxyURL)
+	if _, err := mgr.WithNodeExclude(cfg.DataPlane.URLTest.NodeExcludePattern); err != nil {
+		slog.Error("subscribe: invalid data_plane.url_test.node_exclude_pattern", "err", err)
+		os.Exit(1)
+	}
 
 	mihomoRenderer := mihomo.NewRenderer(cfg.DataPlane).
 		WithNode(cfg.Node).

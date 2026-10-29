@@ -239,6 +239,15 @@ data_plane:
 # ─────────────────────────────────────────────────────────────
 # node_pattern 属于 data_plane.url_test（它决定哪些机场节点进 default-pool），
 # 不是 node_qualify 的字段 —— 见文件上方 data_plane 块。
+#
+# data_plane.url_test.node_exclude_pattern（Go RE2，可选）：命中的节点在进入任何
+# 分组、分类池、备用名单和评分之前就被丢弃，相当于 Clash 的 exclude-filter。
+# /api/nodes 仍然列出它们。用来排除高倍率计费节点，按倍率匹配而不是按名字，
+# 因为机场会改节点名：
+#   data_plane:
+#     url_test:
+#       node_exclude_pattern: "(^|[^0-9.]|[^0-9]\\.)([3-9]|[1-9][0-9]+)(\\.[0-9]+)?[xX×倍]"
+# 上例排除 3 倍及以上（6x、TC.6x、10x、3.5倍），保留 1x / 1.5x / 2x / 2.5x / 0.5x。
 node_qualify:
   # 只收美国节点，配合机场订阅。
   # （node_pattern 在 data_plane.url_test 下；node_qualify 只管评分阈值。）

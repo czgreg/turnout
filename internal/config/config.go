@@ -785,6 +785,19 @@ type URLTestConfig struct {
 	// NodePattern is a Go-regexp; only outbounds whose tag matches are
 	// added to default-pool. Empty = every airport node is a candidate.
 	NodePattern string `yaml:"node_pattern"`
+	// NodeExcludePattern is a Go-regexp; outbounds whose tag matches are
+	// dropped before any group, pool, backup or scorer sees them — the
+	// counterpart of Clash's exclude-filter. RE2 has no lookahead, so
+	// "match X but not Y" cannot be written into NodePattern alone.
+	//
+	// Intended for nodes an airport bills at a high multiplier. Observed
+	// 2026-10-29 on 10.100.6.15: "wodi/台湾TC.6x | 专线" passed the
+	// generate_204 probe (p95 ~520 ms) but moved 0.0 Mbps single-stream and
+	// reset 25 of 80 concurrent handshakes, while 123 of 1024 terminal units
+	// had it as primary — and every byte cost 6x quota. The provider also
+	// renames these nodes (it was "香港家宽TC.6x" a day earlier), so match
+	// the multiplier, not the name. Empty = exclude nothing.
+	NodeExcludePattern string `yaml:"node_exclude_pattern"`
 }
 
 // NodeQualifyConfig is the threshold set for the NodeScorer. All thresholds
@@ -1273,6 +1286,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	c.applyDefaults()
+	// Fail closed: ignoring an invalid exclude pattern would quietly put the
+	// nodes it was meant to keep out back into routing.
+	if p := c.DataPlane.URLTest.NodeExcludePattern; p != "" {
+		if _, err := regexp.Compile(p); err != nil {
+			return nil, fmt.Errorf("data_plane.url_test.node_exclude_pattern: invalid regexp: %w", err)
+		}
+	}
 	if err := c.validatePools(); err != nil {
 		return nil, err
 	}

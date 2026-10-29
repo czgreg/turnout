@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,12 @@ type Manager struct {
 	// straight to the right UA without paying the discovery cost again.
 	// Nil disables persistence — discovery still works in-memory.
 	onUADiscovered func(name, ua string)
+
+	// exclude drops matching tags from AllOutbounds — the feed of every
+	// render and of the scorer — while Snapshot keeps them, so /api/nodes
+	// and node counts still show what the provider served. Nil = keep all.
+	// See config.URLTestConfig.NodeExcludePattern.
+	exclude *regexp.Regexp
 }
 
 // NewManagerWithFetch lets callers thread http_timeout and user_agent from
@@ -67,6 +74,23 @@ func (m *Manager) WithUADiscoveryCallback(cb func(name, ua string)) *Manager {
 	m.onUADiscovered = cb
 	m.mu.Unlock()
 	return m
+}
+
+// WithNodeExclude sets data_plane.url_test.node_exclude_pattern. An empty
+// pattern excludes nothing. config.Load has already rejected an invalid one;
+// the error return covers callers that skip it.
+func (m *Manager) WithNodeExclude(pattern string) (*Manager, error) {
+	var re *regexp.Regexp
+	if pattern != "" {
+		var err error
+		if re, err = regexp.Compile(pattern); err != nil {
+			return m, fmt.Errorf("node_exclude_pattern: %w", err)
+		}
+	}
+	m.mu.Lock()
+	m.exclude = re
+	m.mu.Unlock()
+	return m, nil
 }
 
 // SubscriptionHealth is the per-subscription outcome of one Refresh round.
@@ -359,15 +383,40 @@ func parseBytesStats(name, format string, body []byte) (SubscriptionResult, int,
 	return SubscriptionResult{Name: name, Format: fmtName, Outbounds: out}, gated, nil
 }
 
-// AllOutbounds returns a flat list of all outbounds from the last refresh.
+// AllOutbounds returns a flat list of all outbounds from the last refresh,
+// minus tags matching node_exclude_pattern.
 func (m *Manager) AllOutbounds() []Outbound {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var all []Outbound
 	for _, r := range m.lastResults {
-		all = append(all, r.Outbounds...)
+		for _, o := range r.Outbounds {
+			if m.exclude != nil && m.exclude.MatchString(o.Tag()) {
+				continue
+			}
+			all = append(all, o)
+		}
 	}
 	return all
+}
+
+// ExcludedTags returns the tags from the last refresh that
+// node_exclude_pattern removes from AllOutbounds, in subscription order.
+func (m *Manager) ExcludedTags() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.exclude == nil {
+		return nil
+	}
+	var out []string
+	for _, r := range m.lastResults {
+		for _, o := range r.Outbounds {
+			if t := o.Tag(); m.exclude.MatchString(t) {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
 }
 
 func parseAuto(body []byte, hint string) ([]Outbound, string, error) {

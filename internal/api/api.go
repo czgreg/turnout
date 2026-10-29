@@ -475,6 +475,9 @@ func RunRefresh(ctx context.Context, mgr *subscribe.Manager, r Renderer, c *data
 	}
 	emitSubscriptionHealth(mgr.LastHealth(), n)
 	all := mgr.AllOutbounds()
+	if ex := mgr.ExcludedTags(); len(ex) > 0 {
+		slog.Info("subscribe: nodes excluded by node_exclude_pattern", "count", len(ex), "nodes", ex)
+	}
 	if len(results) == 0 {
 		slog.Warn("subscribe: no subscription produced nodes — rendering DIRECT-only fallback",
 			"results", len(results), "outbounds", len(all))

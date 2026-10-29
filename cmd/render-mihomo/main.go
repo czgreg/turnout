@@ -40,6 +40,10 @@ func main() {
 	}
 
 	mgr := subscribe.NewManagerWithFetch(cfg.Subscriptions, cfg.Subscribe.HTTPTimeout, cfg.Subscribe.UserAgent)
+	if _, err := mgr.WithNodeExclude(cfg.DataPlane.URLTest.NodeExcludePattern); err != nil {
+		fmt.Fprintln(os.Stderr, "node_exclude_pattern:", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
