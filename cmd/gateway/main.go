@@ -42,6 +42,7 @@ func main() {
 	validate := flag.Bool("validate", false, "render config, run mihomo -t syntax check, validate constraints, then exit")
 	printEnv := flag.Bool("print-env", false, "print shell-sourceable env vars from gateway.yaml for use by iproute.sh / install.sh, then exit")
 	tlsInfo := flag.Bool("tls-info", false, "print the API certificate's fingerprint, SPKI pin, SANs and expiry, then exit")
+	resetAPIToken := flag.Bool("reset-api-token", false, "delete the API token (token file and legacy api.token) so the next start enters setup mode, then exit")
 	rotateTLSKey := flag.Bool("rotate-tls-key", false, "delete the auto-managed API key + certificate so the next start mints a new pair (every pinned caller must then be updated), then exit")
 	flag.Parse()
 
@@ -99,6 +100,35 @@ func main() {
 		}
 		fmt.Printf("export TURNOUT_API_SCHEME=%q\n", scheme)
 		fmt.Printf("export TURNOUT_API_TLS_CERT=%q\n", certFile)
+		// Token file (0600, root): on-node scripts running as root read it
+		// instead of asking the operator to export TURNOUT_TOKEN.
+		fmt.Printf("export TURNOUT_API_TOKEN_FILE=%q\n", cfg.API.TokenPath())
+		return
+	}
+
+	if *resetAPIToken {
+		if err := api.ResetToken(cfg, configstore.New(*cfgPath)); err != nil {
+			slog.Error("reset-api-token", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("API token removed (%s and any api.token in %s). Restart turnout-gateway: it starts in setup mode and writes a new setup code to %s\n",
+			cfg.API.TokenPath(), *cfgPath, cfg.API.SetupCodePath())
+		return
+	}
+
+	if *tlsInfo {
+		// Load only: an info command must not mint a key as a side effect.
+		if !cfg.API.TLS.IsEnabled() {
+			printTLSInfo(nil)
+			return
+		}
+		certFile, keyFile := cfg.API.TLS.Paths()
+		m, err := apitls.New(apitls.Options{CertFile: certFile, KeyFile: keyFile})
+		if err != nil {
+			slog.Error("api tls: no certificate yet — it is generated on the first start of turnout-gateway", "err", err)
+			os.Exit(1)
+		}
+		printTLSInfo(m)
 		return
 	}
 
@@ -236,22 +266,6 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("validation passed")
-		return
-	}
-
-	if *tlsInfo {
-		// Load only: an info command must not mint a key as a side effect.
-		if !cfg.API.TLS.IsEnabled() {
-			printTLSInfo(nil)
-			return
-		}
-		certFile, keyFile := cfg.API.TLS.Paths()
-		m, err := apitls.New(apitls.Options{CertFile: certFile, KeyFile: keyFile})
-		if err != nil {
-			slog.Error("api tls: no certificate yet — it is generated on the first start of turnout-gateway", "err", err)
-			os.Exit(1)
-		}
-		printTLSInfo(m)
 		return
 	}
 
@@ -429,6 +443,24 @@ func main() {
 		ni.WithLivenessSource(func() bool { return wd.Status().LivenessUp })
 	}
 
+	// Bearer token / setup state. After TLS: in setup mode the certificate
+	// fingerprint is written next to the setup code so the operator can
+	// verify the browser's connection before submitting the code.
+	fingerprint := ""
+	if apiTLS != nil {
+		fingerprint = apiTLS.Fingerprint()
+	}
+	apiAuth, err := api.NewAuth(api.AuthOptions{
+		Cfg:         cfg,
+		Store:       store,
+		Notifier:    notifier,
+		Fingerprint: fingerprint,
+	})
+	if err != nil {
+		slog.Error("api auth", "err", err)
+		os.Exit(1)
+	}
+
 	srv := api.NewServer(api.Deps{
 		Subscribe:  mgr,
 		Scheduler:  sched,
@@ -443,6 +475,7 @@ func main() {
 		Asserter:   asserter,
 		Watchdog:   wd,
 		TLS:        apiTLS,
+		Auth:       apiAuth,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

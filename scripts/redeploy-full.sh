@@ -88,28 +88,48 @@ EXIT=$(grep '^INSTALL_EXIT=' "/tmp/install-${HOST}-${TS}.log" | tail -1 | cut -d
 # vantage point that works wherever the operator happens to sit.
 log "verifying $HOST API from the node (may take a few seconds while services restart)"
 sleep 6
-# TURNOUT_TOKEN, when exported, authenticates against api.token. Unset → no
-# header, correct for nodes that leave api.token empty.
-# Auth header as a single optional arg rather than an array: under `set -u`,
-# bash <4.4 (macOS's system /bin/bash is 3.2) treats "${AUTH[@]}" on an
-# empty array as an unbound-variable error, not "expands to nothing" — hit
-# in production on 2026-08-12, aborting verification after every install
-# had already succeeded.
-HDR=""
-[ -n "${TURNOUT_TOKEN:-}" ] && HDR="-H \"Authorization: Bearer $TURNOUT_TOKEN\""
+# The probe runs on the node under sudo so it can read the API token file
+# (0600, root) and trust the node's own certificate. TURNOUT_TOKEN, when
+# exported here, overrides the file — only needed for a node still on a
+# legacy api.token in gateway.yaml. It travels as the first stdin line, not
+# on a command line, so it never shows up in ps on either side.
+probe_api() {
+  { printf '%s\n' "${TURNOUT_TOKEN:-}"; cat <<'REMOTE'
+TOKFILE=/var/lib/turnout/api-token
+[ -z "$TOK" ] && [ -r "$TOKFILE" ] && TOK=$(tr -d '[:space:]' < "$TOKFILE")
+args=(-s --max-time 6)
+[ -n "$TOK" ] && args+=(-H "Authorization: Bearer $TOK")
+# https with the node's own certificate (api.tls); plain http as a fallback
+# for a node that still runs a pre-TLS binary.
+curl "${args[@]}" --cacert /var/lib/turnout/api-tls/cert.pem https://127.0.0.1:18080/api/proxies/active 2>/dev/null \
+  || curl "${args[@]}" http://127.0.0.1:18080/api/proxies/active 2>/dev/null
+REMOTE
+  } | $SSH "sudo -n bash -c 'read -r TOK; export TOK; exec bash -s'" 2>/dev/null || true
+}
 RESP=""
 for i in 1 2 3; do
-  # https with the node's own certificate (api.tls); cert.pem is 0644 so no
-  # sudo is needed to read it. Falls back to http for a node that still runs
-  # a pre-TLS binary (the redirect there would be an empty body → retry).
-  RESP=$($SSH "curl -s --max-time 6 $HDR --cacert /var/lib/turnout/api-tls/cert.pem https://127.0.0.1:18080/api/proxies/active 2>/dev/null || curl -s --max-time 6 $HDR http://127.0.0.1:18080/api/proxies/active" 2>/dev/null || true)
+  RESP=$(probe_api)
   [ -n "$RESP" ] && break
   sleep 3
 done
 [ -n "$RESP" ] || fail "API on $HOST unreachable from the node itself — check 'journalctl -u turnout-gateway' on the node"
 
+# A node without a token is in setup mode: the API is up but closed until an
+# operator initialises it in the console. That is a pending step, not a
+# failed deploy.
+if printf '%s' "$RESP" | grep -q '"setup_required"'; then
+  ok "$HOST is up and WAITING FOR SETUP — every /api/* answers 401 until you initialise it:"
+  ok "  1. make tls-info NODE=<user>@$HOST     (note fingerprint_sha256)"
+  ok "  2. open https://$HOST:18080/ui/ and check the browser shows the same fingerprint"
+  ok "  3. make setup-code NODE=<user>@$HOST   (or the ops Lark group) and complete setup"
+  ok "redeploy-full done for $HOST (version not verified: API closed until setup). yaml backup on the node at /etc/turnout/gateway.yaml.bak.<ts>"
+  exit 0
+fi
+
 VER=$(printf '%s' "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['turnout']['gateway_version'])" 2>/dev/null || echo UNKNOWN)
 SVC=$(printf '%s' "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['turnout']['services'])" 2>/dev/null || echo UNKNOWN)
+[ "$VER" = "UNKNOWN" ] && printf '%s' "$RESP" | grep -q '"unauthorized"' \
+  && fail "$HOST: API answered 401 — the token on the node does not match (legacy api.token? export TURNOUT_TOKEN)"
 ok "$HOST is on gateway_version=$VER  services=$SVC"
 
 ok "redeploy-full done for $HOST. yaml backup on the node at /etc/turnout/gateway.yaml.bak.<ts>"

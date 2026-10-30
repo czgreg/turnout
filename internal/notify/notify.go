@@ -261,6 +261,42 @@ func (n *Notifier) TestSend() error {
 	return nil
 }
 
+// SendPrivate delivers ev to the Lark webhook synchronously and keeps its
+// body OUT of the local JSONL log, which is world-readable (0644) and served
+// by /api/notifications/recent. It exists for exactly one payload — the
+// control plane's one-time setup code — that the ops group must see but no
+// file on the node except its own 0600 one should hold.
+//
+// The log gets the event with Body replaced by a redaction marker, so the
+// audit trail still shows that a code was sent and whether delivery worked.
+// Bypasses queue, dedup and aggregation: a setup code delayed or deduped is
+// a setup that cannot proceed. Returns an error when no webhook is
+// configured or delivery failed; the caller falls back to the file.
+func (n *Notifier) SendPrivate(ev Event) error {
+	n.mu.Lock()
+	lark := n.lark
+	enabled := n.cfg.Enabled
+	n.mu.Unlock()
+	if ev.Time.IsZero() {
+		ev.Time = time.Now()
+	}
+	redacted := ev
+	redacted.Body = "[redacted: sent to Lark only]"
+	if !enabled || lark == nil {
+		return errSimple("no Lark webhook configured")
+	}
+	if err := lark.Send([]Event{ev}); err != nil {
+		if n.fileLog != nil {
+			n.fileLog.Append(redacted, "webhook_failed", map[string]any{"err": err.Error()})
+		}
+		return err
+	}
+	if n.fileLog != nil {
+		n.fileLog.Append(redacted, "delivered", nil)
+	}
+	return nil
+}
+
 // Recent returns up to limit recent JSONL entries from the local log.
 // Returns nil when no log path is configured or the file is missing.
 func (n *Notifier) Recent(limit int) ([]map[string]any, error) {

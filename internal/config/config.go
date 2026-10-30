@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -163,7 +164,17 @@ type CapacityConfig struct {
 
 type APIConfig struct {
 	Listen string `yaml:"listen"`
-	Token  string `yaml:"token"`
+	// Token is the LEGACY place for the bearer token. It still works, but
+	// it travels with gateway.yaml — and `make redeploy` copies that file
+	// to the operator's laptop. Tokens set through the console's setup /
+	// rotate flow live in TokenFile instead, and those flows clear this
+	// field. The file wins when both are present.
+	Token string `yaml:"token,omitempty"`
+	// TokenFile holds the bearer token on the node only (0600, root).
+	// Empty = DefaultAPITokenFile. Absent file and empty Token puts the
+	// control plane in setup mode: every /api/* answers 401
+	// setup_required until an operator completes POST /api/auth/setup.
+	TokenFile string `yaml:"token_file,omitempty"`
 	// AllowFrom is a legacy/additive source-CIDR accept list rendered into
 	// nft.conf by install.sh (NOT enforced in Go; the process still binds
 	// Listen as given). Since 2026-10-22 the nft input chain accepts the
@@ -178,7 +189,7 @@ type APIConfig struct {
 	// TLS makes api.listen speak HTTPS. On by default: the port is reachable
 	// from the whole office LAN, and a bearer token sent over plain HTTP is
 	// readable by anyone on the same segment.
-	TLS APITLSConfig `yaml:"tls"`
+	TLS APITLSConfig `yaml:"tls,omitempty"`
 }
 
 // APITLSConfig controls the certificate the control plane presents.
@@ -203,6 +214,24 @@ type APITLSConfig struct {
 	// The node's own addresses (loopback, ingress_ip, every non-loopback
 	// IPv4, hostname) are always included.
 	ExtraSANs []string `yaml:"extra_sans,omitempty"`
+}
+
+// DefaultAPITokenFile is where the console's setup / rotate flow stores the
+// bearer token. Under /var/lib/turnout, which install.sh never overwrites.
+const DefaultAPITokenFile = "/var/lib/turnout/api-token"
+
+// TokenPath returns the effective token file path.
+func (a APIConfig) TokenPath() string {
+	if a.TokenFile != "" {
+		return a.TokenFile
+	}
+	return DefaultAPITokenFile
+}
+
+// SetupCodePath is where the one-time setup code is written while the
+// control plane has no token: next to the token file, 0600.
+func (a APIConfig) SetupCodePath() string {
+	return filepath.Join(filepath.Dir(a.TokenPath()), "api-setup-code")
 }
 
 // DefaultAPITLSDir holds the auto-managed key.pem / cert.pem. Under

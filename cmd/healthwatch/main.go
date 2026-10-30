@@ -58,7 +58,8 @@ func main() {
 		outDir    = flag.String("out", "/var/lib/turnout/health", "JSONL output directory")
 		retain    = flag.Duration("retain", 30*24*time.Hour, "delete JSONL files older than this")
 		probeIP   = flag.String("probe-ip", os.Getenv("HEALTHWATCH_PROBE_IP"), "terminal IP to sample the per-terminal assignment for (optional)")
-		apiToken  = flag.String("api-token", os.Getenv("HEALTHWATCH_API_TOKEN"), "bearer token for the control-plane API (when api.token is set)")
+		apiToken  = flag.String("api-token", os.Getenv("HEALTHWATCH_API_TOKEN"), "bearer token for the control-plane API; overrides --api-token-file")
+		tokenFile = flag.String("api-token-file", "", "file holding the API token (default: api.token_file from gateway.yaml, else "+config.DefaultAPITokenFile+"); re-read every sample so a rotation needs no restart")
 		summary   = flag.Bool("summary", false, "read recorded JSONL and print an aggregate report instead of sampling")
 		sumHours  = flag.Int("summary-hours", 24, "window for --summary")
 	)
@@ -82,11 +83,19 @@ func main() {
 			log.Fatalf("healthwatch: pin %s: %v", *apiCert, err)
 		}
 	}
+	if *tokenFile == "" {
+		*tokenFile = config.DefaultAPITokenFile
+		if cfg != nil {
+			*tokenFile = cfg.API.TokenPath()
+		}
+	}
 	s := &sampler{
+		tokenFile: *tokenFile,
 		api:       strings.TrimRight(*apiAddr, "/"),
 		clash:     strings.TrimRight(*clashAddr, "/"),
 		probeIP:   *probeIP,
 		token:     *apiToken,
+		cfgToken:  legacyToken(cfg),
 		cfgPath:   *cfgPath,
 		outDir:    *outDir,
 		preload:   probeDomains(cfg),
@@ -135,6 +144,11 @@ func main() {
 // cursor (derived from the previous tick time), the last config mtime, and
 // the terminal IP to inspect.
 type sampler struct {
+	// tokenFile is re-read before each sample when token (the flag / env
+	// override) is empty, so a token rotated in the console is picked up
+	// on the next tick. Legacy api.token in gateway.yaml is the fallback.
+	tokenFile string
+	cfgToken  string
 	api       string
 	clash     string
 	probeIP   string
@@ -148,6 +162,20 @@ type sampler struct {
 
 	lastMtime   time.Time
 	domainIndex int
+}
+
+// currentToken returns the bearer to send: the explicit override, else the
+// token file, else the legacy yaml token.
+func (s *sampler) currentToken() string {
+	if s.token != "" {
+		return s.token
+	}
+	if data, err := os.ReadFile(s.tokenFile); err == nil {
+		if t := strings.TrimSpace(string(data)); t != "" {
+			return t
+		}
+	}
+	return s.cfgToken
 }
 
 func (s *sampler) sampleAndWrite(ctx context.Context, delta bool, window time.Duration) {
@@ -181,6 +209,13 @@ func loadGatewayConfig(path string) *config.Config {
 		return nil
 	}
 	return cfg
+}
+
+func legacyToken(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.API.Token
 }
 
 func dnsListenAddr(cfg *config.Config) string {

@@ -54,6 +54,9 @@ type Deps struct {
 	// loopback api.listen; everywhere else the port speaks HTTPS and
 	// plaintext requests are redirected or refused (see tlsmux.go).
 	TLS *apitls.Manager
+	// Auth holds the bearer token and the setup state (auth.go). Required:
+	// a nil Auth fails every /api/* request closed rather than open.
+	Auth *Auth
 }
 
 // Renderer is the interface internal/mihomo.Renderer satisfies. Kept as
@@ -121,6 +124,16 @@ func NewServer(deps Deps) *Server {
 	mux := http.NewServeMux()
 	s := &Server{deps: deps, egress: newEgressCache()}
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+
+	// Token lifecycle (auth.go). state + setup are reachable without a
+	// token by necessity — they are how a node gets one; setup is gated by
+	// the one-time setup code instead.
+	if a := deps.Auth; a != nil {
+		mux.HandleFunc("GET /api/auth/state", a.handleState)
+		mux.HandleFunc("POST /api/auth/setup", a.handleSetup)
+	}
+	mux.HandleFunc("POST /api/auth/rotate", s.auth(s.handleAuthRotate))
+	mux.HandleFunc("GET /api/auth/check", s.auth(s.handleAuthCheck))
 	mux.HandleFunc("GET /api/watchdog/status", s.auth(s.handleWatchdogStatus))
 	mux.HandleFunc("GET /api/status", s.auth(s.handleStatus))
 	mux.HandleFunc("GET /api/nodes", s.auth(s.handleNodes))
@@ -218,18 +231,16 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	return nil
 }
 
+// auth guards an /api/* handler with the bearer check. There is no
+// unauthenticated mode: without a token the node is in setup state and
+// every guarded route answers 401 setup_required (see auth.go).
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
-	tok := s.deps.Cfg.API.Token
-	if tok == "" {
-		return h
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+tok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
+	if s.deps.Auth == nil {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "auth not initialised"})
 		}
-		h(w, r)
 	}
+	return s.deps.Auth.wrap(h)
 }
 
 // handleHealth reports whether the TPROXY data path actually works.

@@ -211,6 +211,10 @@ code { padding: 1px 5px; border-radius: 4px; background: var(--color-fill-2); }
 .login-hint { font-size: 13px; color: var(--color-text-3); line-height: 1.6; margin: 0 0 20px; }
 .login-err { margin-bottom: 16px; }
 
+/* token generator (setup page + rotate card). Arco puts className on the
+ * <input> itself. 47 chars must fit the 440px login column un-truncated. */
+input.token-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; letter-spacing: -0.2px; }
+
 @media (max-width: 960px) {
   .login { grid-template-columns: 1fr; gap: 32px; padding: 32px 20px; }
   .header-desc, .updated { display: none; }

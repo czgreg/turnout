@@ -64,9 +64,23 @@ def tls_context(api):
     return ssl.create_default_context(cafile=DEFAULT_API_CERT)
 
 
+def api_token():
+    """TURNOUT_TOKEN wins; otherwise the node's token file (re-read each call,
+    so a rotation in the console needs no restart)."""
+    tok = os.environ.get("TURNOUT_TOKEN", "")
+    if tok:
+        return tok
+    path = os.environ.get("TURNOUT_API_TOKEN_FILE", "/var/lib/turnout/api-token")
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def get_json(api, path, timeout=8):
     req = urllib.request.Request(api.rstrip("/") + path)
-    tok = os.environ.get("TURNOUT_TOKEN", "")
+    tok = api_token()
     if tok:
         req.add_header("Authorization", "Bearer " + tok)
     with urllib.request.urlopen(req, timeout=timeout, context=tls_context(api)) as r:

@@ -11,6 +11,9 @@
  *     2026-09-24 那次配置落盘但 reload 没跑的起因。
  *  3. token 只放在这个模块的内存变量里。不进 web storage —— 这个页面
  *     可能开在共享的运维机上，而 token 能读到带凭据的订阅 URL。
+ *  4. 没有"无 token"模式。节点没有 token 时处于 setup 状态，所有 /api/*
+ *     返回 401 setup_required；GET /api/auth/state 告诉登录页该显示
+ *     初始化流程还是登录框（internal/api/auth.go）。
  *
  * Endpoint paths are written as single-quoted literals on purpose:
  * internal/api/ui_test.go extracts them and asserts each one is registered
@@ -18,6 +21,7 @@
  */
 import type {
   Active,
+  AuthState,
   AdBlockState,
   AdultBlockState,
   Healthz,
@@ -66,7 +70,17 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   if (opts.body) headers['Content-Type'] = 'application/json';
 
   const res = await fetch(base + path, { ...opts, headers });
-  if (res.status === 401) throw new ApiError(401, '401 未授权 —— token 不正确');
+  if (res.status === 401) {
+    let code = '';
+    try {
+      code = (await res.json())?.error ?? '';
+    } catch {
+      /* plain text */
+    }
+    if (code === 'setup_required') throw new ApiError(401, '节点等待初始化 —— 刷新页面进入初始化流程');
+    if (code === 'invalid_setup_code') throw new ApiError(401, 'setup code 不对 —— 用 make setup-code 重新读取（每次重启都会换）');
+    throw new ApiError(401, '401 未授权 —— token 不正确');
+  }
   if (res.status === 204) return null as T;
 
   const text = await res.text();
@@ -119,6 +133,25 @@ export async function getWatchdogStatus(): Promise<{ httpStatus: number; body: W
     /* non-JSON: older binary */
   }
   return { httpStatus: res.status, body };
+}
+
+/* ── Token lifecycle (internal/api/auth.go) ─────────────────────────────── */
+
+/** Unauthenticated: which page to show, and where the setup code lives. */
+export const getAuthState = () => request<AuthState>('/api/auth/state');
+
+/** Login probe: 204 with the right token, 401 otherwise. */
+export const checkAuth = () => request<null>('/api/auth/check');
+
+/** First-time setup. Needs the one-time code from the node; no token yet. */
+export const setupAuth = (newToken: string, setupCode: string) =>
+  request<null>('/api/auth/setup', { method: 'POST', ...json({ token: newToken, setup_code: setupCode }) });
+
+/** Replace the token. The old one stops working immediately — including in
+ * this tab, so switch the in-memory token right after the server accepts. */
+export async function rotateToken(newToken: string) {
+  await request<null>('/api/auth/rotate', { method: 'POST', ...json({ token: newToken }) });
+  token = newToken;
 }
 
 export const getStatus = () => request<Status>('/api/status');

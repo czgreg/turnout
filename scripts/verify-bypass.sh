@@ -27,8 +27,9 @@
 # with the reason, never as PASS.
 #
 # Env:
-#   TURNOUT_TOKEN    API bearer token (api.token in gateway.yaml). Without it
-#                    the authenticated checks report SKIP, not PASS.
+#   TURNOUT_TOKEN    API bearer token. Default: read from api.token_file
+#                    (/var/lib/turnout/api-token). Without either, the
+#                    authenticated checks report SKIP, not PASS.
 #   DIRECT_TARGET    a domestic URL expected to go DIRECT (default baidu.com)
 #   PROXY_TARGET     a whitelisted overseas URL expected to be PROXIED
 #                    (default https://api.anthropic.com/ — must be on YOUR
@@ -148,6 +149,11 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+# Token: TURNOUT_TOKEN wins (legacy api.token nodes); otherwise the node's
+# own token file — this script runs as root, so it can read it.
+if [ -z "${TURNOUT_TOKEN:-}" ] && [ -r "${TURNOUT_API_TOKEN_FILE:-/var/lib/turnout/api-token}" ]; then
+  TURNOUT_TOKEN=$(tr -d '[:space:]' < "${TURNOUT_API_TOKEN_FILE:-/var/lib/turnout/api-token}")
+fi
 
 missing=0
 for v in TURNOUT_CLIENT_SUBNET TURNOUT_INGRESS_IFACE TURNOUT_INGRESS_IP TURNOUT_EGRESS_IFACE TURNOUT_RETURN_GATEWAY TURNOUT_TPROXY_PORT; do
@@ -319,7 +325,7 @@ else
 fi
 
 if [ -z "${TURNOUT_TOKEN:-}" ]; then
-  skip "watchdog 检查需要 TURNOUT_TOKEN（api.token），未提供"
+  skip "watchdog 检查需要 token：节点还没初始化（setup），或 token 文件不可读"
 else
   api_get /api/watchdog/status >/dev/null
   wd_state=$(json_get state)

@@ -15,6 +15,7 @@ import {
 import { IconSave, IconUndo } from '@arco-design/web-react/icon';
 import * as api from '../api';
 import type { Snapshot } from '../snapshot';
+import TokenGenerator from '../components/TokenGenerator';
 
 const { Row, Col } = Grid;
 
@@ -113,14 +114,14 @@ export default function NetworkPage({ snap, reload }: { snap: Snapshot; reload: 
 
   return (
     <div className="page">
-      {net && !net.api_token_set && (
+      {net?.api_token_source === 'yaml' && (
         <Alert
           className="mb"
           type="warning"
           content={
             <span>
-              控制面未设置 <code>api.token</code>：任何能访问 {net.api_listen || '18080'} 的主机都可以读写配置
-              （白名单、订阅、池回滚）。被引流网段现在也能直连该端口 —— 仅适用于完全可信的内网。
+              当前 token 来自 <code>gateway.yaml</code> 的 <code>api.token</code>（旧方式）：它会随{' '}
+              <code>make redeploy</code> 拷到笔记本。在下方「控制面 token」轮换一次，即迁到节点本地的 0600 文件并清掉 yaml 里的值。
             </span>
           }
         />
@@ -196,6 +197,8 @@ export default function NetworkPage({ snap, reload }: { snap: Snapshot; reload: 
       </Card>
 
       <SignalCard snap={snap} reload={reload} />
+
+      <TokenCard source={net?.api_token_source} />
 
       <Card bordered={false} title="这个值影响什么">
         <Descriptions
@@ -451,6 +454,80 @@ function SignalCard({ snap, reload }: { snap: Snapshot; reload: () => void }) {
           type="info"
           content="auto_failover 关闭时，watchdog 只观测不动作：判定不健康也不会摘掉探活地址，防火墙会继续把办公网引流过来。"
         />
+      )}
+    </Card>
+  );
+}
+
+/* TokenCard — rotate the control-plane token.
+ *
+ * The old token stops working the moment the server accepts the new one:
+ * this tab switches over in api.rotateToken, other open tabs fall back to
+ * the login card on their next refresh. Scripts on the node read the token
+ * file and need nothing; a TURNOUT_TOKEN exported on a laptop must be
+ * updated by hand.
+ */
+function TokenCard({ source }: { source?: 'file' | 'yaml' }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // Remount the generator after each rotation so it shows a fresh token.
+  const [round, setRound] = useState(0);
+
+  const rotate = (next: string) => {
+    Modal.confirm({
+      title: '轮换控制面 token？',
+      content: '旧 token 立即失效：其他已打开的控制台标签页会回到登录页，笔记本上 export 的 TURNOUT_TOKEN 需要更新。节点本机的脚本和 healthwatch 读 token 文件，不受影响。',
+      okText: '轮换',
+      onOk: async () => {
+        setBusy(true);
+        try {
+          await api.rotateToken(next);
+          Message.success('已轮换，新 token 已生效');
+          setOpen(false);
+          setRound((r) => r + 1);
+        } catch (e) {
+          Message.error((e as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  };
+
+  return (
+    <Card
+      bordered={false}
+      className="mb"
+      title="控制面 token"
+      extra={<span className="dim">POST /api/auth/rotate</span>}
+    >
+      <Descriptions
+        column={1}
+        size="small"
+        data={[
+          {
+            label: '存放位置',
+            value:
+              source === 'yaml' ? (
+                <span className="err">gateway.yaml（旧方式，建议轮换）</span>
+              ) : (
+                <span>节点本地文件（0600，不随 redeploy 离开节点）</span>
+              ),
+          },
+          { label: '忘记 token', value: <code>make reset-token NODE=ops@&lt;host&gt;</code> },
+        ]}
+      />
+      {!open ? (
+        <Button className="mt" onClick={() => setOpen(true)}>
+          生成新 token…
+        </Button>
+      ) : (
+        <div className="mt">
+          <TokenGenerator key={round} confirmText="轮换为这个 token" busy={busy} onConfirm={rotate} />
+          <Button className="mt" type="text" onClick={() => setOpen(false)}>
+            取消
+          </Button>
+        </div>
       )}
     </Card>
   );

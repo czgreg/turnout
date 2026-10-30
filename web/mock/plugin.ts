@@ -38,14 +38,18 @@ function handler(): Connect.NextHandleFunction {
   let interval = 0;
   let refreshing = false;
   let wl = data.whitelist();
-  // Mutable so PUT /api/node/network can be exercised in mock mode. Starts
-  // unauthenticated (api_token_set=false) so the page's warning renders.
+  // Mutable so PUT /api/node/network can be exercised in mock mode.
   let network = data.network();
   let signal = data.signal();
   let notif = data.notifications();
   let notifLog = data.notificationLog();
   let adBlock = data.adBlock();
   let adultBlock = data.adultBlock();
+  // Auth mirrors internal/api/auth.go: the mock node starts in SETUP state
+  // so the initialisation page can be exercised; its setup code is fixed.
+  let token = '';
+  const setupCode = 'MOCKMOCKMOCKMOCKMOCK';
+  const tokenRe = /^tgw_[A-Za-z0-9_-]{43}$/;
 
   return async (req, res, next) => {
     const url = new URL(req.url || '/', 'http://mock');
@@ -54,6 +58,33 @@ function handler(): Connect.NextHandleFunction {
     if (path !== '/healthz' && !path.startsWith('/api/')) return next();
 
     if (path === '/healthz') return send(res, 200, data.healthz());
+
+    if (path === '/api/auth/state') {
+      return send(res, 200, token
+        ? { state: 'active', token_source: 'file' }
+        : { state: 'setup', setup_code_hint: '(mock) — 输入 MOCK-MOCK-MOCK-MOCK-MOCK', lark_delivered: true });
+    }
+    if (path === '/api/auth/setup' && method === 'POST') {
+      if (token) return send(res, 409, { error: 'already_initialized' });
+      const b = await readBody(req);
+      const code = String(b.setup_code || '').toUpperCase().replace(/[-\s]/g, '');
+      if (code !== setupCode) return send(res, 401, { error: 'invalid_setup_code' });
+      if (!tokenRe.test(String(b.token || ''))) return send(res, 400, { error: 'invalid_token_format' });
+      token = b.token;
+      return send(res, 204);
+    }
+    // Every other /api/* is guarded, like the real server.
+    if (!token) return send(res, 401, { error: 'setup_required' });
+    if (req.headers.authorization !== 'Bearer ' + token) return send(res, 401, { error: 'unauthorized' });
+
+    if (path === '/api/auth/check') return send(res, 204);
+    if (path === '/api/auth/rotate' && method === 'POST') {
+      const b = await readBody(req);
+      if (!tokenRe.test(String(b.token || ''))) return send(res, 400, { error: 'invalid_token_format' });
+      if (b.token === token) return send(res, 400, { error: 'token_unchanged' });
+      token = b.token;
+      return send(res, 204);
+    }
     if (path === '/api/status') return send(res, 200, data.status(subs));
     if (path === '/api/proxies/active') return send(res, 200, data.active(subs));
     if (path === '/api/pools') return send(res, 200, data.pools());
