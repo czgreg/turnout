@@ -43,8 +43,10 @@ table inet turnout {
   # operators can reach /ui/ from the segment they sit in — see iproute.sh.)
   #
   # The final accept makes 18080 reachable from every source by default.
-  # api.allow_from remains an additive accept list, useful only when that
-  # default is narrowed later.
+  # That is only acceptable because the port speaks HTTPS (api.tls, on by
+  # default) and every /api/* request needs the bearer token; the firewall
+  # is not what protects the control plane. api.allow_from remains an
+  # additive accept list, useful only when that default is narrowed later.
   # install.sh substitutes @API_ALLOW_RULES@ with an awk substring match
   # (sed can't splice embedded newlines portably).
   chain input {

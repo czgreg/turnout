@@ -14,6 +14,15 @@ api:
   listen: "127.0.0.1:18080"
   # token: "change-me"
 
+  # [新] 控制面走 HTTPS。默认开启，留空即可：节点首次启动时在
+  # /var/lib/turnout/api-tls/ 生成自签证书（397 天），到期前 30 天同一把私钥自动续期。
+  # 浏览器首次访问前用 `make tls-info NODE=...` 核对指纹；脚本钉公钥（见 docs/api.md）。
+  # tls:
+  #   enabled: true          # false 只允许回环 listen
+  #   cert_file: ""          # 运维自备证书时与 key_file 一起填；只加载，不生成不续期
+  #   key_file: ""
+  #   extra_sans: []         # 经 NAT / 域名访问时补充的地址
+
 subscribe:
   # [不变] 0 = 关闭周期刷新，只接受 POST /api/subscribe/refresh 手动触发。
   # 必须是 duration 字符串，裸 0 会 unmarshal 失败。

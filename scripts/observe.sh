@@ -38,8 +38,24 @@ SAMPLE_SECONDS="${SAMPLE_SECONDS:-6}"
 API_PORT="${API_PORT:-18080}"
 CLASH_PORT="${CLASH_PORT:-9090}"
 EXPECT_SRC="${EXPECT_SRC:-}"
-API="http://127.0.0.1:${API_PORT}"
+# The control plane speaks HTTPS with a self-signed certificate (api.tls);
+# /etc/turnout/env names the scheme and the certificate file. Without the
+# env file (older install) fall back to plain http.
+API_SCHEME=http; API_CACERT=""
+if [ -f /etc/turnout/env ]; then
+  API_SCHEME=$(. /etc/turnout/env 2>/dev/null; printf '%s' "${TURNOUT_API_SCHEME:-http}")
+  API_CACERT=$(. /etc/turnout/env 2>/dev/null; printf '%s' "${TURNOUT_API_TLS_CERT:-}")
+fi
+API="${API_SCHEME}://127.0.0.1:${API_PORT}"
 CLASH="http://127.0.0.1:${CLASH_PORT}"
+# api_curl — curl against $API trusting exactly the node's own certificate.
+api_curl() {
+  if [ "$API_SCHEME" = "https" ] && [ -n "$API_CACERT" ]; then
+    curl --cacert "$API_CACERT" "$@"
+  else
+    curl "$@"
+  fi
+}
 
 PASS=0; FAIL=0; IDLE=0
 pass() { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m  %s\n' "$*"; }
@@ -89,7 +105,7 @@ delta() { # delta NAME → count change over the window
 # ── 0. identity ─────────────────────────────────────────────────────────────
 
 head_ "0. 节点"
-VER=$(curl -s --max-time 5 "$API/api/proxies/active" 2>/dev/null)
+VER=$(api_curl -s --max-time 5 "$API/api/proxies/active" 2>/dev/null)
 if [ -n "$VER" ]; then
   printf '%s' "$VER" | python3 -c '
 import json,sys
@@ -105,7 +121,7 @@ else
   fix "systemctl status turnout-gateway; journalctl -u turnout-gateway -n 50"
 fi
 
-HZ=$(curl -s --max-time 5 "$API/healthz" 2>/dev/null)
+HZ=$(api_curl -s --max-time 5 "$API/healthz" 2>/dev/null)
 if [ -n "$HZ" ]; then
   printf '%s' "$HZ" | python3 -c '
 import json,sys
@@ -269,7 +285,7 @@ fi
 
 head_ "4. 出口池"
 
-ST=$(curl -s --max-time 5 "$API/api/status" 2>/dev/null)
+ST=$(api_curl -s --max-time 5 "$API/api/status" 2>/dev/null)
 if [ -n "$ST" ]; then
   printf '%s' "$ST" | python3 -c '
 import json,sys

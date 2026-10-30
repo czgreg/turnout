@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/turnout-gateway/turnout-gateway/internal/apitls"
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
 	"github.com/turnout-gateway/turnout-gateway/internal/configstore"
 	"github.com/turnout-gateway/turnout-gateway/internal/dataplane"
@@ -48,6 +49,11 @@ type Deps struct {
 	// unset — /api/watchdog/status then says so explicitly rather than
 	// returning a null the console has to interpret.
 	Watchdog *watchdog.Watchdog
+	// TLS serves the control plane's certificate. Nil only when
+	// api.tls.enabled=false, which config.Load allows solely for a
+	// loopback api.listen; everywhere else the port speaks HTTPS and
+	// plaintext requests are redirected or refused (see tlsmux.go).
+	TLS *apitls.Manager
 }
 
 // Renderer is the interface internal/mihomo.Renderer satisfies. Kept as
@@ -197,6 +203,9 @@ func NewServer(deps Deps) *Server {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	if s.deps.TLS != nil {
+		return serveTLS(ctx, s.srv, s.srv.Addr, s.deps.TLS.TLSConfig())
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

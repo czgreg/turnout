@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -165,15 +166,82 @@ type APIConfig struct {
 	Token  string `yaml:"token"`
 	// AllowFrom is a legacy/additive source-CIDR accept list rendered into
 	// nft.conf by install.sh (NOT enforced in Go; the process still binds
-	// Listen as given). The nft policy denies the diverted subnet and accepts other
-	// sources by default, so this list is normally redundant.
+	// Listen as given). Since 2026-10-22 the nft input chain accepts the
+	// API port from every source, the diverted client_subnet included, so
+	// this list only matters if that default is narrowed again.
 	//
-	// The fixed the diverted subnet deny is independent of this list. Token remains
-	// the application-layer protection and should be configured when Listen
-	// is exposed beyond loopback.
+	// What actually protects the control plane on an open LAN is TLS (see
+	// TLS below) plus Token: every /api/* request must carry the bearer.
 	// NEVER include the tun0 client_subnet here; those are untrusted
 	// end-user terminals.
 	AllowFrom []string `yaml:"allow_from,omitempty"`
+	// TLS makes api.listen speak HTTPS. On by default: the port is reachable
+	// from the whole office LAN, and a bearer token sent over plain HTTP is
+	// readable by anyone on the same segment.
+	TLS APITLSConfig `yaml:"tls"`
+}
+
+// APITLSConfig controls the certificate the control plane presents.
+//
+// With CertFile and KeyFile both empty the node generates its own key +
+// self-signed certificate under /var/lib/turnout/api-tls/ on first start
+// and renews the certificate (same key) before it expires. Set both to
+// use an operator-provided certificate instead: it is then only loaded,
+// never generated or renewed.
+type APITLSConfig struct {
+	// Enabled is a pointer so "absent" reads as true. false is only
+	// accepted when Listen is a loopback address — a plaintext control
+	// plane on a LAN-reachable port is exactly what this block exists to
+	// prevent.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// CertFile / KeyFile: empty = auto-managed under DefaultAPITLSDir.
+	// Either set without the other is a config error.
+	CertFile string `yaml:"cert_file,omitempty"`
+	KeyFile  string `yaml:"key_file,omitempty"`
+	// ExtraSANs are additional IPs or DNS names to put in the auto-managed
+	// certificate, e.g. the address operators reach the node through NAT.
+	// The node's own addresses (loopback, ingress_ip, every non-loopback
+	// IPv4, hostname) are always included.
+	ExtraSANs []string `yaml:"extra_sans,omitempty"`
+}
+
+// DefaultAPITLSDir holds the auto-managed key.pem / cert.pem. Under
+// /var/lib/turnout so install.sh and `make redeploy` leave it alone — the
+// key must survive upgrades or every pinned caller breaks.
+const DefaultAPITLSDir = "/var/lib/turnout/api-tls"
+
+// IsEnabled reports whether the API serves HTTPS. nil = on.
+func (t APITLSConfig) IsEnabled() bool { return t.Enabled == nil || *t.Enabled }
+
+// AutoManaged reports whether the node owns the certificate lifecycle
+// (generate + renew) rather than loading an operator-provided pair.
+func (t APITLSConfig) AutoManaged() bool { return t.CertFile == "" && t.KeyFile == "" }
+
+// Paths returns the effective cert and key file paths.
+func (t APITLSConfig) Paths() (certFile, keyFile string) {
+	if t.AutoManaged() {
+		return DefaultAPITLSDir + "/cert.pem", DefaultAPITLSDir + "/key.pem"
+	}
+	return t.CertFile, t.KeyFile
+}
+
+// validateAPI rejects the one combination that re-opens the plaintext
+// hole: TLS off while listening beyond loopback.
+func (c *Config) validateAPI() error {
+	host, _, err := net.SplitHostPort(c.API.Listen)
+	if err != nil {
+		return fmt.Errorf("api.listen: %w", err)
+	}
+	if !c.API.TLS.IsEnabled() {
+		ip := net.ParseIP(host)
+		if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return fmt.Errorf("api.tls.enabled=false is only allowed with a loopback api.listen, got %q", c.API.Listen)
+		}
+	}
+	if (c.API.TLS.CertFile == "") != (c.API.TLS.KeyFile == "") {
+		return fmt.Errorf("api.tls: cert_file and key_file must be set together")
+	}
+	return nil
 }
 
 type SubscribeConfig struct {
@@ -1286,6 +1354,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	c.applyDefaults()
+	if err := c.validateAPI(); err != nil {
+		return nil, err
+	}
 	// Fail closed: ignoring an invalid exclude pattern would quietly put the
 	// nodes it was meant to keep out back into routing.
 	if p := c.DataPlane.URLTest.NodeExcludePattern; p != "" {

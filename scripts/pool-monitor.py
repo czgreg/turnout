@@ -31,13 +31,17 @@ Exit codes: 0 ok, 1 API unreachable (nothing appended).
 import argparse
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-DEFAULT_API = "http://127.0.0.1:18080"
+DEFAULT_API = "https://127.0.0.1:18080"
+# The control plane's self-signed certificate (api.tls). urllib trusts exactly
+# this file; override with TURNOUT_API_TLS_CERT for an operator-provided one.
+DEFAULT_API_CERT = os.environ.get("TURNOUT_API_TLS_CERT", "/var/lib/turnout/api-tls/cert.pem")
 DEFAULT_OUT = "/var/lib/turnout/pool-monitor.jsonl"
 DEFAULT_STATE = "/var/lib/turnout/pool-monitor-state.json"
 
@@ -54,12 +58,18 @@ def composite(node):
     return float(p95) + 2.0 * float(jitter) + 5000.0 * fail * fail
 
 
+def tls_context(api):
+    if not api.startswith("https://"):
+        return None
+    return ssl.create_default_context(cafile=DEFAULT_API_CERT)
+
+
 def get_json(api, path, timeout=8):
     req = urllib.request.Request(api.rstrip("/") + path)
     tok = os.environ.get("TURNOUT_TOKEN", "")
     if tok:
         req.add_header("Authorization", "Bearer " + tok)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=tls_context(api)) as r:
         return json.load(r)
 
 
