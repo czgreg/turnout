@@ -63,13 +63,25 @@ skip() { SKIP=$((SKIP+1)); printf '  \033[33mSKIP\033[0m  %s\n' "$*"; }
 info() { printf '        %s\n' "$*"; }
 head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
+# api_base / api_tls — the control plane speaks HTTPS with a self-signed
+# certificate (api.tls). /etc/turnout/env (sourced below) names the scheme
+# and the certificate file; curl trusts exactly that file. Older env files
+# without those vars fall back to plain http.
+api_base() { printf '%s://127.0.0.1:%s' "${TURNOUT_API_SCHEME:-http}" "$API_PORT"; }
+api_tls() {
+  if [ "${TURNOUT_API_SCHEME:-http}" = "https" ] && [ -n "${TURNOUT_API_TLS_CERT:-}" ]; then
+    printf -- '--cacert %s' "$TURNOUT_API_TLS_CERT"
+  fi
+}
+
 # api GET → body; sets API_STATUS. Auth only when a token is provided.
 api_get() {
   local path="$1"
   local -a auth=()
   [ -n "${TURNOUT_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $TURNOUT_TOKEN")
-  API_STATUS=$(curl -s -o /tmp/.verify_body -w '%{http_code}' --max-time 8 \
-    "${auth[@]}" "http://127.0.0.1:${API_PORT}${path}" 2>/dev/null)
+  # shellcheck disable=SC2046
+  API_STATUS=$(curl -s -o /tmp/.verify_body -w '%{http_code}' --max-time 8 $(api_tls) \
+    "${auth[@]}" "$(api_base)${path}" 2>/dev/null)
   cat /tmp/.verify_body 2>/dev/null
 }
 
@@ -294,8 +306,9 @@ for u in turnout-gateway turnout-mihomo turnout-nft; do
   [ "$s" = "active" ] && ok "$u active" || bad "$u = ${s:-unknown}"
 done
 
-hz_status=$(curl -s -o /tmp/.verify_hz -w '%{http_code}' --max-time 8 \
-  "http://127.0.0.1:${API_PORT}/healthz" 2>/dev/null)
+# shellcheck disable=SC2046
+hz_status=$(curl -s -o /tmp/.verify_hz -w '%{http_code}' --max-time 8 $(api_tls) \
+  "$(api_base)/healthz" 2>/dev/null)
 if [ "$hz_status" = "200" ]; then
   ok "/healthz 200（数据面断言全部通过）"
 elif [ "$hz_status" = "503" ]; then
@@ -465,7 +478,11 @@ else
     fi
   fi
 
-  last_rule=$(grep -E '^\s*- (MATCH|GEOIP|RULE-SET|IP-CIDR|DOMAIN)' "$CFG" 2>/dev/null | tail -1)
+  # Only the top-level `rules:` block: `sub-rules:` (per-terminal mode) is
+  # rendered after it and every sub-rule ends in its own MATCH,<pool>, so a
+  # whole-file grep picked up `MATCH,ai-pool` and failed a correct config.
+  last_rule=$(awk '/^rules:/{on=1; next} /^[^[:space:]-]/{on=0} on' "$CFG" 2>/dev/null \
+    | grep -E '^\s*- (MATCH|GEOIP|RULE-SET|IP-CIDR|DOMAIN)' | tail -1)
   case "$last_rule" in
     *MATCH,DIRECT*) ok "规则兜底是 MATCH,DIRECT（未命中白名单的流量交还防火墙）" ;;
     *MATCH*)        bad "规则兜底不是 DIRECT：$last_rule —— 白名单模式应以 MATCH,DIRECT 结束" ;;

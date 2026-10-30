@@ -387,13 +387,26 @@ export interface RuleSets {
  *
  * api_token_set is a boolean, never the token: the console needs to warn
  * when the control plane is unauthenticated, and must not receive the secret.
+ *
+ * api_tls describes the certificate the control plane presents (absent when
+ * api.tls.enabled=false). It carries no fingerprint on purpose: the operator
+ * must compare the browser's view against an out-of-band copy (make
+ * tls-info / Lark), and a value served over the connection being checked
+ * proves nothing.
  */
+export interface NodeAPITLS {
+  auto_managed: boolean;
+  not_after: string;
+  sans: string[];
+}
+
 export interface NodeNetwork {
   client_subnet: string;
   ingress_iface?: string;
   ingress_ip?: string;
   api_listen?: string;
   api_token_set: boolean;
+  api_tls?: NodeAPITLS;
 }
 
 /* ── Node signal (GET /api/node/signal) ──────────────────────────────────

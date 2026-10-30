@@ -51,7 +51,8 @@ import (
 func main() {
 	var (
 		cfgPath   = flag.String("config", "/etc/turnout/gateway.yaml", "gateway.yaml (root-readable; used for ingress IP, config path, preload domains)")
-		apiAddr   = flag.String("api", "http://127.0.0.1:18080", "turnout-gateway control-plane API base URL")
+		apiAddr   = flag.String("api", "https://127.0.0.1:18080", "turnout-gateway control-plane API base URL")
+		apiCert   = flag.String("api-tls-cert", config.DefaultAPITLSDir+"/cert.pem", "certificate file the gateway wrote; its public key is pinned for every https API call (empty = system trust)")
 		clashAddr = flag.String("clash", "http://127.0.0.1:9090", "mihomo clash-api base URL")
 		interval  = flag.Duration("interval", 60*time.Second, "sampling interval")
 		outDir    = flag.String("out", "/var/lib/turnout/health", "JSONL output directory")
@@ -71,6 +72,16 @@ func main() {
 	}
 
 	cfg := loadGatewayConfig(*cfgPath)
+	if cfg != nil && !cfg.API.TLS.AutoManaged() && *apiCert == config.DefaultAPITLSDir+"/cert.pem" {
+		// Operator-provided certificate: pin the file gateway.yaml names,
+		// not the auto-managed default path (which does not exist then).
+		*apiCert, _ = cfg.API.TLS.Paths()
+	}
+	if strings.HasPrefix(*apiAddr, "https://") && *apiCert != "" {
+		if err := pinAPI(*apiCert); err != nil {
+			log.Fatalf("healthwatch: pin %s: %v", *apiCert, err)
+		}
+	}
 	s := &sampler{
 		api:       strings.TrimRight(*apiAddr, "/"),
 		clash:     strings.TrimRight(*clashAddr, "/"),

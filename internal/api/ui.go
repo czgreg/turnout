@@ -32,8 +32,11 @@ var uiFS embed.FS
 // server logs and browser history.
 //
 // Reachability is governed by api.listen (default 127.0.0.1:18080) and the
-// node's nft rules, which unconditionally deny the diverted client subnet
-// from reaching the API port. Exposing the UI does not widen that surface.
+// node's nft rules. Since 2026-10-22 those accept the API port from every
+// source, the diverted client subnet included, so what keeps the token
+// private on the wire is TLS (tlsmux.go) and what keeps the control plane
+// closed is the bearer check on /api/*. Exposing the UI does not widen
+// that surface.
 func (s *Server) registerUI(mux *http.ServeMux) {
 	sub, err := fs.Sub(uiFS, "ui")
 	if err != nil {

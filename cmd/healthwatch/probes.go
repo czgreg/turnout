@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -14,9 +15,28 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/turnout-gateway/turnout-gateway/internal/apitls"
 )
 
 var httpClient = &http.Client{Timeout: 6 * time.Second}
+
+// pinAPI makes httpClient accept only a TLS peer whose public key matches
+// the certificate at certFile — the gateway's auto-managed self-signed
+// certificate, which no trust store knows. Pinning the key rather than the
+// certificate means the gateway's yearly renewal (same key) needs no
+// restart here; only a key rotation does, and the gateway logs that.
+func pinAPI(certFile string) error {
+	pin, err := apitls.PinFromCertFile(certFile)
+	if err != nil {
+		return err
+	}
+	httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{
+		InsecureSkipVerify:    true, // the pin below is the trust decision
+		VerifyPeerCertificate: apitls.VerifyPin(pin),
+	}}
+	return nil
+}
 
 // getJSON fetches path from base and decodes into out. It reports the HTTP
 // status and elapsed time; a non-2xx response still decodes (the gateway

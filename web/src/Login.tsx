@@ -72,7 +72,7 @@ export default function Login({ onConnected, initialError, dark, onToggleTheme }
           autoComplete="off"
         >
           <Form.Item label="控制面地址" field="base" extra="默认取当前页面同源">
-            <Input prefix={<IconLink />} placeholder="http://<node-ip>:18080" />
+            <Input prefix={<IconLink />} placeholder="https://<node-ip>:18080" />
           </Form.Item>
           <Form.Item label="API Token（可选）" field="token">
             <Input.Password prefix={<IconLock />} placeholder="api.token" autoComplete="current-password" />

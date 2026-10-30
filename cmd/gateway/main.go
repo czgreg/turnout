@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/turnout-gateway/turnout-gateway/internal/api"
+	"github.com/turnout-gateway/turnout-gateway/internal/apitls"
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
 	"github.com/turnout-gateway/turnout-gateway/internal/configstore"
 	"github.com/turnout-gateway/turnout-gateway/internal/dataplane"
@@ -40,6 +41,8 @@ func main() {
 	renderOnce := flag.Bool("render-once", false, "render bootstrap mihomo config and exit (used by install.sh to avoid first-boot fail-restart)")
 	validate := flag.Bool("validate", false, "render config, run mihomo -t syntax check, validate constraints, then exit")
 	printEnv := flag.Bool("print-env", false, "print shell-sourceable env vars from gateway.yaml for use by iproute.sh / install.sh, then exit")
+	tlsInfo := flag.Bool("tls-info", false, "print the API certificate's fingerprint, SPKI pin, SANs and expiry, then exit")
+	rotateTLSKey := flag.Bool("rotate-tls-key", false, "delete the auto-managed API key + certificate so the next start mints a new pair (every pinned caller must then be updated), then exit")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -87,6 +90,23 @@ func main() {
 		// nft.conf's input chain. Empty → loopback only (install.sh emits
 		// no saddr accept rule, so only the `iif lo` rule matches).
 		fmt.Printf("export TURNOUT_API_ALLOW_FROM=%q\n", strings.Join(cfg.API.AllowFrom, " "))
+		// Scheme + certificate path, so on-node scripts can curl the API
+		// with --cacert instead of hardcoding http://.
+		scheme, certFile := "http", ""
+		if cfg.API.TLS.IsEnabled() {
+			scheme = "https"
+			certFile, _ = cfg.API.TLS.Paths()
+		}
+		fmt.Printf("export TURNOUT_API_SCHEME=%q\n", scheme)
+		fmt.Printf("export TURNOUT_API_TLS_CERT=%q\n", certFile)
+		return
+	}
+
+	if *rotateTLSKey {
+		if err := rotateAPITLSKey(cfg); err != nil {
+			slog.Error("rotate-tls-key", "err", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -219,6 +239,22 @@ func main() {
 		return
 	}
 
+	if *tlsInfo {
+		// Load only: an info command must not mint a key as a side effect.
+		if !cfg.API.TLS.IsEnabled() {
+			printTLSInfo(nil)
+			return
+		}
+		certFile, keyFile := cfg.API.TLS.Paths()
+		m, err := apitls.New(apitls.Options{CertFile: certFile, KeyFile: keyFile})
+		if err != nil {
+			slog.Error("api tls: no certificate yet — it is generated on the first start of turnout-gateway", "err", err)
+			os.Exit(1)
+		}
+		printTLSInfo(m)
+		return
+	}
+
 	// Bootstrap: write an initial mihomo config so the data plane can start
 	// before the first subscription refresh completes.
 	//
@@ -244,6 +280,39 @@ func main() {
 
 	if *renderOnce {
 		return
+	}
+
+	// API TLS. After --validate / --render-once: those also run on the
+	// operator's laptop (scripts/deploy.sh), where minting a key under
+	// /var/lib/turnout would fail — or worse, succeed and leave one behind.
+	apiTLS, err := newAPITLS(cfg)
+	if err != nil {
+		slog.Error("api tls", "err", err)
+		os.Exit(1)
+	}
+	if apiTLS != nil {
+		// Browsers that trusted the previous certificate will prompt again
+		// after a renewal; tell the operator before they notice. Pinned
+		// callers are unaffected (same key), and the message says so.
+		apiTLS.OnRenewed = func(fp string, notAfter time.Time) {
+			notifier.Emit(notify.Event{
+				Time:     time.Now(),
+				Severity: notify.SeverityInfo,
+				Type:     "api_tls_renewed",
+				Subject:  "控制面证书已续期",
+				Body: "新指纹 SHA-256: " + fp + "\n到期: " + notAfter.Format("2006-01-02") +
+					"\n浏览器需要重新确认一次；SPKI pin 不变，healthwatch / Makefile 不受影响。",
+			})
+		}
+		apiTLS.OnExpiring = func(notAfter time.Time) {
+			notifier.Emit(notify.Event{
+				Time:     time.Now(),
+				Severity: notify.SeverityUrgent,
+				Type:     "api_tls_expiring",
+				Subject:  "控制面证书即将到期（运维自备证书，不会自动续期）",
+				Body:     "到期: " + notAfter.Format("2006-01-02") + "，请更换 api.tls.cert_file / key_file 后重启 turnout-gateway。",
+			})
+		}
 	}
 
 	// Data-path asserter. Nil when there is no TPROXY path to assert
@@ -373,6 +442,7 @@ func main() {
 		Notifier:   notifier,
 		Asserter:   asserter,
 		Watchdog:   wd,
+		TLS:        apiTLS,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -390,8 +460,17 @@ func main() {
 		go wd.Run(ctx)
 	}
 
+	if apiTLS != nil {
+		go apiTLS.Run(ctx, 24*time.Hour)
+	}
+
 	go func() {
-		slog.Info("api listening", "addr", cfg.API.Listen)
+		if apiTLS != nil {
+			slog.Info("api listening", "addr", cfg.API.Listen, "scheme", "https",
+				"fingerprint", apiTLS.Fingerprint(), "spki_pin", apiTLS.SPKIPin())
+		} else {
+			slog.Info("api listening", "addr", cfg.API.Listen, "scheme", "http")
+		}
 		if err := srv.ListenAndServe(ctx); err != nil {
 			slog.Error("api server failed (fatal)", "err", err)
 			os.Exit(1)
@@ -452,6 +531,56 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("shutting down")
+}
+
+// newAPITLS builds the control plane's certificate manager from api.tls.
+// Returns nil when TLS is off (loopback-only listen; see config.validateAPI).
+func newAPITLS(cfg *config.Config) (*apitls.Manager, error) {
+	if !cfg.API.TLS.IsEnabled() {
+		return nil, nil
+	}
+	certFile, keyFile := cfg.API.TLS.Paths()
+	return apitls.New(apitls.Options{
+		CertFile:    certFile,
+		KeyFile:     keyFile,
+		AutoManaged: cfg.API.TLS.AutoManaged(),
+		SANs: func() []string {
+			return apitls.NodeSANs(cfg.Node.IngressIP, cfg.API.TLS.ExtraSANs)
+		},
+	})
+}
+
+func printTLSInfo(m *apitls.Manager) {
+	if m == nil {
+		fmt.Println("api.tls.enabled=false — the control plane speaks plain HTTP")
+		return
+	}
+	leaf := m.Leaf()
+	fmt.Printf("fingerprint_sha256=%s\n", m.Fingerprint())
+	fmt.Printf("spki_pin=sha256//%s\n", m.SPKIPin())
+	fmt.Printf("not_after=%s\n", leaf.NotAfter.Format(time.RFC3339))
+	sans := make([]string, 0, len(leaf.DNSNames)+len(leaf.IPAddresses))
+	sans = append(sans, leaf.DNSNames...)
+	for _, ip := range leaf.IPAddresses {
+		sans = append(sans, ip.String())
+	}
+	fmt.Printf("sans=%s\n", strings.Join(sans, " "))
+}
+
+// rotateAPITLSKey discards the auto-managed pair. Refuses in operator-
+// provided mode: those files are not ours to delete.
+func rotateAPITLSKey(cfg *config.Config) error {
+	if !cfg.API.TLS.AutoManaged() {
+		return fmt.Errorf("api.tls uses an operator-provided certificate (%s); replace it by hand", cfg.API.TLS.CertFile)
+	}
+	certFile, keyFile := cfg.API.TLS.Paths()
+	for _, p := range []string{keyFile, certFile} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	fmt.Printf("removed %s and %s — restart turnout-gateway to mint a new pair, then update every pinned caller (healthwatch restarts on its own; Makefile users re-read the pin)\n", keyFile, certFile)
+	return nil
 }
 
 func waitFor(ctx context.Context, d time.Duration) {

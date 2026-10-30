@@ -136,11 +136,16 @@ for HOST in "${HOSTS[@]}"; do
   # 2026-09-09 deploying 557ba03 to 92.
   AUTHOPT=""
   [ -n "${TURNOUT_TOKEN:-}" ] && AUTHOPT="Authorization: Bearer $TURNOUT_TOKEN"
+  # The API speaks HTTPS with a self-signed certificate (api.tls); pin its
+  # public key, read over this same SSH session. --refresh: a first deploy
+  # has just minted the key, and a stale cached pin would fail closed.
+  PIN=$(scripts/api-pin.sh --refresh "$REMOTE_USER@$HOST" 2>/dev/null || true)
+  [ -n "$PIN" ] || fail "$HOST: could not read the API certificate pin over ssh — check 'journalctl -u turnout-gateway'"
   if [ -n "$AUTHOPT" ]; then
-    DEPLOYED_VER=$(curl -s -m6 -H "$AUTHOPT" "http://$HOST:18080/api/proxies/active" \
+    DEPLOYED_VER=$(curl -s -m6 -k --pinnedpubkey "sha256//$PIN" -H "$AUTHOPT" "https://$HOST:18080/api/proxies/active" \
       | python3 -c "import sys,json;print(json.load(sys.stdin)['turnout']['gateway_version'])" 2>/dev/null || echo "API_UNREACHABLE")
   else
-    DEPLOYED_VER=$(curl -s -m6 "http://$HOST:18080/api/proxies/active" \
+    DEPLOYED_VER=$(curl -s -m6 -k --pinnedpubkey "sha256//$PIN" "https://$HOST:18080/api/proxies/active" \
       | python3 -c "import sys,json;print(json.load(sys.stdin)['turnout']['gateway_version'])" 2>/dev/null || echo "API_UNREACHABLE")
   fi
   if [ "$DEPLOYED_VER" = "API_UNREACHABLE" ]; then

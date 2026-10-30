@@ -1,6 +1,43 @@
 # Turnout · 道岔网关 API
 
-控制面 HTTP API。base URL：`http://<node-ip>:18080`（端口由 `api.listen` 控制）。
+控制面 HTTP API。base URL：`https://<node-ip>:18080`（端口由 `api.listen` 控制）。
+
+---
+
+## 传输：HTTPS（节点自签证书）
+
+`api.tls` 默认开启。18080 只说 TLS：
+
+- 证书由节点首次启动时自动生成（ECDSA P-256，397 天），放在
+  `/var/lib/turnout/api-tls/{key,cert}.pem`，到期前 30 天用**同一把私钥**自动续期，
+  本机地址变化时也会重签。`install.sh` / `make redeploy` 不碰这个目录。
+- 明文请求打到 18080：`GET` / `HEAD` 308 跳转到 `https://` 同路径；其他方法返回 400，
+  不跳转 —— 带 token 的明文请求已经泄露了 token，应当轮换。
+- `api.tls.enabled: false` 只允许回环监听；`api.tls.cert_file` + `key_file` 可换成运维自备
+  证书（只加载，不生成、不续期，到期前 30 天起每天发飞书告警）。
+
+**浏览器**：首次访问会报证书不受信任。点"继续"之前，先在浏览器里查看证书的 SHA-256 指纹，
+与带外渠道拿到的值核对：
+
+```bash
+make tls-info NODE=ops@<host>      # 打印 fingerprint_sha256 / spki_pin / sans / not_after
+```
+
+续期后指纹会变（飞书会推送新指纹），需要重新确认一次。
+
+**脚本 / 程序**：钉公钥（SPKI pin），续期不影响，只有 `--rotate-tls-key` 之后要更新：
+
+```bash
+# 节点本机：信任节点自己的证书文件
+curl --cacert /var/lib/turnout/api-tls/cert.pem https://127.0.0.1:18080/healthz
+# 笔记本：pin 经 ssh 读取（scripts/api-pin.sh，缓存在 .turnout/<host>.pin）
+curl -k --pinnedpubkey "sha256//$(scripts/api-pin.sh ops@<host>)" https://<host>:18080/healthz
+```
+
+`-k` 关闭的是证书链 / 名称校验，`--pinnedpubkey` 仍然生效：公钥不匹配时 curl 以 exit 90 中止。
+
+换私钥（怀疑泄露）：节点上 `turnout-gateway --rotate-tls-key`，重启服务，然后笔记本
+`make api-pin NODE=...` 刷新 pin；healthwatch 重启后自动读新证书。
 
 ---
 
@@ -406,10 +443,11 @@ override 不 sticky：NodeScorer 只管 default-pool 成员，不回写 selector
 
 ```bash
 # 追加一条 domain_suffix
-curl -s http://127.0.0.1:18080/api/whitelist \
+C="/var/lib/turnout/api-tls/cert.pem"
+curl -s --cacert $C https://127.0.0.1:18080/api/whitelist \
   | jq '.domain_suffix += ["new-tool.com"]' \
-  | curl -s -X PUT -H 'Content-Type: application/json' \
-      http://127.0.0.1:18080/api/whitelist -d @-
+  | curl -s --cacert $C -X PUT -H 'Content-Type: application/json' \
+      https://127.0.0.1:18080/api/whitelist -d @-
 ```
 
 ---
@@ -426,12 +464,20 @@ curl -s http://127.0.0.1:18080/api/whitelist \
   "ingress_iface": "ens18",
   "ingress_ip": "10.1.3.15",
   "api_listen": "0.0.0.0:18080",
-  "api_token_set": false
+  "api_token_set": false,
+  "api_tls": {
+    "auto_managed": true,
+    "not_after": "2027-12-01T10:00:00Z",
+    "sans": ["localhost", "node-a", "127.0.0.1", "::1", "10.1.3.15"]
+  }
 }
 ```
 
 `api_token_set` 只给布尔值，**不回显 token**：控制台需要知道控制面是否无鉴权，
 但不需要拿到密钥。
+
+`api_tls` 在 `api.tls.enabled: false` 时省略。**不含证书指纹**：指纹必须与带外渠道
+（`make tls-info`、飞书）核对，经被核对的连接本身送来的值证明不了什么。
 
 PUT body：`{"client_subnet": "10.1.3.0/24"}`。保存后同步执行：
 
@@ -680,7 +726,7 @@ pattern 见 `active_proxy.pool_filter`）。
 
 ```bash
 curl -H "Authorization: Bearer ..." \
-  "http://<node-ip>:18080/api/pool/terminal?ip=10.1.2.42"
+  "https://<node-ip>:18080/api/pool/terminal?ip=10.1.2.42"
 ```
 
 ```json
@@ -771,7 +817,7 @@ curl -H "Authorization: Bearer ..." \
 
 ```bash
 curl -H "Authorization: Bearer ..." \
-  "http://turnout-89:18080/api/pool/transitions?limit=20"
+  "https://turnout-89:18080/api/pool/transitions?limit=20"
 ```
 
 ```json
@@ -822,7 +868,7 @@ curl -H "Authorization: Bearer ..." \
 ```bash
 curl -X POST -H "Authorization: Bearer ..." -H "Content-Type: application/json" \
   -d '{"steps": 1, "quarantine_seconds": 3600}' \
-  http://turnout-89:18080/api/pool/rollback
+  https://turnout-89:18080/api/pool/rollback
 ```
 
 请求体（全部可选）：
@@ -892,7 +938,7 @@ curl -X POST -H "Authorization: Bearer ..." -H "Content-Type: application/json" 
     "secret": "your-signing-secret",
     "signature_required": true
   }' \
-  http://turnout-89:18080/api/notifications/lark
+  https://turnout-89:18080/api/notifications/lark
 ```
 
 字段：
@@ -920,7 +966,7 @@ curl -X POST -H "Authorization: Bearer ..." -H "Content-Type: application/json" 
 
 ```bash
 curl -X DELETE -H "Authorization: Bearer ..." \
-  http://turnout-89:18080/api/notifications/lark
+  https://turnout-89:18080/api/notifications/lark
 ```
 
 返回：post-deletion 的 `Status` body，可见 `webhook_configured: false`。
@@ -933,7 +979,7 @@ curl -X DELETE -H "Authorization: Bearer ..." \
 
 ```bash
 curl -X POST -H "Authorization: Bearer ..." \
-  http://turnout-89:18080/api/notifications/test
+  https://turnout-89:18080/api/notifications/test
 ```
 
 成功：
@@ -956,7 +1002,7 @@ curl -X POST -H "Authorization: Bearer ..." \
 
 ```bash
 curl -H "Authorization: Bearer ..." \
-  "http://turnout-89:18080/api/notifications/recent?limit=20"
+  "https://turnout-89:18080/api/notifications/recent?limit=20"
 ```
 
 ```json
@@ -1014,7 +1060,9 @@ curl -H "Authorization: Bearer ..." \
 ## 常用速查
 
 ```bash
-BASE=http://<node-ip>:18080
+BASE=https://<node-ip>:18080
+# 自签证书：钉公钥（pin 经 ssh 读取，见上文"传输"一节）
+curl() { command curl -k --pinnedpubkey "sha256//$(scripts/api-pin.sh ops@<node-ip>)" "$@"; }
 
 # 状态
 curl -s $BASE/api/status | jq .

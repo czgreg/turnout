@@ -99,7 +99,10 @@ HDR=""
 [ -n "${TURNOUT_TOKEN:-}" ] && HDR="-H \"Authorization: Bearer $TURNOUT_TOKEN\""
 RESP=""
 for i in 1 2 3; do
-  RESP=$($SSH "curl -s --max-time 6 $HDR http://127.0.0.1:18080/api/proxies/active" 2>/dev/null || true)
+  # https with the node's own certificate (api.tls); cert.pem is 0644 so no
+  # sudo is needed to read it. Falls back to http for a node that still runs
+  # a pre-TLS binary (the redirect there would be an empty body → retry).
+  RESP=$($SSH "curl -s --max-time 6 $HDR --cacert /var/lib/turnout/api-tls/cert.pem https://127.0.0.1:18080/api/proxies/active 2>/dev/null || curl -s --max-time 6 $HDR http://127.0.0.1:18080/api/proxies/active" 2>/dev/null || true)
   [ -n "$RESP" ] && break
   sleep 3
 done

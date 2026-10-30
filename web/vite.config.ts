@@ -9,13 +9,15 @@ const CSP =
   "connect-src *; img-src 'self' data:; form-action 'none'; frame-ancestors 'none'";
 
 // Modes:
-//   npm run dev      proxy /api + /healthz to LEAP_API (default an ssh -L tunnel on :18080)
+//   npm run dev      proxy /api + /healthz to LEAP_API (default an ssh -L tunnel on :18080;
+//                    the node speaks HTTPS with a self-signed certificate, so the
+//                    proxy skips verification — the hop is inside the SSH tunnel)
 //   npm run mock     fake in-memory node, no backend needed
 //   npm run build    write the production bundle into internal/api/ui/ (go:embed)
 //   npm run preview  serve that bundle with the production CSP + the mock API
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'LEAP_');
-  const target = env.LEAP_API || 'http://127.0.0.1:18080';
+  const target = env.LEAP_API || 'https://127.0.0.1:18080';
   const mock = mode === 'mock';
 
   return {
@@ -36,7 +38,12 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
-      proxy: mock ? undefined : { '/api': target, '/healthz': target },
+      proxy: mock
+        ? undefined
+        : {
+            '/api': { target, secure: false },
+            '/healthz': { target, secure: false },
+          },
     },
     preview: {
       headers: { 'Content-Security-Policy': CSP },

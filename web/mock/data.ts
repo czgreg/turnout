@@ -462,6 +462,11 @@ export function network(): NodeNetwork {
     ingress_ip: '10.1.3.15',
     api_listen: '0.0.0.0:18080',
     api_token_set: false,
+    api_tls: {
+      auto_managed: true,
+      not_after: '2027-12-01T10:00:00Z',
+      sans: ['localhost', 'node-a', '127.0.0.1', '::1', '10.1.3.15'],
+    },
   };
 }
 

@@ -8,7 +8,8 @@
 #   make deploy NODE=ops@<host>      # binary-only deploy (~10s)
 #   make deploy-yaml NODE=ops@<host> # 仅推 gateway.yaml（不换二进制）
 #   make redeploy NODE=ops@<host>    # ★ 全量重装（先拉节点 yaml + stage + install）
-#   make status NODE=ops@<host>      # /api/status
+#   make status NODE=ops@<host>      # /api/status（https，钉节点证书公钥）
+#   make tls-info NODE=ops@<host>    # 控制面证书指纹（浏览器首次访问前核对）
 #   make health NODE=ops@<host>      # /api/proxies/active
 #   make nodes  NODE=ops@<host>      # /api/nodes/health
 #   make logs   NODE=ops@<host>      # tail turnout-gateway 日志
@@ -21,7 +22,14 @@
 
 NODE        ?=
 NODE_HOST   := $(word 2,$(subst @, ,$(NODE)))
-TURNOUT_API    ?= http://$(NODE_HOST):18080
+TURNOUT_API    ?= https://$(NODE_HOST):18080
+# The control plane's certificate is self-signed (api.tls), so laptop-side
+# curls pin its public key instead of trusting a CA. Recursive (`?=`), so the
+# ssh round-trip in api-pin.sh only happens for targets that call the API; the
+# pin is cached in .turnout/<host>.pin. After `--rotate-tls-key` on the node
+# curl exits 90 — run `make api-pin NODE=...` to refresh.
+TURNOUT_PIN    ?= $(shell scripts/api-pin.sh $(NODE))
+TURNOUT_CURL    = curl -s --max-time 5 -k --pinnedpubkey "sha256//$(TURNOUT_PIN)" $(TURNOUT_AUTH)
 # Bearer token for the control-plane API (api.token in gateway.yaml).
 # Empty → no Authorization header, which is correct only when the node
 # also leaves api.token empty. Export TURNOUT_TOKEN in your shell or pass
@@ -119,11 +127,11 @@ deploy-full-LOCAL-YAML: check-node stage  ## ⚠️ 全量重装，使用本地 
 
 .PHONY: status
 status: check-node  ## GET /api/status
-	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/status | python3 -m json.tool
+	@$(TURNOUT_CURL) $(TURNOUT_API)/api/status | python3 -m json.tool
 
 .PHONY: health
 health: check-node  ## GET /api/proxies/active
-	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/proxies/active | python3 -m json.tool
+	@$(TURNOUT_CURL) $(TURNOUT_API)/api/proxies/active | python3 -m json.tool
 
 .PHONY: observe
 # observe.sh runs on the node; its knobs must be exported INSIDE the remote
@@ -153,11 +161,20 @@ verify: check-node  ## 旁挂验收：入向/回程/TPROXY/自检/分流/池/产
 
 .PHONY: watchdog
 watchdog: check-node  ## GET /api/watchdog/status（旁挂健康；不健康时 HTTP 503 但仍带 body）
-	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/watchdog/status | python3 -m json.tool
+	@$(TURNOUT_CURL) $(TURNOUT_API)/api/watchdog/status | python3 -m json.tool
 
 .PHONY: nodes
 nodes: check-node  ## GET /api/nodes/health (probe + passive stats)
-	@curl -s --max-time 5 $(TURNOUT_AUTH) $(TURNOUT_API)/api/nodes/health | python3 -m json.tool
+	@$(TURNOUT_CURL) $(TURNOUT_API)/api/nodes/health | python3 -m json.tool
+
+.PHONY: api-pin
+api-pin: check-node  ## 重新读取节点证书公钥 pin（--rotate-tls-key 之后用）  NODE=ops@<host>
+	@scripts/api-pin.sh --refresh $(NODE)
+
+.PHONY: tls-info
+tls-info: check-node  ## 节点控制面证书：SHA-256 指纹 / SPKI pin / SAN / 到期（浏览器首次访问前核对指纹）
+	@# sudo -n bash -c: the deploy sudoers drop-in allows /bin/bash, not the binary.
+	@$(SSH) 'sudo -n bash -c "/usr/local/bin/turnout-gateway --config /etc/turnout/gateway.yaml --tls-info 2>/dev/null"'
 
 .PHONY: logs
 logs: check-node  ## tail turnout-gateway 日志

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/turnout-gateway/turnout-gateway/internal/config"
 )
@@ -25,18 +26,43 @@ type NodeNetwork struct {
 	IngressIP    string `json:"ingress_ip"`     // node.ingress_ip
 	APIListen    string `json:"api_listen"`     // api.listen
 	APITokenSet  bool   `json:"api_token_set"`  // false → anyone who can reach the port can drive the control plane
+	// APITLS describes the certificate the control plane presents, nil when
+	// api.tls.enabled=false. The fingerprint is deliberately NOT here: an
+	// operator must compare it against an out-of-band copy (ssh, Lark), and
+	// a value served by the very connection under suspicion proves nothing.
+	APITLS *NodeAPITLS `json:"api_tls,omitempty"`
 	// AppliedAt is deliberately absent: it would suggest the node re-reads
 	// gateway.yaml on its own, which it does not — see applyNetworkChange.
 }
 
+// NodeAPITLS is the public part of the API certificate's state.
+type NodeAPITLS struct {
+	AutoManaged bool     `json:"auto_managed"` // node mints + renews; false = operator-provided files
+	NotAfter    string   `json:"not_after"`    // RFC 3339
+	SANs        []string `json:"sans"`
+}
+
 func (s *Server) handleNodeNetworkGet(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, NodeNetwork{
+	out := NodeNetwork{
 		ClientSubnet: s.deps.Cfg.Node.ClientSubnet,
 		IngressIface: s.deps.Cfg.Node.IngressIface,
 		IngressIP:    s.deps.Cfg.Node.IngressIP,
 		APIListen:    s.deps.Cfg.API.Listen,
 		APITokenSet:  strings.TrimSpace(s.deps.Cfg.API.Token) != "",
-	})
+	}
+	if m := s.deps.TLS; m != nil {
+		leaf := m.Leaf()
+		sans := append([]string(nil), leaf.DNSNames...)
+		for _, ip := range leaf.IPAddresses {
+			sans = append(sans, ip.String())
+		}
+		out.APITLS = &NodeAPITLS{
+			AutoManaged: s.deps.Cfg.API.TLS.AutoManaged(),
+			NotAfter:    leaf.NotAfter.UTC().Format(time.RFC3339),
+			SANs:        sans,
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleNodeNetworkPut answers PUT /api/node/network {"client_subnet": "..."}.

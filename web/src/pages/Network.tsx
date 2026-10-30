@@ -161,6 +161,24 @@ export default function NetworkPage({ snap, reload }: { snap: Snapshot; reload: 
                 { label: '入口网卡', value: net?.ingress_iface || <span className="dim">—</span> },
                 { label: '入口地址', value: net?.ingress_ip || <span className="dim">—</span> },
                 { label: '监听地址', value: net?.api_listen || <span className="dim">—</span> },
+                {
+                  label: '控制面证书',
+                  value: net?.api_tls ? (
+                    <span>
+                      {net.api_tls.auto_managed ? '自签（自动续期）' : '运维自备'}，到期 {net.api_tls.not_after.slice(0, 10)}
+                    </span>
+                  ) : (
+                    <span className="err">未启用 TLS（仅限回环监听）</span>
+                  ),
+                },
+                {
+                  label: '证书 SAN',
+                  value: net?.api_tls?.sans?.length ? (
+                    <span className="small">{net.api_tls.sans.join('  ')}</span>
+                  ) : (
+                    <span className="dim">—</span>
+                  ),
+                },
               ]}
             />
           </Col>
@@ -198,7 +216,7 @@ export default function NetworkPage({ snap, reload }: { snap: Snapshot; reload: 
             },
             {
               label: '本机 18080',
-              value: '目的地址是本机的流量不经过代理（TPROXY 链首条 --dst-type LOCAL 返回），该网段可直接访问控制面',
+              value: '目的地址是本机的流量不经过代理（TPROXY 链首条 --dst-type LOCAL 返回），该网段可直接访问控制面 —— 只走 HTTPS，明文请求会被跳转或拒绝',
             },
           ]}
         />
