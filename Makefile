@@ -10,6 +10,8 @@
 #   make redeploy NODE=ops@<host>    # ★ 全量重装（先拉节点 yaml + stage + install）
 #   make status NODE=ops@<host>      # /api/status（https，钉节点证书公钥）
 #   make tls-info NODE=ops@<host>    # 控制面证书指纹（浏览器首次访问前核对）
+#   make setup-code NODE=ops@<host>  # 一次性 setup code（控制台初始化页要用）
+#   make reset-token NODE=ops@<host> # 忘记 token：删掉并重启，回到 setup 状态
 #   make health NODE=ops@<host>      # /api/proxies/active
 #   make nodes  NODE=ops@<host>      # /api/nodes/health
 #   make logs   NODE=ops@<host>      # tail turnout-gateway 日志
@@ -30,12 +32,14 @@ TURNOUT_API    ?= https://$(NODE_HOST):18080
 # curl exits 90 — run `make api-pin NODE=...` to refresh.
 TURNOUT_PIN    ?= $(shell scripts/api-pin.sh $(NODE))
 TURNOUT_CURL    = curl -s --max-time 5 -k --pinnedpubkey "sha256//$(TURNOUT_PIN)" $(TURNOUT_AUTH)
-# Bearer token for the control-plane API (api.token in gateway.yaml).
-# Empty → no Authorization header, which is correct only when the node
-# also leaves api.token empty. Export TURNOUT_TOKEN in your shell or pass
-# `make TURNOUT_TOKEN=... status`.
-TURNOUT_TOKEN  ?=
-TURNOUT_AUTH   := $(if $(TURNOUT_TOKEN),-H "Authorization: Bearer $(TURNOUT_TOKEN)",)
+# Bearer token for the control-plane API. Every /api/* needs it. Default:
+# read the node's token file (api.token_file, 0600 root) over ssh with the
+# deploy user's sudo — the same authority that could reset it anyway.
+# Export TURNOUT_TOKEN to override, e.g. for a node still on a legacy
+# api.token in gateway.yaml. Recursive (`?=` / `=`) so the ssh round-trip
+# only happens for targets that call the API.
+TURNOUT_TOKEN  ?= $(shell $(SSH) "sudo -n bash -c 'tr -d \"[:space:]\" < /var/lib/turnout/api-token 2>/dev/null'" 2>/dev/null)
+TURNOUT_AUTH    = $(if $(TURNOUT_TOKEN),-H "Authorization: Bearer $(TURNOUT_TOKEN)",)
 GATEWAY_YAML?= ./gateway.yaml
 GOOS        ?= linux
 GOARCH      ?= amd64
@@ -170,6 +174,15 @@ nodes: check-node  ## GET /api/nodes/health (probe + passive stats)
 .PHONY: api-pin
 api-pin: check-node  ## 重新读取节点证书公钥 pin（--rotate-tls-key 之后用）  NODE=ops@<host>
 	@scripts/api-pin.sh --refresh $(NODE)
+
+.PHONY: setup-code
+setup-code: check-node  ## 打印节点的一次性 setup code + 证书指纹（控制台初始化页要用）  NODE=ops@<host>
+	@$(SSH) 'sudo -n bash -c "cat /var/lib/turnout/api-setup-code 2>/dev/null || echo \"no setup code: the node already has a token (use the console to rotate, or make reset-token)\""'
+
+.PHONY: reset-token
+reset-token: check-node  ## ⚠️ 删除节点 API token 并重启，节点回到 setup 状态（忘记 token 时唯一的恢复路径）  NODE=ops@<host>
+	$(SSH) 'sudo -n bash -c "/usr/local/bin/turnout-gateway --config /etc/turnout/gateway.yaml --reset-api-token && systemctl restart turnout-gateway"'
+	@echo "node is in setup mode now: make setup-code NODE=$(NODE), then initialise at https://$(NODE_HOST):18080/ui/"
 
 .PHONY: tls-info
 tls-info: check-node  ## 节点控制面证书：SHA-256 指纹 / SPKI pin / SAN / 到期（浏览器首次访问前核对指纹）

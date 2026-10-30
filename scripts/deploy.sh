@@ -134,8 +134,12 @@ for HOST in "${HOSTS[@]}"; do
   # looked failed while production was actually fine. Same bug and same fix
   # as scripts/redeploy-full.sh:88-92; this copy was missed then, and bit on
   # 2026-09-09 deploying 557ba03 to 92.
+  # Token: TURNOUT_TOKEN if exported (legacy api.token nodes), else the
+  # node's token file read over ssh — the deploy user already has sudo bash.
+  TOKEN="${TURNOUT_TOKEN:-}"
+  [ -n "$TOKEN" ] || TOKEN=$($SSH "sudo -n bash -c 'tr -d \"[:space:]\" < /var/lib/turnout/api-token 2>/dev/null'" 2>/dev/null || true)
   AUTHOPT=""
-  [ -n "${TURNOUT_TOKEN:-}" ] && AUTHOPT="Authorization: Bearer $TURNOUT_TOKEN"
+  [ -n "$TOKEN" ] && AUTHOPT="Authorization: Bearer $TOKEN"
   # The API speaks HTTPS with a self-signed certificate (api.tls); pin its
   # public key, read over this same SSH session. --refresh: a first deploy
   # has just minted the key, and a stale cached pin would fail closed.
@@ -149,6 +153,12 @@ for HOST in "${HOSTS[@]}"; do
       | python3 -c "import sys,json;print(json.load(sys.stdin)['turnout']['gateway_version'])" 2>/dev/null || echo "API_UNREACHABLE")
   fi
   if [ "$DEPLOYED_VER" = "API_UNREACHABLE" ]; then
+    # A node without a token is up but closed (setup mode) — pending
+    # initialisation, not a failed deploy.
+    if curl -s -m6 -k --pinnedpubkey "sha256//$PIN" "https://$HOST:18080/api/auth/state" 2>/dev/null | grep -q '"setup"'; then
+      ok "  $HOST is up and WAITING FOR SETUP — make tls-info / make setup-code NODE=$REMOTE_USER@$HOST, then initialise at https://$HOST:18080/ui/"
+      continue
+    fi
     fail "$HOST: API unreachable after restart — check 'journalctl -u turnout-gateway'"
   fi
   ok "  $HOST running version $DEPLOYED_VER"

@@ -10,9 +10,14 @@
 
 api:
   # [不变] 18080。沿用上游默认端口，省得改文档与部署脚本。
-  # 默认只监听本机；需要远程访问改 "0.0.0.0:18080"，并且**必须**配 token。
+  # 默认只监听本机；需要远程访问改 "0.0.0.0:18080"（HTTPS + 强制 token 保护）。
   listen: "127.0.0.1:18080"
-  # token: "change-me"
+
+  # [改] token 不再写在这里。节点首次启动没有 token 时进入 setup 状态（所有 /api/* 401），
+  # 在控制台 /ui/ 初始化：浏览器生成 token + 节点上的一次性 setup code（make setup-code）。
+  # token 存在节点本地 token_file（0600），不随 make redeploy 离开节点。
+  # token_file: /var/lib/turnout/api-token
+  # token: ""             # 旧方式，仍兼容；控制台轮换一次后自动清空
 
   # [新] 控制面走 HTTPS。默认开启，留空即可：节点首次启动时在
   # /var/lib/turnout/api-tls/ 生成自签证书（397 天），到期前 30 天同一把私钥自动续期。

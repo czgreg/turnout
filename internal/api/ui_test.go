@@ -218,3 +218,14 @@ func extractAPIPaths(src string) []string {
 	}
 	return out
 }
+
+// The browser generates the token and the server only checks its shape, so
+// the two patterns must agree; a drift would make every setup fail with
+// invalid_token_format.
+func TestUITokenPatternMatchesServer(t *testing.T) {
+	src := readUISource(t, "token.ts")
+	want := "/" + tokenPattern.String() + "/"
+	if !strings.Contains(src, want) {
+		t.Errorf("web/src/token.ts TOKEN_PATTERN must be %s (internal/api/auth.go tokenPattern)", want)
+	}
+}

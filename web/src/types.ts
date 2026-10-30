@@ -406,7 +406,23 @@ export interface NodeNetwork {
   ingress_ip?: string;
   api_listen?: string;
   api_token_set: boolean;
+  /** "file" = node-local token file (set by the console); "yaml" = legacy api.token. */
+  api_token_source?: 'file' | 'yaml';
   api_tls?: NodeAPITLS;
+}
+
+/* ── Auth state (GET /api/auth/state, unauthenticated) ───────────────────
+ *
+ * setup: the node has no token; every other /api/* answers 401
+ * setup_required. setup_code_hint is the file on the node holding the
+ * one-time code; lark_delivered says it was also sent to the ops group.
+ * The code itself is never in this response.
+ */
+export interface AuthState {
+  state: 'setup' | 'active';
+  setup_code_hint?: string;
+  lark_delivered?: boolean;
+  token_source?: 'file' | 'yaml';
 }
 
 /* ── Node signal (GET /api/node/signal) ──────────────────────────────────

@@ -43,13 +43,50 @@ curl -k --pinnedpubkey "sha256//$(scripts/api-pin.sh ops@<host>)" https://<host>
 
 ## 认证
 
-`gateway.yaml` 配置 `api.token` 后，除 `/healthz` 外所有端点需要：
+除 `/healthz`、`/ui/`、`GET /api/auth/state`、`POST /api/auth/setup` 外，所有端点需要：
 
 ```
 Authorization: Bearer <token>
 ```
 
-token 为空时不鉴权。
+**没有"不鉴权"模式。** 节点没有 token 时处于 **setup 状态**：其余 `/api/*` 一律返回
+`401 {"error":"setup_required"}`，直到操作者在控制台完成初始化。
+
+**token 存放**：节点本地 `api.token_file`（默认 `/var/lib/turnout/api-token`，0600 root），
+不写进 `gateway.yaml`（`make redeploy` 会把 yaml 拉到笔记本）。旧节点 yaml 里的
+`api.token` 仍然有效，第一次轮换后被清空。文件优先于 yaml。
+
+**token 格式**：`tgw_` + 32 字节随机数的 base64url（共 47 字符），由浏览器生成，服务端只校验格式。
+
+### 初始化（setup）
+
+1. 节点启动时没有 token → 生成一次性 **setup code**（100 bit，`XXXX-XXXX-XXXX-XXXX-XXXX`），
+   写入 `/var/lib/turnout/api-setup-code`（0600，同时附上证书指纹）；配置了飞书则一并推送。
+   journal 只记文件路径，不记 code。每次重启重新生成，用完即删。
+2. 操作者核对浏览器里的证书指纹（`make tls-info`），在 `/ui/` 的初始化页生成 token、确认已保存、
+   填入 setup code（`make setup-code NODE=...`），点"确认启用"。
+
+只靠点击不行：节点刚部署、还没 token 时，内网里谁先打开页面谁就能抢先设 token。setup code
+证明操作者能登录节点或在运维飞书群里。
+
+### 恢复
+
+忘记 token：`make reset-token NODE=...`（节点上执行 `turnout-gateway --reset-api-token` 并重启），
+节点回到 setup 状态。需要 SSH + sudo，这是故意的。
+
+### 告警
+
+- 同一来源 10 分钟内鉴权失败 ≥5 次 → 飞书告警一次（不封禁：token 和 setup code 都 ≥100 bit，
+  限速没有意义，告警的价值是发现有人在试）。
+- 初始化完成、轮换 → 飞书通知（含来源 IP）。
+
+### 脚本怎么拿 token
+
+| 调用方 | 来源 |
+|---|---|
+| 节点上的 healthwatch | 每次采样重读 `api.token_file`，轮换后无需重启 |
+| 节点上的 `observe.sh` / `verify-bypass.sh` / `pool-monitor.py` | 以 root 运行，读 token 文件 |
+| 笔记本 `make status` 等、`deploy.sh` | 经 ssh + sudo 读节点 token 文件；`export TURNOUT_TOKEN` 可覆盖（旧 yaml token 节点需要） |
 
 ---
 
@@ -59,6 +96,10 @@ token 为空时不鉴权。
 |---|---|---|---|
 | GET | `/healthz` | 可达性探测 | 无 |
 | GET | `/ui/` | Web 控制台（静态页面） | 无 |
+| GET | `/api/auth/state` | `setup` / `active`（不含任何秘密） | 无 |
+| POST | `/api/auth/setup` | 初始化：`{"token","setup_code"}`，仅 setup 状态 | setup code |
+| POST | `/api/auth/rotate` | 轮换：`{"token"}`，旧 token 立即失效 | ✓ |
+| GET | `/api/auth/check` | 登录探测，204 | ✓ |
 | GET | `/api/status` | 节点总体状态 + 容量 | ✓ |
 | GET | `/api/nodes` | 全量节点列表 | ✓ |
 | GET | `/api/nodes/health` | NodeScorer 评分 + probe + passive stats | ✓ |
@@ -1048,7 +1089,8 @@ curl -H "Authorization: Bearer ..." \
 | 状态 | 含义 |
 |---|---|
 | 400 | 请求体非法 / 字段格式错 / tag 不在 catalog |
-| 401 | token 缺失或不匹配 |
+| 401 | `unauthorized`：token 缺失或不匹配；`setup_required`：节点未初始化；`invalid_setup_code` |
+| 409 | `already_initialized`：重复初始化 |
 | 404 | 资源不存在 |
 | 409 | 资源冲突（订阅名重复） |
 | 500 | 持久化 / 渲染 / reload 失败 |

@@ -281,7 +281,7 @@ func (s *sampler) sample(ctx context.Context, now time.Time, window time.Duratio
 
 	// 1. Data-path assertion verdict.
 	var h healthResp
-	code, hms, err := getJSON(ctx, s.api, "/healthz", &h, s.token)
+	code, hms, err := getJSON(ctx, s.api, "/healthz", &h, s.currentToken())
 	sample.Health.LatencyMs = hms
 	switch {
 	case err != nil:
@@ -302,7 +302,7 @@ func (s *sampler) sample(ctx context.Context, now time.Time, window time.Duratio
 
 	// 2. Pool status.
 	var st statusResp
-	if _, _, err := getJSON(ctx, s.api, "/api/status", &st, s.token); err != nil {
+	if _, _, err := getJSON(ctx, s.api, "/api/status", &st, s.currentToken()); err != nil {
 		addErr("status: %v", err)
 	} else {
 		sample.Pool = &PoolPart{
@@ -315,13 +315,13 @@ func (s *sampler) sample(ctx context.Context, now time.Time, window time.Duratio
 
 	// 3. Watchdog verdict.
 	var wd watchdogResp
-	if _, _, err := getJSON(ctx, s.api, "/api/watchdog/status", &wd, s.token); err == nil {
+	if _, _, err := getJSON(ctx, s.api, "/api/watchdog/status", &wd, s.currentToken()); err == nil {
 		sample.Watchdog = &Watchdog{Enabled: wd.Enabled, State: wd.State, Failing: wd.Failing}
 	}
 
 	// 4. In-pool node health.
 	var nr nodesResp
-	if _, _, err := getJSON(ctx, s.api, "/api/nodes/health", &nr, s.token); err != nil {
+	if _, _, err := getJSON(ctx, s.api, "/api/nodes/health", &nr, s.currentToken()); err != nil {
 		addErr("nodes/health: %v", err)
 	} else {
 		for _, n := range nr.Nodes {
@@ -343,7 +343,7 @@ func (s *sampler) sample(ctx context.Context, now time.Time, window time.Duratio
 
 	// 5. Churn: transitions recorded in this interval + rolling windows.
 	var tr transitionsResp
-	if _, _, err := getJSON(ctx, s.api, "/api/pool/transitions?limit=200", &tr, s.token); err != nil {
+	if _, _, err := getJSON(ctx, s.api, "/api/pool/transitions?limit=200", &tr, s.currentToken()); err != nil {
 		addErr("transitions: %v", err)
 	} else {
 		ch := &ChurnPart{}
@@ -377,7 +377,7 @@ func (s *sampler) sample(ctx context.Context, now time.Time, window time.Duratio
 	if s.probeIP != "" {
 		var term terminalResp
 		path := "/api/pool/terminal?ip=" + url.QueryEscape(s.probeIP)
-		if _, _, err := getJSON(ctx, s.api, path, &term, s.token); err != nil {
+		if _, _, err := getJSON(ctx, s.api, path, &term, s.currentToken()); err != nil {
 			addErr("terminal: %v", err)
 		} else if term.GroupName != "" || term.Primary != nil {
 			t := &TermPart{IP: term.IP, Group: term.GroupName, ActiveNode: term.ActiveNode}

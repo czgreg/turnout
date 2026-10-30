@@ -25,7 +25,10 @@ type NodeNetwork struct {
 	IngressIface string `json:"ingress_iface"`  // node.ingress_iface
 	IngressIP    string `json:"ingress_ip"`     // node.ingress_ip
 	APIListen    string `json:"api_listen"`     // api.listen
-	APITokenSet  bool   `json:"api_token_set"`  // false → anyone who can reach the port can drive the control plane
+	APITokenSet  bool   `json:"api_token_set"`  // false → setup state (every /api/* is closed until initialised)
+	// APITokenSource is "file" (api.token_file, set by the console) or
+	// "yaml" (legacy api.token, travels with gateway.yaml — rotate it).
+	APITokenSource string `json:"api_token_source,omitempty"`
 	// APITLS describes the certificate the control plane presents, nil when
 	// api.tls.enabled=false. The fingerprint is deliberately NOT here: an
 	// operator must compare it against an out-of-band copy (ssh, Lark), and
@@ -48,7 +51,10 @@ func (s *Server) handleNodeNetworkGet(w http.ResponseWriter, _ *http.Request) {
 		IngressIface: s.deps.Cfg.Node.IngressIface,
 		IngressIP:    s.deps.Cfg.Node.IngressIP,
 		APIListen:    s.deps.Cfg.API.Listen,
-		APITokenSet:  strings.TrimSpace(s.deps.Cfg.API.Token) != "",
+		APITokenSet:  s.deps.Auth != nil && !s.deps.Auth.InSetup(),
+	}
+	if s.deps.Auth != nil {
+		out.APITokenSource = s.deps.Auth.Source()
 	}
 	if m := s.deps.TLS; m != nil {
 		leaf := m.Leaf()

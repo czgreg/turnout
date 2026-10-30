@@ -41,17 +41,25 @@ EXPECT_SRC="${EXPECT_SRC:-}"
 # The control plane speaks HTTPS with a self-signed certificate (api.tls);
 # /etc/turnout/env names the scheme and the certificate file. Without the
 # env file (older install) fall back to plain http.
-API_SCHEME=http; API_CACERT=""
+API_SCHEME=http; API_CACERT=""; API_TOKEN_FILE=/var/lib/turnout/api-token
 if [ -f /etc/turnout/env ]; then
   API_SCHEME=$(. /etc/turnout/env 2>/dev/null; printf '%s' "${TURNOUT_API_SCHEME:-http}")
   API_CACERT=$(. /etc/turnout/env 2>/dev/null; printf '%s' "${TURNOUT_API_TLS_CERT:-}")
+  API_TOKEN_FILE=$(. /etc/turnout/env 2>/dev/null; printf '%s' "${TURNOUT_API_TOKEN_FILE:-/var/lib/turnout/api-token}")
 fi
+# Every /api/* needs the bearer; observe runs under sudo, so it reads the
+# node's token file. /healthz stays unauthenticated.
+API_TOKEN="${TURNOUT_TOKEN:-}"
+[ -z "$API_TOKEN" ] && [ -r "$API_TOKEN_FILE" ] && API_TOKEN=$(tr -d '[:space:]' < "$API_TOKEN_FILE")
 API="${API_SCHEME}://127.0.0.1:${API_PORT}"
 CLASH="http://127.0.0.1:${CLASH_PORT}"
 # api_curl — curl against $API trusting exactly the node's own certificate.
 api_curl() {
-  if [ "$API_SCHEME" = "https" ] && [ -n "$API_CACERT" ]; then
-    curl --cacert "$API_CACERT" "$@"
+  local -a extra=()
+  [ "$API_SCHEME" = "https" ] && [ -n "$API_CACERT" ] && extra+=(--cacert "$API_CACERT")
+  [ -n "$API_TOKEN" ] && extra+=(-H "Authorization: Bearer $API_TOKEN")
+  if [ "${#extra[@]}" -gt 0 ]; then
+    curl "${extra[@]}" "$@"
   else
     curl "$@"
   fi
