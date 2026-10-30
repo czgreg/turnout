@@ -186,7 +186,8 @@ reset-token: check-node  ## ⚠️ 删除节点 API token 并重启，节点回�
 
 .PHONY: tls-info
 tls-info: check-node  ## 节点控制面证书：SHA-256 指纹 / SPKI pin / SAN / 到期（浏览器首次访问前核对指纹）
-	$(SSH) 'sudo /usr/local/bin/turnout-gateway --config /etc/turnout/gateway.yaml --tls-info'
+	@# sudo -n bash -c: the deploy sudoers drop-in allows /bin/bash, not the binary.
+	@$(SSH) 'sudo -n bash -c "/usr/local/bin/turnout-gateway --config /etc/turnout/gateway.yaml --tls-info 2>/dev/null"'
 
 .PHONY: logs
 logs: check-node  ## tail turnout-gateway 日志
