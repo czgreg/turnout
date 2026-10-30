@@ -478,7 +478,11 @@ else
     fi
   fi
 
-  last_rule=$(grep -E '^\s*- (MATCH|GEOIP|RULE-SET|IP-CIDR|DOMAIN)' "$CFG" 2>/dev/null | tail -1)
+  # Only the top-level `rules:` block: `sub-rules:` (per-terminal mode) is
+  # rendered after it and every sub-rule ends in its own MATCH,<pool>, so a
+  # whole-file grep picked up `MATCH,ai-pool` and failed a correct config.
+  last_rule=$(awk '/^rules:/{on=1; next} /^[^[:space:]-]/{on=0} on' "$CFG" 2>/dev/null \
+    | grep -E '^\s*- (MATCH|GEOIP|RULE-SET|IP-CIDR|DOMAIN)' | tail -1)
   case "$last_rule" in
     *MATCH,DIRECT*) ok "规则兜底是 MATCH,DIRECT（未命中白名单的流量交还防火墙）" ;;
     *MATCH*)        bad "规则兜底不是 DIRECT：$last_rule —— 白名单模式应以 MATCH,DIRECT 结束" ;;
