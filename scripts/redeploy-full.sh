@@ -15,6 +15,15 @@
 # Env:
 #   REMOTE_USER       SSH user (REQUIRED — no default)
 #   GOARCH            target arch (default amd64)
+#
+# The pulled yaml carries every subscription URL with its credentials. It
+# lands in three places on this machine (the pull, build/turnout-stage/, and
+# inside build/turnout-stage.tgz) and two on the node (the shipped tarball
+# and its extracted copy under /tmp, both world-readable). All of them are
+# deleted when this script ends — success, failure or interrupt. The
+# repository usually sits in a synced folder, so a copy left in build/ does
+# not stay on this machine. /etc/turnout/gateway.yaml and its 0640 .bak.<ts>
+# on the node are the only copies that are meant to persist.
 
 set -euo pipefail
 
@@ -28,6 +37,19 @@ REMOTE_USER="${REMOTE_USER:?set REMOTE_USER (e.g. REMOTE_USER=ops)}"
 GOARCH="${GOARCH:-amd64}"
 TS=$(date -u +%Y%m%d-%H%M%S)
 PULLED_YAML="/tmp/gw-${HOST}-${TS}.yaml"
+STAGE_YAML="$REPO_ROOT/build/turnout-stage/gateway.yaml"
+TARBALL="$REPO_ROOT/build/turnout-stage.tgz"
+
+# Remove every local copy of the node's yaml. Installed before the pull so a
+# partial download is covered too. INT / TERM are routed through exit so
+# the EXIT trap runs for them as well (bash does not run it on a signal it
+# has no trap for).
+cleanup_local() {
+  rm -f "$PULLED_YAML" "$STAGE_YAML" "$TARBALL"
+}
+trap cleanup_local EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 log()  { printf '\033[1;34m[redeploy]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[redeploy]\033[0m %s\n' "$*"; }
@@ -53,7 +75,9 @@ fi
 # 1. Pull on-node gateway.yaml. Uses NOPASSWD `bash` allowance to read
 # a root-owned file (sudo cat is not on the NOPASSWD list).
 log "pulling /etc/turnout/gateway.yaml from $HOST → $PULLED_YAML"
-$SSH "sudo -n bash -c 'cat /etc/turnout/gateway.yaml'" > "$PULLED_YAML" \
+# umask 077 in a subshell: the file is 0600 from its first byte, and the
+# rest of the script keeps the caller's umask (stage.sh's file modes matter).
+( umask 077; $SSH "sudo -n bash -c 'cat /etc/turnout/gateway.yaml'" > "$PULLED_YAML" ) \
   || fail "could not pull on-node gateway.yaml from $HOST (check NOPASSWD bash + sudo perms)"
 [ -s "$PULLED_YAML" ] || fail "pulled gateway.yaml is empty — bailing"
 ok "pulled $(wc -l < "$PULLED_YAML") lines from $HOST"
@@ -62,7 +86,6 @@ ok "pulled $(wc -l < "$PULLED_YAML") lines from $HOST"
 log "staging tarball with $PULLED_YAML"
 GATEWAY_YAML="$PULLED_YAML" GOARCH="$GOARCH" "$REPO_ROOT/scripts/stage.sh" >/tmp/stage-$HOST-$TS.log 2>&1 \
   || { tail -20 /tmp/stage-$HOST-$TS.log >&2; fail "stage.sh failed (full log: /tmp/stage-$HOST-$TS.log)"; }
-TARBALL="$REPO_ROOT/build/turnout-stage.tgz"
 [ -f "$TARBALL" ] || fail "expected $TARBALL but it's not there"
 ok "staged $(du -h "$TARBALL" | cut -f1)"
 
@@ -71,7 +94,10 @@ log "pushing tarball to $HOST"
 $SCP "$TARBALL" "$REMOTE_USER@$HOST:/tmp/" >/dev/null
 
 log "running install.sh on $HOST (output → /tmp/install-${HOST}-${TS}.log on local)"
-$SSH "sudo -n bash -c 'cd /tmp && rm -rf turnout-stage && tar --no-same-owner -xzf turnout-stage.tgz 2>/dev/null; cd turnout-stage && bash install.sh > /tmp/install-${TS}.log 2>&1; echo INSTALL_EXIT=\$? >> /tmp/install-${TS}.log; tail -50 /tmp/install-${TS}.log'" \
+# The node-side cleanup runs inside the same remote shell, right after
+# install.sh, so it happens even if this end of the ssh session dies. The
+# install log stays for debugging; it does not contain the yaml.
+$SSH "sudo -n bash -c 'cd /tmp && rm -rf turnout-stage && tar --no-same-owner -xzf turnout-stage.tgz 2>/dev/null; cd turnout-stage && bash install.sh > /tmp/install-${TS}.log 2>&1; echo INSTALL_EXIT=\$? >> /tmp/install-${TS}.log; cd /tmp && rm -rf /tmp/turnout-stage /tmp/turnout-stage.tgz; tail -50 /tmp/install-${TS}.log'" \
   | tee "/tmp/install-${HOST}-${TS}.log"
 
 EXIT=$(grep '^INSTALL_EXIT=' "/tmp/install-${HOST}-${TS}.log" | tail -1 | cut -d= -f2)
