@@ -537,9 +537,14 @@ func emitSubscriptionHealth(health []subscribe.SubscriptionHealth, n *notify.Not
 			continue
 		}
 		slog.Warn("subscribe: subscription unhealthy",
-			"name", h.Name, "outcome", h.Outcome, "err", h.Err)
+			"name", h.Name, "outcome", h.Outcome, "stale_nodes", h.StaleNodes, "err", h.Err)
 		if n == nil {
 			continue
+		}
+		effect := "该订阅的节点已从渲染出的 mihomo config 中消失（失败的订阅不进结果集）。"
+		if h.StaleNodes > 0 {
+			effect = fmt.Sprintf("本轮沿用该订阅上次成功拉取的 %d 个节点，节点列表可能已过期"+
+				"（只保存在内存里，进程重启后不再沿用）。", h.StaleNodes)
 		}
 		n.Emit(notify.Event{
 			Severity: notify.SeverityInfo,
@@ -547,16 +552,16 @@ func emitSubscriptionHealth(health []subscribe.SubscriptionHealth, n *notify.Not
 			Node:     h.Name,
 			Subject:  fmt.Sprintf("订阅 %s 异常：%s", h.Name, h.Outcome),
 			Body: fmt.Sprintf(
-				"订阅 %s 本轮刷新未产出节点。\noutcome: %s\nerr: %s\n\n"+
-					"该订阅的节点已从渲染出的 mihomo config 中消失（lastResults 为整体覆盖，"+
-					"失败的订阅不进结果集）。refresh_interval 为 0 时不会自动重试，"+
+				"订阅 %s 本轮刷新未成功。\noutcome: %s\nerr: %s\n\n%s"+
+					"refresh_interval 为 0 时不会自动重试，"+
 					"需要 POST /api/subscribe/refresh 或修正 gateway.yaml。",
-				h.Name, h.Outcome, h.Err),
+				h.Name, h.Outcome, h.Err, effect),
 			Metadata: map[string]any{
 				"subscription": h.Name,
 				"outcome":      h.Outcome,
 				"err":          h.Err,
 				"node_count":   h.NodeCount,
+				"stale_nodes":  h.StaleNodes,
 			},
 		})
 	}

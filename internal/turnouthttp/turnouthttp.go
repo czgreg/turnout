@@ -63,6 +63,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -134,8 +135,11 @@ func (r *fallbackRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	if !isTransportError(err) {
 		return resp, err
 	}
+	// Neither the URL nor err is logged as-is: subscription URLs carry their
+	// token, and net/http quotes the full URL inside err. See RedactURL.
+	raw := req.URL.String()
 	slog.Warn("turnouthttp: primary failed, retrying via direct",
-		"label", r.label, "url", req.URL.String(), "err", err)
+		"label", r.label, "url", RedactURL(raw), "err", RedactErr(err, raw))
 	// Body rewind is the caller's responsibility via req.GetBody — see
 	// package doc. GET/HEAD have no body so this is moot for current
 	// callers.
@@ -160,4 +164,62 @@ func isTransportError(err error) bool {
 		return false
 	}
 	return true
+}
+
+// RedactURL reduces a URL to scheme://host for logs, events and error
+// strings. Subscription URLs carry their credential in the query
+// (?token=...) or in the path (/link/<token>, /s/v2/<token>), and there is
+// no reliable way to tell which segment is the secret, so both go. Userinfo
+// goes too. Those strings reach the journal, GET /api/subscriptions
+// (health_err) and the Lark webhook — on 6.15 a hutao 429 printed its full
+// path token into all three (2026-10-24).
+//
+// An unparseable input yields a fixed placeholder rather than the input.
+func RedactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "<redacted-url>"
+	}
+	out := u.Scheme + "://" + u.Host
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		out += "/…"
+	}
+	return out
+}
+
+// RedactErr returns err with every occurrence of raw replaced by
+// RedactURL(raw). A top-level *url.Error (what http.Client.Do returns) is
+// copied with its URL rewritten and its inner error kept, so errors.As and
+// net.Error.Timeout() still work on the result; anything else that quotes
+// raw is flattened to its redacted text. err is returned unchanged when it
+// does not contain raw.
+func RedactErr(err error, raw string) error {
+	if err == nil || raw == "" || !strings.Contains(err.Error(), raw) {
+		return err
+	}
+	red := RedactURL(raw)
+	if ue, ok := err.(*url.Error); ok {
+		cp := *ue
+		cp.URL = strings.ReplaceAll(cp.URL, raw, red)
+		if cp.Err != nil && strings.Contains(cp.Err.Error(), raw) {
+			cp.Err = redactedErr{msg: strings.ReplaceAll(cp.Err.Error(), raw, red), orig: cp.Err}
+		}
+		return &cp
+	}
+	return redactedErr{msg: strings.ReplaceAll(err.Error(), raw, red), orig: err}
+}
+
+// redactedErr carries a redacted message but keeps the original error for
+// errors.Is / errors.As and Timeout(), so callers that classify errors (the
+// subscribe timeout retry, context checks) see through the redaction.
+type redactedErr struct {
+	msg  string
+	orig error
+}
+
+func (e redactedErr) Error() string { return e.msg }
+func (e redactedErr) Unwrap() error { return e.orig }
+func (e redactedErr) Timeout() bool {
+	var t interface{ Timeout() bool }
+	return errors.As(e.orig, &t) && t.Timeout()
 }

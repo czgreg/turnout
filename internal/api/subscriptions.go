@@ -38,6 +38,9 @@ type subscriptionDTO struct {
 	// another UA yields more nodes. Advisory; nothing is switched.
 	SuggestedUA        string `json:"suggested_ua,omitempty"`
 	SuggestedNodeCount int    `json:"suggested_nodes_count,omitempty"`
+	// StaleNodes: health=fetch_error, and nodes_count is this many nodes
+	// carried over from the last successful fetch instead of 0.
+	StaleNodes int `json:"stale_nodes,omitempty"`
 }
 
 func (s *Server) handleSubscriptionsGet(w http.ResponseWriter, _ *http.Request) {
@@ -75,6 +78,7 @@ func (s *Server) handleSubscriptionsGet(w http.ResponseWriter, _ *http.Request) 
 			dto.PrevNodeCount = he.PrevNodeCount
 			dto.SuggestedUA = he.SuggestedUA
 			dto.SuggestedNodeCount = he.SuggestedNodeCount
+			dto.StaleNodes = he.StaleNodes
 		}
 		out = append(out, dto)
 	}

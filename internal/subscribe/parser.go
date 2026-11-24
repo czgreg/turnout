@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
@@ -49,6 +50,18 @@ type Manager struct {
 	uaAdvice  map[string]uaChoice // explicit-UA entries: best alternative seen
 	prevCount map[string]int      // node count of the last round that had nodes
 	now       func() time.Time    // test hook; nil = time.Now
+
+	// lastGood is the most recent parse that produced nodes, per
+	// subscription, keyed by lastGoodKey (name + URL, so editing a
+	// subscription's URL never resurrects the old URL's nodes). A
+	// fetch_error round reuses it instead of dropping the subscription from
+	// the render. Before this, one failed fetch took every node of that
+	// provider out of mihomo until someone refreshed again, and with
+	// refresh_interval: 0s nothing does: hutao's 429s on 6.15 (2026-10-24)
+	// each removed all hutao nodes. Parse errors and zero-node answers do
+	// NOT fall back: the upstream answered, and its answer wins. In memory
+	// only, so a process restart starts empty. Guarded by mu.
+	lastGood map[string]SubscriptionResult
 }
 
 // NewManagerWithFetch lets callers thread http_timeout and user_agent from
@@ -147,6 +160,10 @@ type SubscriptionHealth struct {
 	// explicit UA is still the one in use; switching is the operator's call.
 	SuggestedUA        string
 	SuggestedNodeCount int
+	// StaleNodes is how many nodes a fetch_error round carried over from the
+	// subscription's last successful fetch (see Manager.lastGood). 0 when
+	// there was nothing to carry over, and for every other outcome.
+	StaleNodes int
 }
 
 // LastHealth returns the per-subscription outcome of the most recent Refresh.
@@ -192,6 +209,11 @@ func (m *Manager) LastHealth() []SubscriptionHealth {
 //
 // 4xx on the primary fetch is a token/auth problem; no UA will fix it, so no
 // probing happens.
+//
+// Failure handling. A primary fetch that times out (dial, TLS, headers, or a
+// stalled body) is retried once; an HTTP status answer, 429 included, is not.
+// A subscription whose fetch still fails keeps its last good nodes (see
+// Manager.lastGood) and reports them as StaleNodes.
 func (m *Manager) Refresh(ctx context.Context) ([]SubscriptionResult, error) {
 	m.mu.Lock()
 	if m.uaChoice == nil {
@@ -206,23 +228,32 @@ func (m *Manager) Refresh(ctx context.Context) ([]SubscriptionResult, error) {
 	if m.now == nil {
 		m.now = time.Now
 	}
+	prevGood := m.lastGood
 	m.mu.Unlock()
 
 	results := make([]SubscriptionResult, 0, len(m.entries))
 	health := make([]SubscriptionHealth, 0, len(m.entries))
+	good := make(map[string]SubscriptionResult, len(m.entries))
 	var firstErr error
 	for _, e := range m.entries {
 		if !e.Enabled {
 			continue
 		}
+		key := lastGoodKey(e)
 		a, prev, drop, suggested := m.refreshEntry(ctx, e)
 		if a.fetchErr != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("fetch %s: %w", e.Name, a.fetchErr)
 			}
-			health = append(health, SubscriptionHealth{
+			h := SubscriptionHealth{
 				Name: e.Name, Outcome: "fetch_error", Err: a.fetchErr.Error(), EffectiveUA: a.ua,
-				PrevNodeCount: prev, SuggestedUA: suggested.ua, SuggestedNodeCount: suggested.nodes})
+				PrevNodeCount: prev, SuggestedUA: suggested.ua, SuggestedNodeCount: suggested.nodes}
+			if last, ok := prevGood[key]; ok {
+				h.StaleNodes = len(last.Outbounds)
+				good[key] = last
+				results = append(results, last)
+			}
+			health = append(health, h)
 			continue
 		}
 		if a.parseErr != nil {
@@ -250,13 +281,34 @@ func (m *Manager) Refresh(ctx context.Context) ([]SubscriptionResult, error) {
 			PrevNodeCount: prev, NodeDrop: drop,
 			SuggestedUA: suggested.ua, SuggestedNodeCount: suggested.nodes})
 		results = append(results, a.parsed)
+		if len(a.parsed.Outbounds) > 0 {
+			good[key] = a.parsed
+		}
 	}
 	m.mu.Lock()
 	m.lastResults = results
 	m.lastRefreshed = time.Now()
 	m.lastHealth = health
+	// Rebuilt from this round only, so disabled, deleted, re-pointed and
+	// answered-but-empty subscriptions drop out of it.
+	m.lastGood = good
 	m.mu.Unlock()
 	return results, firstErr
+}
+
+// lastGoodKey keys Manager.lastGood by name and URL.
+func lastGoodKey(e config.SubscriptionEntry) string {
+	return e.Name + "\x00" + e.URL
+}
+
+// isTimeout reports whether err is a client-side timeout (dial, TLS,
+// awaiting headers, or a body that stalled), as opposed to an answer.
+func isTimeout(err error) bool {
+	if err == nil || AsHTTPError(err) != nil {
+		return false
+	}
+	var ne net.Error
+	return (errors.As(err, &ne) && ne.Timeout()) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // uaProbeTTL is how long an auto-selected UA (or an explicit-UA advisory) is
@@ -335,6 +387,15 @@ func (m *Manager) refreshEntry(ctx context.Context, e config.SubscriptionEntry) 
 		}
 	}
 	a := m.attempt(ctx, e, ua)
+	// One retry, on timeout only, and only for the primary fetch: a slow
+	// provider often answers the second time, while a 4xx/5xx (429
+	// included) is an answer, and repeating it at once only deepens a rate
+	// limit. UA probes are not retried; they are skipped on transport
+	// errors anyway (see shouldProbe).
+	if isTimeout(a.fetchErr) && ctx.Err() == nil {
+		slog.Info("subscribe: fetch timed out, retrying once", "name", e.Name, "err", a.fetchErr)
+		a = m.attempt(ctx, e, ua)
+	}
 	dropped := func(n int) bool { return prev > 0 && float64(n) < float64(prev)*nodeDropRatio }
 
 	var suggested uaChoice

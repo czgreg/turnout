@@ -378,7 +378,8 @@ override 不 sticky：NodeScorer 只管 default-pool 成员，不回写 selector
 | 字段 | 含义 |
 |---|---|
 | `health` | `ok` / `fetch_error` / `parse_error` / `zero_nodes` |
-| `health_err` | 非 ok 时的失败详情（仅错误时出现） |
+| `health_err` | 非 ok 时的失败详情（仅错误时出现）。其中的订阅 URL 只保留 `scheme://host`，路径和 query 里的 token 不会出现 |
+| `stale_nodes` | 仅在 `health=fetch_error` 时出现：本轮拉取失败，沿用了上次成功拉取的这么多个节点（此时 `nodes_count` 就是这些旧节点）。只保存在内存里，进程重启后不再沿用；URL 改过之后也不沿用。超时会先重试一次，HTTP 状态码（含 429）不重试 |
 | `user_info` | 来自上游 `Subscription-Userinfo` 响应头；机场未下发则该字段缺失 |
 | `user_info.upload/download/total` | 字节数；`total=0` 表示不限量 |
 | `user_info.expire` | Unix 秒；`0` 表示无到期时间，过去的时间表示已到期 |
