@@ -1410,7 +1410,11 @@ func (c *Config) applyDefaults() {
 		c.Subscribe.HTTPTimeout = 30 * time.Second
 	}
 	if c.Subscribe.UserAgent == "" {
-		c.Subscribe.UserAgent = "ClashforWindows/0.20.39"
+		// Name the core the data plane really runs. Providers that pick the
+		// served protocols by client capability downgraded the old default
+		// (ClashforWindows, a Premium core without hysteria2): wodi dropped
+		// 33 hy2 nodes on 2026-11. Keep in sync with subscribe.DefaultUserAgent.
+		c.Subscribe.UserAgent = "mihomo/1.19.26"
 	}
 	c.DataPlane.ApplyDefaults()
 	c.NodeQualify.applyDefaults()
