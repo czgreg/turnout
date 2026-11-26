@@ -26,6 +26,7 @@ import (
 	"github.com/turnout-gateway/turnout-gateway/internal/rulesets"
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 	"github.com/turnout-gateway/turnout-gateway/internal/watchdog"
+	"github.com/turnout-gateway/turnout-gateway/internal/xborder"
 )
 
 // Version is set at build time via -ldflags="-X main.Version=...". Defaults
@@ -522,6 +523,13 @@ func main() {
 	go sched.Run(ctx)
 	go ni.Run(ctx)
 
+	// Cross-border access log: one record per connection that left through
+	// an airport node, shipped to a syslog server. Reads only mihomo's local
+	// clash-api and `ss`; never in the forwarding path.
+	if cfg.XBorderLog.Enabled {
+		startXBorderLog(ctx, cfg)
+	}
+
 	// DNS preloader: warm now that the data plane is up. It was constructed
 	// above so it could be wired as the reload hook; Run blocks until ctx is
 	// cancelled and waits 3s before its first sweep so mihomo's DNS server
@@ -564,6 +572,36 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("shutting down")
+}
+
+func startXBorderLog(ctx context.Context, cfg *config.Config) {
+	x := cfg.XBorderLog
+	hostname, _ := os.Hostname()
+	sender, err := xborder.NewSyslogSender(xborder.SyslogConfig{
+		Address: x.Address, Framing: x.Framing, Facility: x.Facility,
+		AppName: x.AppName, Hostname: hostname, QueueSize: x.QueueSize,
+	})
+	if err != nil {
+		// Config validation already rejected bad values; reaching here is a bug.
+		slog.Error("xborder: disabled", "err", err)
+		return
+	}
+	pools := make([]string, 0, len(cfg.Pools))
+	for _, p := range cfg.Pools {
+		pools = append(pools, p.Name)
+	}
+	coll := xborder.NewCollector(xborder.Options{
+		APIAddr:      cfg.DataPlane.ClashAPI.ExternalController,
+		Secret:       cfg.DataPlane.ClashAPI.Secret,
+		Hostname:     hostname,
+		Pools:        pools,
+		PollInterval: x.PollInterval,
+		Emit:         sender.Enqueue,
+	})
+	go sender.Run(ctx)
+	go coll.Run(ctx)
+	slog.Info("xborder: access log enabled", "addr", x.Address, "framing", x.Framing,
+		"facility", x.Facility, "poll_interval", x.PollInterval)
 }
 
 // newAPITLS builds the control plane's certificate manager from api.tls.
