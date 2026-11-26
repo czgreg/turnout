@@ -261,3 +261,52 @@ func TestXBorderLogNeedsAuth(t *testing.T) {
 		t.Errorf("PUT without token = %d", rec.Code)
 	}
 }
+
+// A time that never happened must be absent, not "0001-01-01T00:00:00Z":
+// the console renders any present timestamp as a date. Production showed
+// year-0001 times on the status card right after the first deploy.
+func TestXBorderLogStatusOmitsUnsetTimes(t *testing.T) {
+	f := newXBFixture(t, "")
+	af := &authFixture{t: t, h: f.h}
+	check := func(stage string, mustHave ...string) {
+		t.Helper()
+		rec := af.do("GET", "/api/xborder-log", tokA, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: GET = %d", stage, rec.Code)
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, "0001-01-01") {
+			t.Errorf("%s: zero time in response: %s", stage, body)
+		}
+		var raw struct {
+			Status map[string]json.RawMessage `json:"status"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &raw)
+		for _, k := range []string{"since", "last_sent_at", "last_error_at"} {
+			_, has := raw.Status[k]
+			want := false
+			for _, m := range mustHave {
+				want = want || m == k
+			}
+			if has != want {
+				t.Errorf("%s: status.%s present=%v, want %v: %s", stage, k, has, want, body)
+			}
+		}
+	}
+
+	check("disabled")
+
+	// Enabled but nothing sent yet: only since is known.
+	addr, _ := syslogListener(t)
+	if code, _, b := f.do("PUT", map[string]any{"enabled": true, "address": addr}); code != 200 {
+		t.Fatalf("enable: %d %s", code, b)
+	}
+	waitConnected(t, f.mgr, true)
+	check("enabled, idle", "since")
+
+	// Disabled again: everything gone.
+	if code, _, b := f.do("PUT", map[string]any{"enabled": false}); code != 200 {
+		t.Fatalf("disable: %d %s", code, b)
+	}
+	check("disabled again")
+}

@@ -159,7 +159,7 @@ func run(ctx context.Context, fn func(context.Context)) func() {
 type Status struct {
 	Running bool `json:"running"`
 	// Since is when logging was last turned on in this process.
-	Since time.Time `json:"since,omitempty"`
+	Since *time.Time `json:"since,omitempty"`
 	// Seq is the last record number handed out; a receiver comparing it to
 	// the last seq it stored can see how far behind it is.
 	Seq uint64 `json:"seq"`
@@ -172,7 +172,7 @@ func (m *Manager) Status() Status {
 	st := Status{Seq: m.seq.Load()}
 	if m.sender != nil {
 		st.Running = true
-		st.Since = m.since
+		st.Since = timePtr(m.since)
 		st.SenderStatus = m.sender.Status()
 	}
 	return st
