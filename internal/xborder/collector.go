@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"sort"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,9 @@ type Options struct {
 	Pools        []string // configured named pool names (excluding default-pool)
 	PollInterval time.Duration
 	Emit         func(Record)
+	// Seq numbers records. Shared by successive collectors in one process
+	// so a config change does not restart the sequence at 1. Nil = own.
+	Seq *atomic.Uint64
 
 	// Test seams. Zero values select the production implementation.
 	HTTPClient *http.Client
@@ -34,7 +38,7 @@ type Options struct {
 type Collector struct {
 	o     Options
 	pools []string
-	seq   uint64
+	seq   *atomic.Uint64
 
 	live      map[string]*trackedConn // mihomo conn ID → state
 	liveByKey map[connKey]string
@@ -77,9 +81,14 @@ func NewCollector(o Options) *Collector {
 	}
 	pools := append([]string(nil), o.Pools...)
 	sort.Slice(pools, func(i, j int) bool { return len(pools[i]) > len(pools[j]) })
+	seq := o.Seq
+	if seq == nil {
+		seq = new(atomic.Uint64)
+	}
 	return &Collector{
 		o:           o,
 		pools:       pools,
+		seq:         seq,
 		live:        make(map[string]*trackedConn),
 		liveByKey:   make(map[connKey]string),
 		pending:     make(map[connKey]pendingLine),
@@ -458,9 +467,8 @@ func (c *Collector) dialErrorRecord(l logLine, at time.Time) Record {
 }
 
 func (c *Collector) emit(r Record) {
-	c.seq++
 	r.Schema = Schema
-	r.Seq = c.seq
+	r.Seq = c.seq.Add(1)
 	r.TS = fmtTS(c.o.Now())
 	r.Gateway.Hostname = c.o.Hostname
 	if r.Route.Chains == nil {

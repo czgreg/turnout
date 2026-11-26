@@ -133,6 +133,8 @@ Authorization: Bearer <token>
 | POST | `/api/notifications/test` | 同步发一条测试消息验证 webhook | ✓ |
 | GET | `/api/notifications/recent?limit=N` | 本地 JSONL 日志最近 N 条 | ✓ |
 | GET | `/api/watchdog/status` | 旁挂健康判定（探活地址 / 自检项 / 计数） | ✓ |
+| GET | `/api/xborder-log` | 跨境访问日志配置 + 发送状态 | ✓ |
+| PUT | `/api/xborder-log` | 修改跨境访问日志（进程内热切换，不重启） | ✓ |
 
 ---
 
@@ -594,6 +596,66 @@ PUT body 四个字段均可选，只改传入的：
 校验（400）：合法 IPv4；**不得等于 `ingress_ip`**（摘掉会同时断掉 SSH 和 API，
 失去排查手段）；**不得等于 `return.gateway_ip`**（那是防火墙自己的地址）。
 与 `install.sh` precheck 的三条守卫一致。
+
+---
+
+## GET / PUT /api/xborder-log
+
+跨境访问日志：每条经机场节点出墙的连接发一条 syslog（RFC 5424 over TCP）。
+字段与局限见 `docs/design-crossborder-access-log.md`。
+
+```json
+{
+  "config": {
+    "enabled": true,
+    "address": "10.0.0.50:514",
+    "framing": "lf",
+    "facility": "local5",
+    "app_name": "turnout-xborder",
+    "poll_interval_ms": 1000,
+    "queue_size": 10000
+  },
+  "status": {
+    "running": true,
+    "since": "2026-11-26T11:55:48+08:00",
+    "seq": 1830,
+    "connected": true,
+    "sent": 412,
+    "dropped": 0,
+    "queued": 0,
+    "queue_size": 10000,
+    "last_sent_at": "2026-11-26T12:03:10+08:00"
+  },
+  "data_plane_log_level": "info"
+}
+```
+
+- `config` 在关闭时也带默认值，表示「现在开启会用什么」。
+- `status.running=false` 时其余计数都是 0。计数从本次开启或进程启动起算。
+- `connected` 反映服务器是否可达：启动即连，空闲时每 10s 检查一次，没有流量也准。
+- `last_error` / `last_error_at` 只在出错过时出现。
+
+PUT body 各字段均可选，只改传入的；未知字段返回 400：
+
+```json
+{"enabled": true, "address": "10.0.0.50:514"}
+```
+
+**进程内热切换，不重启 turnout-gateway。** 这一点与 `/api/node/signal` 不同：重启会让
+watchdog 撤下探活地址直到重新合格，`auto_failover: true` 时防火墙会把整个办公网回落
+直连一段时间，改日志设置不能有这种代价。
+
+- 改地址 / 分帧 / facility / 队列：只换发送端，旧服务器上还没发出的记录转给新服务器。
+- 改采样间隔或开关：采集端也重启，正在等采样认领的短连接（几秒内的）会丢失。
+- 关闭：队列里未发出的记录丢弃。地址保留，下次开启无需重填。
+
+校验（400）与 `config.Load` 共用同一函数（`config.ValidateXBorderLog`），控制台能存的
+值重启后一定也能加载：开启时 `address` 必填且为 `host:port`（端口 1–65535）；
+`framing` 为 `lf` / `octet-counting`；`facility` 为 `local0`–`local7`；
+`poll_interval_ms` 200–10000；`queue_size` 100–1000000；`data_plane.log_level`
+必须是 `info` 或 `debug`（短连接与拨号失败只出现在 mihomo info 日志里）。
+
+写回 `gateway.yaml` 时只改 `xborder_log` 一节，`subscriptions:` 原样保留（有测试守住）。
 
 ---
 
@@ -1156,7 +1218,15 @@ curl -s $BASE/api/whitelist \
 
 ## 接入变更日志（前端 / 控制平台）
 
-### 2026-10-29（走代理的 QUIC 回退 TCP）— 当前版本
+### 2026-11-26（跨境访问日志配置入口）— 当前版本
+
+**新增（非 breaking）**：
+
+- `GET / PUT /api/xborder-log`：跨境访问日志的配置与发送状态，见上文同名小节。
+- 控制台新增「跨境访问日志」页：开关、服务器地址、高级设置，以及每 5 秒刷新的发送状态。
+- 保存即生效，不重启控制面。
+
+### 2026-10-29（走代理的 QUIC 回退 TCP）
 
 **变更（数据面行为，非 breaking，无 API 字段变化）**：
 

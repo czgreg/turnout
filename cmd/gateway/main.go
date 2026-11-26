@@ -462,6 +462,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	xbLog := newXBorderManager(cfg)
+
 	srv := api.NewServer(api.Deps{
 		Subscribe:  mgr,
 		Scheduler:  sched,
@@ -477,6 +479,7 @@ func main() {
 		Watchdog:   wd,
 		TLS:        apiTLS,
 		Auth:       apiAuth,
+		XBorder:    xbLog,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -526,8 +529,10 @@ func main() {
 	// Cross-border access log: one record per connection that left through
 	// an airport node, shipped to a syslog server. Reads only mihomo's local
 	// clash-api and `ss`; never in the forwarding path.
-	if cfg.XBorderLog.Enabled {
-		startXBorderLog(ctx, cfg)
+	// The manager always exists so the console can turn it on later; it
+	// starts nothing while xborder_log.enabled is false.
+	if err := xbLog.Start(ctx, cfg.XBorderLog); err != nil {
+		slog.Error("xborder: not started", "err", err)
 	}
 
 	// DNS preloader: warm now that the data plane is up. It was constructed
@@ -574,34 +579,18 @@ func main() {
 	slog.Info("shutting down")
 }
 
-func startXBorderLog(ctx context.Context, cfg *config.Config) {
-	x := cfg.XBorderLog
+func newXBorderManager(cfg *config.Config) *xborder.Manager {
 	hostname, _ := os.Hostname()
-	sender, err := xborder.NewSyslogSender(xborder.SyslogConfig{
-		Address: x.Address, Framing: x.Framing, Facility: x.Facility,
-		AppName: x.AppName, Hostname: hostname, QueueSize: x.QueueSize,
-	})
-	if err != nil {
-		// Config validation already rejected bad values; reaching here is a bug.
-		slog.Error("xborder: disabled", "err", err)
-		return
-	}
 	pools := make([]string, 0, len(cfg.Pools))
 	for _, p := range cfg.Pools {
 		pools = append(pools, p.Name)
 	}
-	coll := xborder.NewCollector(xborder.Options{
-		APIAddr:      cfg.DataPlane.ClashAPI.ExternalController,
-		Secret:       cfg.DataPlane.ClashAPI.Secret,
-		Hostname:     hostname,
-		Pools:        pools,
-		PollInterval: x.PollInterval,
-		Emit:         sender.Enqueue,
+	return xborder.NewManager(xborder.Options{
+		APIAddr:  cfg.DataPlane.ClashAPI.ExternalController,
+		Secret:   cfg.DataPlane.ClashAPI.Secret,
+		Hostname: hostname,
+		Pools:    pools,
 	})
-	go sender.Run(ctx)
-	go coll.Run(ctx)
-	slog.Info("xborder: access log enabled", "addr", x.Address, "framing", x.Framing,
-		"facility", x.Facility, "poll_interval", x.PollInterval)
 }
 
 // newAPITLS builds the control plane's certificate manager from api.tls.

@@ -47,15 +47,15 @@ func TestValidateXBorderLog(t *testing.T) {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 	cases := map[string]func(*Config){
-		"missing address":  func(c *Config) { c.XBorderLog.Address = "" },
-		"address no port":  func(c *Config) { c.XBorderLog.Address = "192.0.2.50" },
-		"bad framing":      func(c *Config) { c.XBorderLog.Framing = "nul" },
-		"bad facility":     func(c *Config) { c.XBorderLog.Facility = "user" },
-		"app name space":   func(c *Config) { c.XBorderLog.AppName = "a b" },
-		"poll too fast":    func(c *Config) { c.XBorderLog.PollInterval = 10 * time.Millisecond },
-		"queue too small":  func(c *Config) { c.XBorderLog.QueueSize = 5 },
-		"log level warn":   func(c *Config) { c.DataPlane.LogLevel = "warning" },
-		"no clash api":     func(c *Config) { c.DataPlane.ClashAPI.ExternalController = "" },
+		"missing address": func(c *Config) { c.XBorderLog.Address = "" },
+		"address no port": func(c *Config) { c.XBorderLog.Address = "192.0.2.50" },
+		"bad framing":     func(c *Config) { c.XBorderLog.Framing = "nul" },
+		"bad facility":    func(c *Config) { c.XBorderLog.Facility = "user" },
+		"app name space":  func(c *Config) { c.XBorderLog.AppName = "a b" },
+		"poll too fast":   func(c *Config) { c.XBorderLog.PollInterval = 10 * time.Millisecond },
+		"queue too small": func(c *Config) { c.XBorderLog.QueueSize = 5 },
+		"log level warn":  func(c *Config) { c.DataPlane.LogLevel = "warning" },
+		"no clash api":    func(c *Config) { c.DataPlane.ClashAPI.ExternalController = "" },
 	}
 	for name, mut := range cases {
 		c := base()

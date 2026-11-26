@@ -3,6 +3,7 @@
 // and anonymised): provider names, node names, IPs and hostnames are made up,
 // egress uses TEST-NET-3 (203.0.113.0/24).
 import type {
+  XBorderLogView,
   Active,
   AdBlockState,
   AdultBlockState,
@@ -549,5 +550,22 @@ export function adultBlock(): AdultBlockState {
     enabled: false,
     rule_set_installed: true,
     allow: ['example-health.org'],
+  };
+}
+
+/** GET /api/xborder-log — starts disabled with defaults filled, like a fresh node. */
+export function xborderLog(): XBorderLogView {
+  return {
+    config: {
+      enabled: false,
+      address: '',
+      framing: 'lf',
+      facility: 'local5',
+      app_name: 'turnout-xborder',
+      poll_interval_ms: 1000,
+      queue_size: 10000,
+    },
+    status: { running: false, seq: 0, connected: false, sent: 0, dropped: 0, queued: 0, queue_size: 0 },
+    data_plane_log_level: 'info',
   };
 }
