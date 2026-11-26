@@ -153,14 +153,17 @@ func (s *SyslogSender) frame(r Record) ([]byte, error) {
 
 // SenderStatus is a point-in-time view for the API.
 type SenderStatus struct {
-	Connected   bool      `json:"connected"`
-	Sent        uint64    `json:"sent"`
-	Dropped     uint64    `json:"dropped"`
-	Queued      int       `json:"queued"`
-	QueueSize   int       `json:"queue_size"`
-	LastSentAt  time.Time `json:"last_sent_at,omitempty"`
-	LastError   string    `json:"last_error,omitempty"`
-	LastErrorAt time.Time `json:"last_error_at,omitempty"`
+	Connected bool   `json:"connected"`
+	Sent      uint64 `json:"sent"`
+	Dropped   uint64 `json:"dropped"`
+	Queued    int    `json:"queued"`
+	QueueSize int    `json:"queue_size"`
+	// Time fields are pointers so that "never" is omitted from JSON:
+	// omitempty does not apply to a time.Time struct, and a zero value
+	// would serialize as 0001-01-01 and render as a real date.
+	LastSentAt  *time.Time `json:"last_sent_at,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
+	LastErrorAt *time.Time `json:"last_error_at,omitempty"`
 }
 
 func (s *SyslogSender) Status() SenderStatus {
@@ -172,10 +175,18 @@ func (s *SyslogSender) Status() SenderStatus {
 		Dropped:     s.dropped.Load(),
 		Queued:      len(s.q),
 		QueueSize:   cap(s.q),
-		LastSentAt:  s.sentAt,
+		LastSentAt:  timePtr(s.sentAt),
 		LastError:   s.lastErr,
-		LastErrorAt: s.errAt,
+		LastErrorAt: timePtr(s.errAt),
 	}
+}
+
+// timePtr returns nil for the zero time, so JSON omits it.
+func timePtr(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 func (s *SyslogSender) setErr(err error) {
