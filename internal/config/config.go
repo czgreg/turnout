@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -122,10 +123,26 @@ func (x *XBorderLogConfig) applyDefaults() {
 	}
 }
 
+// WithDefaults returns x with defaults filled in, regardless of Enabled.
+// The API uses it to show an operator the values an enable would apply.
+func (x XBorderLogConfig) WithDefaults() XBorderLogConfig {
+	enabled := x.Enabled
+	x.Enabled = true
+	x.applyDefaults()
+	x.Enabled = enabled
+	return x
+}
+
 // validateXBorderLog fails closed: an operator who enabled the log must not
 // get a node that silently ships nothing.
 func (c *Config) validateXBorderLog() error {
-	x := c.XBorderLog
+	return ValidateXBorderLog(c.XBorderLog, c.DataPlane.LogLevel, c.DataPlane.ClashAPI.ExternalController)
+}
+
+// ValidateXBorderLog checks an xborder_log block against the data plane it
+// depends on. Shared by Load and the API, so a value the console accepts is
+// one the next restart will also accept. A disabled block is not checked.
+func ValidateXBorderLog(x XBorderLogConfig, logLevel, clashAPI string) error {
 	if !x.Enabled {
 		return nil
 	}
@@ -134,6 +151,8 @@ func (c *Config) validateXBorderLog() error {
 	}
 	if host, port, err := net.SplitHostPort(x.Address); err != nil || host == "" || port == "" {
 		return fmt.Errorf("xborder_log.address %q: want host:port", x.Address)
+	} else if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("xborder_log.address %q: port must be 1-65535", x.Address)
 	}
 	if x.Framing != "lf" && x.Framing != "octet-counting" {
 		return fmt.Errorf("xborder_log.framing %q: want lf or octet-counting", x.Framing)
@@ -141,22 +160,22 @@ func (c *Config) validateXBorderLog() error {
 	if !regexp.MustCompile(`^local[0-7]$`).MatchString(x.Facility) {
 		return fmt.Errorf("xborder_log.facility %q: want local0..local7", x.Facility)
 	}
-	if strings.ContainsAny(x.AppName, " \t\r\n") || len(x.AppName) > 48 {
-		return fmt.Errorf("xborder_log.app_name %q: must be 1-48 chars without spaces", x.AppName)
+	if x.AppName == "" || len(x.AppName) > 48 || strings.IndexFunc(x.AppName, func(r rune) bool { return r < 33 || r > 126 }) >= 0 {
+		return fmt.Errorf("xborder_log.app_name %q: must be 1-48 printable ASCII chars without spaces", x.AppName)
 	}
 	if x.PollInterval < 200*time.Millisecond || x.PollInterval > 10*time.Second {
 		return fmt.Errorf("xborder_log.poll_interval %v: want 200ms..10s", x.PollInterval)
 	}
-	if x.QueueSize < 100 {
-		return fmt.Errorf("xborder_log.queue_size %d: want >= 100", x.QueueSize)
+	if x.QueueSize < 100 || x.QueueSize > 1000000 {
+		return fmt.Errorf("xborder_log.queue_size %d: want 100..1000000", x.QueueSize)
 	}
 	// Connections that close between two samples, and every dial failure,
 	// exist only as mihomo info/warning log lines. Above info they are never
 	// produced, and the record set would be silently incomplete.
-	if lvl := c.DataPlane.LogLevel; lvl != "info" && lvl != "debug" {
-		return fmt.Errorf("xborder_log needs data_plane.log_level info or debug (got %q): short connections and dial failures are only visible in mihomo's info log", lvl)
+	if logLevel != "info" && logLevel != "debug" {
+		return fmt.Errorf("xborder_log needs data_plane.log_level info or debug (got %q): short connections and dial failures are only visible in mihomo's info log", logLevel)
 	}
-	if c.DataPlane.ClashAPI.ExternalController == "" {
+	if clashAPI == "" {
 		return fmt.Errorf("xborder_log needs data_plane.clash_api.external_controller")
 	}
 	return nil

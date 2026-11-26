@@ -45,6 +45,10 @@ function handler(): Connect.NextHandleFunction {
   let notifLog = data.notificationLog();
   let adBlock = data.adBlock();
   let adultBlock = data.adultBlock();
+  let xb = data.xborderLog();
+  // Mock sink: any address with port 514 "connects"; others fail, so both
+  // status cards can be seen.
+  let xbSince = '';
   // Auth mirrors internal/api/auth.go: the mock node starts in SETUP state
   // so the initialisation page can be exercised; its setup code is fixed.
   let token = '';
@@ -255,6 +259,44 @@ function handler(): Connect.NextHandleFunction {
 
     if (path === '/api/notifications/recent') {
       return send(res, 200, { entries: notifLog, limit: notifLog.length });
+    }
+
+    if (path === '/api/xborder-log') {
+      if (method === 'PUT') {
+        const b = await readBody(req);
+        const next = { ...xb.config, ...b };
+        if (typeof next.address === 'string') next.address = next.address.trim();
+        if (next.enabled) {
+          if (!next.address) return send(res, 400, { error: 'xborder_log.address is required when xborder_log.enabled is true' });
+          if (!/^(\[[0-9a-fA-F:.]+\]|[^\s:[\]]+):\d{1,5}$/.test(next.address)) {
+            return send(res, 400, { error: `xborder_log.address ${JSON.stringify(next.address)}: want host:port` });
+          }
+        }
+        if (next.enabled && !xb.config.enabled) xbSince = new Date().toISOString();
+        xb = { ...xb, config: next };
+      }
+      const on = xb.config.enabled;
+      const ok = on && xb.config.address.endsWith(':514');
+      const sent = on && ok ? Math.floor((Date.now() - Date.parse(xbSince || new Date().toISOString())) / 5000) : 0;
+      xb = {
+        ...xb,
+        status: on
+          ? {
+              running: true,
+              since: xbSince,
+              seq: 1200 + sent,
+              connected: ok,
+              sent,
+              dropped: 0,
+              queued: ok ? 0 : 37,
+              queue_size: xb.config.queue_size,
+              ...(ok
+                ? { last_sent_at: new Date().toISOString() }
+                : { last_error: `dial tcp ${xb.config.address}: connect: connection refused`, last_error_at: new Date().toISOString() }),
+            }
+          : { running: false, seq: xb.status.seq, connected: false, sent: 0, dropped: 0, queued: 0, queue_size: 0 },
+      };
+      return send(res, 200, xb);
     }
 
     if (path === '/api/node/signal') {

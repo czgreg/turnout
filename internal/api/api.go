@@ -20,6 +20,7 @@ import (
 	"github.com/turnout-gateway/turnout-gateway/internal/rulesets"
 	"github.com/turnout-gateway/turnout-gateway/internal/subscribe"
 	"github.com/turnout-gateway/turnout-gateway/internal/watchdog"
+	"github.com/turnout-gateway/turnout-gateway/internal/xborder"
 )
 
 type Deps struct {
@@ -57,6 +58,9 @@ type Deps struct {
 	// Auth holds the bearer token and the setup state (auth.go). Required:
 	// a nil Auth fails every /api/* request closed rather than open.
 	Auth *Auth
+	// XBorder runs the cross-border access log. Nil only in tests that do
+	// not exercise /api/xborder-log, which then answers 503.
+	XBorder *xborder.Manager
 }
 
 // Renderer is the interface internal/mihomo.Renderer satisfies. Kept as
@@ -196,6 +200,9 @@ func NewServer(deps Deps) *Server {
 
 	// Notification subsystem — Lark webhook configuration + local log
 	// inspection + ad-hoc test send.
+	mux.HandleFunc("GET /api/xborder-log", s.auth(s.handleXBorderLogGet))
+	mux.HandleFunc("PUT /api/xborder-log", s.auth(s.handleXBorderLogPut))
+
 	mux.HandleFunc("GET /api/notifications/status", s.auth(s.handleNotificationsStatus))
 	mux.HandleFunc("POST /api/notifications/lark", s.auth(s.handleNotificationsLark))
 	mux.HandleFunc("DELETE /api/notifications/lark", s.auth(s.handleNotificationsLarkDelete))

@@ -26,6 +26,7 @@ import {
   IconSafe,
   IconSettings,
   IconNotification,
+  IconFile,
 } from '@arco-design/web-react/icon';
 import * as api from './api';
 import { ApiError } from './api';
@@ -42,6 +43,7 @@ import Terminal from './pages/Terminal';
 import TransitionsPage from './pages/Transitions';
 import NetworkPage from './pages/Network';
 import NotificationsPage from './pages/Notifications';
+import XBorderLogPage from './pages/XBorderLog';
 
 const REFRESH_MS = 10000;
 
@@ -53,6 +55,7 @@ const VIEWS = [
   { key: 'terminal', title: '终端查询', desc: '按员工 IP 查默认与分类出口 —— 报「慢 / 打不开」时的第一入口', icon: <IconSearch /> },
   { key: 'network', title: '网段设置', desc: '被引流的办公网段 —— 改完会重建防火墙规则', icon: <IconSettings /> },
   { key: 'notifications', title: '通知设置', desc: '飞书机器人与此前的推送记录', icon: <IconNotification /> },
+  { key: 'xborder', title: '跨境访问日志', desc: '每条经海外节点的访问发一条记录到 syslog 服务器', icon: <IconFile /> },
   { key: 'transitions', title: '池变更审计', desc: '池成员变更历史与隔离名单', icon: <IconHistory /> },
 ] as const;
 type View = (typeof VIEWS)[number]['key'];
@@ -260,6 +263,7 @@ export default function App() {
           {view === 'transitions' && <TransitionsPage snap={snap} />}
           {view === 'network' && <NetworkPage snap={snap} reload={() => loadAll(true)} />}
           {view === 'notifications' && <NotificationsPage />}
+          {view === 'xborder' && <XBorderLogPage />}
         </Layout.Content>
       </Layout>
     </Layout>

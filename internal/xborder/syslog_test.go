@@ -129,10 +129,7 @@ func TestSyslogQueueDropsOldest(t *testing.T) {
 		t.Errorf("dropped = %d, want 2", got)
 	}
 	var seqs []uint64
-	for len(s.q) > 0 {
-		f := string(<-s.q)
-		var r Record
-		json.Unmarshal([]byte(f[strings.Index(f, "{"):]), &r)
+	for _, r := range s.Drain() {
 		seqs = append(seqs, r.Seq)
 	}
 	if len(seqs) != 3 || seqs[0] != 3 || seqs[2] != 5 {

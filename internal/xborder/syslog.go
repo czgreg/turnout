@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -29,6 +30,10 @@ type SyslogConfig struct {
 // record is dropped and counted, so a dead server costs records, not
 // forwarding.
 //
+// The queue holds records, not formatted frames, so a sender replaced by a
+// config change can hand its backlog to the next one (see Drain) and those
+// records go out in the new format to the new server.
+//
 // Plain TCP has no acknowledgement. A record written into the socket just
 // before the server dies can be lost without an error; the receiver sees
 // it as a gap in seq.
@@ -37,10 +42,16 @@ type SyslogSender struct {
 	facility int
 	host     string
 	pid      int
-	q        chan []byte
+	q        chan Record
 
-	sent    atomic.Uint64
-	dropped atomic.Uint64
+	sent      atomic.Uint64
+	dropped   atomic.Uint64
+	connected atomic.Bool
+
+	errMu   sync.Mutex
+	lastErr string
+	errAt   time.Time
+	sentAt  time.Time
 
 	dial func(ctx context.Context, addr string) (net.Conn, error)
 	now  func() time.Time
@@ -60,7 +71,7 @@ func NewSyslogSender(cfg SyslogConfig) (*SyslogSender, error) {
 		facility: 16 + n,
 		host:     syslogHostname(cfg.Hostname),
 		pid:      os.Getpid(),
-		q:        make(chan []byte, cfg.QueueSize),
+		q:        make(chan Record, cfg.QueueSize),
 		dial: func(ctx context.Context, addr string) (net.Conn, error) {
 			return d.DialContext(ctx, "tcp", addr)
 		},
@@ -91,29 +102,11 @@ const (
 	sevInfo    = 6
 )
 
-// Enqueue formats r and queues it. Safe for concurrent use.
+// Enqueue queues r. Never blocks; safe for concurrent use.
 func (s *SyslogSender) Enqueue(r Record) {
-	body, err := json.Marshal(r)
-	if err != nil {
-		slog.Error("xborder: marshal record", "err", err)
-		return
-	}
-	sev := sevInfo
-	if r.Event == EventDialError {
-		sev = sevWarning
-	}
-	msg := fmt.Sprintf("<%d>1 %s %s %s %d %s - %s",
-		s.facility*8+sev, s.now().Format("2006-01-02T15:04:05.000000Z07:00"),
-		s.host, s.cfg.AppName, s.pid, r.Event, body)
-	var frame []byte
-	if s.cfg.Framing == "octet-counting" {
-		frame = []byte(strconv.Itoa(len(msg)) + " " + msg)
-	} else {
-		frame = []byte(msg + "\n")
-	}
 	for {
 		select {
-		case s.q <- frame:
+		case s.q <- r:
 			return
 		default:
 		}
@@ -126,43 +119,113 @@ func (s *SyslogSender) Enqueue(r Record) {
 	}
 }
 
+// Drain removes and returns everything still queued. Call only after Run
+// has returned.
+func (s *SyslogSender) Drain() []Record {
+	var out []Record
+	for {
+		select {
+		case r := <-s.q:
+			out = append(out, r)
+		default:
+			return out
+		}
+	}
+}
+
+func (s *SyslogSender) frame(r Record) ([]byte, error) {
+	body, err := json.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+	sev := sevInfo
+	if r.Event == EventDialError {
+		sev = sevWarning
+	}
+	msg := fmt.Sprintf("<%d>1 %s %s %s %d %s - %s",
+		s.facility*8+sev, s.now().Format("2006-01-02T15:04:05.000000Z07:00"),
+		s.host, s.cfg.AppName, s.pid, r.Event, body)
+	if s.cfg.Framing == "octet-counting" {
+		return []byte(strconv.Itoa(len(msg)) + " " + msg), nil
+	}
+	return []byte(msg + "\n"), nil
+}
+
+// SenderStatus is a point-in-time view for the API.
+type SenderStatus struct {
+	Connected   bool      `json:"connected"`
+	Sent        uint64    `json:"sent"`
+	Dropped     uint64    `json:"dropped"`
+	Queued      int       `json:"queued"`
+	QueueSize   int       `json:"queue_size"`
+	LastSentAt  time.Time `json:"last_sent_at,omitempty"`
+	LastError   string    `json:"last_error,omitempty"`
+	LastErrorAt time.Time `json:"last_error_at,omitempty"`
+}
+
+func (s *SyslogSender) Status() SenderStatus {
+	s.errMu.Lock()
+	defer s.errMu.Unlock()
+	return SenderStatus{
+		Connected:   s.connected.Load(),
+		Sent:        s.sent.Load(),
+		Dropped:     s.dropped.Load(),
+		Queued:      len(s.q),
+		QueueSize:   cap(s.q),
+		LastSentAt:  s.sentAt,
+		LastError:   s.lastErr,
+		LastErrorAt: s.errAt,
+	}
+}
+
+func (s *SyslogSender) setErr(err error) {
+	s.errMu.Lock()
+	s.lastErr, s.errAt = err.Error(), time.Now()
+	s.errMu.Unlock()
+}
+
+func (s *SyslogSender) markSent() {
+	s.sent.Add(1)
+	s.errMu.Lock()
+	s.sentAt = time.Now()
+	s.errMu.Unlock()
+}
+
 // Run sends until ctx is cancelled, then makes one short attempt to flush
-// what is still queued.
+// what is still queued to the connection it already has. Anything left is
+// available through Drain.
+//
+// It connects as soon as it starts and re-checks the connection every 10s
+// while idle, so Status().Connected reflects whether the server is
+// reachable even when no cross-border traffic is flowing.
 func (s *SyslogSender) Run(ctx context.Context) {
 	var conn net.Conn
 	var cur []byte
+	var curRec *Record
 	backoff := time.Second
 	failing := false
-	report := time.NewTicker(time.Minute)
-	defer report.Stop()
+	idle := time.NewTicker(10 * time.Second)
+	defer idle.Stop()
 	var lastDropped uint64
+	lastReport := time.Now()
 
 	defer func() {
-		if conn != nil {
-			s.flush(conn, cur)
-			conn.Close()
+		s.connected.Store(false)
+		if conn == nil {
+			if curRec != nil {
+				s.Enqueue(*curRec) // keep it for Drain
+			}
+			return
 		}
+		s.flush(conn, cur, curRec)
+		conn.Close()
 	}()
 
 	for {
-		if cur == nil {
-			select {
-			case <-ctx.Done():
-				return
-			case cur = <-s.q:
-			case <-report.C:
-				if d := s.dropped.Load(); d != lastDropped {
-					slog.Warn("xborder: records dropped, send queue was full",
-						"dropped_total", d, "dropped_last_minute", d-lastDropped,
-						"sent_total", s.sent.Load(), "queued", len(s.q))
-					lastDropped = d
-				}
-				continue
-			}
-		}
 		if conn != nil && peerClosed(conn) {
 			conn.Close()
 			conn = nil
+			s.connected.Store(false)
 		}
 		if conn == nil {
 			dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -172,6 +235,7 @@ func (s *SyslogSender) Run(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
+				s.setErr(err)
 				if !failing {
 					slog.Warn("xborder: syslog server unreachable, queueing records",
 						"addr", s.cfg.Address, "err", err)
@@ -188,6 +252,7 @@ func (s *SyslogSender) Run(ctx context.Context) {
 				continue
 			}
 			conn = c
+			s.connected.Store(true)
 			backoff = time.Second
 			if failing {
 				slog.Info("xborder: syslog server reachable again", "addr", s.cfg.Address, "queued", len(s.q))
@@ -196,15 +261,47 @@ func (s *SyslogSender) Run(ctx context.Context) {
 				slog.Info("xborder: connected to syslog server", "addr", s.cfg.Address)
 			}
 		}
+		if cur == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case r := <-s.q:
+				f, err := s.frame(r)
+				if err != nil {
+					slog.Error("xborder: marshal record", "err", err)
+					continue
+				}
+				cur, curRec = f, &r
+			case <-idle.C:
+				if d := s.dropped.Load(); d != lastDropped && time.Since(lastReport) >= time.Minute {
+					slog.Warn("xborder: records dropped, send queue was full",
+						"dropped_total", d, "dropped_since_last_report", d-lastDropped,
+						"sent_total", s.sent.Load(), "queued", len(s.q))
+					lastDropped, lastReport = d, time.Now()
+				}
+				continue // loop top re-checks the connection
+			}
+		}
+		// The record may have waited in select for a long time; the server
+		// can have gone away meanwhile, and the first write into a closed
+		// connection still "succeeds".
+		if peerClosed(conn) {
+			conn.Close()
+			conn = nil
+			s.connected.Store(false)
+			continue
+		}
 		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		if _, err := conn.Write(cur); err != nil {
+			s.setErr(err)
 			slog.Warn("xborder: syslog write failed, reconnecting", "addr", s.cfg.Address, "err", err)
 			conn.Close()
 			conn = nil
+			s.connected.Store(false)
 			continue // retry cur on a fresh connection
 		}
-		s.sent.Add(1)
-		cur = nil
+		s.markSent()
+		cur, curRec = nil, nil
 	}
 }
 
@@ -226,23 +323,30 @@ func peerClosed(c net.Conn) bool {
 	return true // io.EOF or a reset: either way the connection is dead
 }
 
-// flush writes cur and whatever is queued, giving up after 2s.
-func (s *SyslogSender) flush(conn net.Conn, cur []byte) {
+// flush writes cur and whatever is queued, giving up after 2s. What it
+// could not send stays queued for Drain.
+func (s *SyslogSender) flush(conn net.Conn, cur []byte, curRec *Record) {
 	deadline := time.Now().Add(2 * time.Second)
 	conn.SetWriteDeadline(deadline)
 	if cur != nil {
 		if _, err := conn.Write(cur); err != nil {
+			s.Enqueue(*curRec)
 			return
 		}
-		s.sent.Add(1)
+		s.markSent()
 	}
 	for time.Now().Before(deadline) {
 		select {
-		case f := <-s.q:
+		case r := <-s.q:
+			f, err := s.frame(r)
+			if err != nil {
+				continue
+			}
 			if _, err := conn.Write(f); err != nil {
+				s.Enqueue(r)
 				return
 			}
-			s.sent.Add(1)
+			s.markSent()
 		default:
 			return
 		}

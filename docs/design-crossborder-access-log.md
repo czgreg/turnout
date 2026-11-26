@@ -84,7 +84,10 @@ xborder_log:
 ```
 
 启用时校验：缺 address、`data_plane.log_level` 高于 info（短连接与拨号失败只在 info 日志里）
-都会拒绝启动。修改后需重启 turnout-gateway。
+都会拒绝启动。
+
+也可以在控制台「跨境访问日志」页修改（`PUT /api/xborder-log`），保存即在进程内生效，不重启网关；
+手改 yaml 则需重启 turnout-gateway。
 
 量级：约 700 条/小时，每条约 0.9 KB（按试跑中的一条样本估），约 15 MB/天。
 

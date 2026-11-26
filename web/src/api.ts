@@ -39,6 +39,8 @@ import type {
   Transitions,
   WatchdogStatus,
   Whitelist,
+  XBorderLogSettings,
+  XBorderLogView,
 } from './types';
 
 let base = '';
@@ -278,3 +280,14 @@ export const getNotificationLog = (limit = 50) =>
   request<{ entries: NotificationEntry[]; limit: number }>(
     '/api/notifications/recent?limit=' + limit,
   );
+
+/**
+ * Cross-border access log (syslog over TCP).
+ *
+ * PUT applies in-process — no gateway restart — and answers with the same
+ * view as GET, including the sender status right after the swap (the new
+ * connection may not be up yet; poll GET to see it come up).
+ */
+export const getXBorderLog = () => request<XBorderLogView>('/api/xborder-log');
+export const putXBorderLog = (patch: Partial<XBorderLogSettings>) =>
+  request<XBorderLogView>('/api/xborder-log', { method: 'PUT', ...json(patch) });

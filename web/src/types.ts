@@ -507,3 +507,39 @@ export interface AdultBlockState {
   missing?: string[];
   allow: string[];
 }
+
+/* ── Cross-border access log (GET/PUT /api/xborder-log) ──────────────────
+ *
+ * config carries defaults even while disabled, so the form shows what an
+ * enable would use. status describes the running syslog sender; when
+ * running is false every other status field is zero.
+ */
+export interface XBorderLogSettings {
+  enabled: boolean;
+  address: string;
+  framing: 'lf' | 'octet-counting';
+  facility: string;
+  app_name: string;
+  poll_interval_ms: number;
+  queue_size: number;
+}
+
+export interface XBorderLogStatus {
+  running: boolean;
+  since?: string;
+  seq: number;
+  connected: boolean;
+  sent: number;
+  dropped: number;
+  queued: number;
+  queue_size: number;
+  last_sent_at?: string;
+  last_error?: string;
+  last_error_at?: string;
+}
+
+export interface XBorderLogView {
+  config: XBorderLogSettings;
+  status: XBorderLogStatus;
+  data_plane_log_level: string;
+}
