@@ -155,6 +155,27 @@ const (
 	// not dead" — graceful, doesn't trigger emergency.
 	hardFailThreshold = 0.9
 
+	// failEvictRate / failEvictRounds / failEvictMinSamples define the
+	// legacy-mode eviction of a pool member that keeps failing probes but
+	// stays under hardFailThreshold. Such a member is still Qualified, so
+	// before this gate nothing removed it quickly: its long EWMA (24h
+	// half-life) barely moves in an hour, a challenger must clear
+	// SwapThresholdScore against it, and the short-EWMA fast-evict is
+	// relative to the pool median, which rises with it when the whole pool
+	// degrades together. Measured on 10.100.6.15 (2026-11-25 23:00 →
+	// 2026-11-26 10:18): hutao HK/JP members sat in the pool at fail_rate
+	// 0.6-0.83 for up to 60 minutes, alive=false for most of it.
+	//
+	// Thresholds checked against 3.5 days of healthwatch in-pool samples
+	// (1003 scoring rounds): the rule fires 25 times, all on nodes that
+	// were actually degraded (momo _LL dead-IP pool, the hutao incident
+	// above), and never on a healthy member. MinSamples guards the
+	// 0/0.5/1.0 granularity of a 2-sample window; 2 consecutive rounds
+	// (10min at the 5m interval) absorbs one noisy round.
+	failEvictRate       = 0.5
+	failEvictRounds     = 2
+	failEvictMinSamples = 3
+
 	// emergencyEvictAfter is the sustained hard-fail duration that arms
 	// the auto-evict path. 30 minutes balances "user has clearly noticed
 	// a dead node" against "transient outage that will self-heal" —
@@ -384,6 +405,11 @@ type nodeState struct {
 	// to 0 on restart, so a restored incumbent gets a fresh grace window
 	// rather than being instant-evicted on one post-restart dead round.
 	deadRounds int
+	// highFailRounds: consecutive scoring rounds with ProbeCount >=
+	// failEvictMinSamples and FailRate >= failEvictRate. Reset by any round
+	// below either bound. Drives legacy-mode fail eviction of pool members
+	// at failEvictRounds. NOT persisted, for the same reason as deadRounds.
+	highFailRounds int
 	// lastRefusal is the most recent admission-gate refusal reason for this
 	// node, used to log only on TRANSITION. Without it a node held out by the
 	// gate logs an identical line every scoring round (at ~24 candidates that
@@ -978,11 +1004,24 @@ func (s *Scorer) score(ctx context.Context) bool {
 			// tiers and does not need retuning when the whole pool is
 			// slow. MinPoolSize is respected by the post-pass below.
 			evicted := map[string]bool{}
+			// Fail eviction (see failEvictRate). Runs before the short-EWMA
+			// pass so the stronger signal claims the minPool budget first;
+			// worst members go first when the floor stops the loop.
+			for _, h := range s.updateFailRoundsLocked(nodes) {
+				if len(s.poolSet)-len(evicted) <= minPool {
+					break
+				}
+				evicted[h.Name] = true
+				delete(preferredSet, h.Name)
+				slog.Warn("nodescorer: evict member on sustained probe failures",
+					"node", h.Name, "fail_rate", h.FailRate, "probe_count", h.ProbeCount,
+					"rounds", failEvictRounds, "threshold", failEvictRate)
+			}
 			if med := s.poolShortEWMAMedian(); med > 0 {
 				limit := med * evictShortEWMAFactor
 				for name := range s.poolSet {
 					e := s.nodeShortEWMA(name)
-					if math.IsInf(e, 1) || e <= limit {
+					if evicted[name] || math.IsInf(e, 1) || e <= limit {
 						continue
 					}
 					// Never evict the last usable members on this signal
@@ -1699,6 +1738,39 @@ func (s *Scorer) eligibilityPoolLocked(nodes []NodeHealth, newPoolSet map[string
 // shadow mode run it in parallel with the live legacy decision without
 // perturbing anything. Refusal LOGGING therefore lives in the mutating caller
 // (eligibilityPoolLocked), not here. CALLER MUST HOLD s.mu.
+// updateFailRoundsLocked advances every node's highFailRounds counter for
+// this round and returns the current pool members that have now failed
+// failEvictRounds rounds in a row, worst fail_rate first (name breaks ties,
+// so the order — and which members survive the minPool floor — is
+// deterministic). Counters advance for non-members too, so a node that
+// re-enters the pool brings its real streak with it.
+//
+// MUTATES s.state. CALLER MUST HOLD s.mu.
+func (s *Scorer) updateFailRoundsLocked(nodes []NodeHealth) []*NodeHealth {
+	var out []*NodeHealth
+	for i := range nodes {
+		st := s.state[nodes[i].Name]
+		if st == nil {
+			continue
+		}
+		if nodes[i].ProbeCount >= failEvictMinSamples && nodes[i].FailRate >= failEvictRate {
+			st.highFailRounds++
+		} else {
+			st.highFailRounds = 0
+		}
+		if st.highFailRounds >= failEvictRounds && s.poolSet[nodes[i].Name] {
+			out = append(out, &nodes[i])
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FailRate != out[j].FailRate {
+			return out[i].FailRate > out[j].FailRate
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
 // deadEvicted reports whether a node has been alive=false for at least
 // cfg.DeadEvictRounds consecutive scoring rounds — i.e. mihomo has been
 // unable to connect to it, sustained, not a single flap. Such a node is
@@ -2009,7 +2081,31 @@ func (s *Scorer) computePoolMembers(nodes []NodeHealth, defaultPool map[string]b
 		if size <= 0 {
 			size = len(eligible)
 		}
-		out[p.Name] = s.selectPoolMembersSticky(p.Name, eligible, size)
+		// Measured nodes first. An unmeasured node (ProbeCount 0 — new, or
+		// re-added after its subscription dropped out and came back) is
+		// Qualified by benefit of doubt and keeps its persisted long EWMA, so
+		// sticky selection would otherwise keep it as an incumbent with no
+		// current data at all: on 10.100.6.15 (2026-11-26 11:03) all 5 ai-pool
+		// members were hutao US nodes with probe_count 0 while measured momo
+		// US nodes were eligible. Unmeasured nodes only fill slots the
+		// measured supply cannot, so a cold start still gets a full pool.
+		measured := make([]NodeHealth, 0, len(eligible))
+		var unmeasured []NodeHealth
+		for _, h := range eligible {
+			if h.ProbeCount > 0 {
+				measured = append(measured, h)
+			} else {
+				unmeasured = append(unmeasured, h)
+			}
+		}
+		members := s.selectPoolMembersSticky(p.Name, measured, size)
+		for _, h := range unmeasured {
+			if len(members) >= size {
+				break
+			}
+			members = append(members, h.Name)
+		}
+		out[p.Name] = members
 	}
 	return out
 }
