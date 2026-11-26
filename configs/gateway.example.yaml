@@ -406,3 +406,24 @@ capacity:
   # 2026-06-07 压测基线（见 memory: stress-baseline-2026-06-07）
   sustained_max_users: 50
   degraded_max_users: 150
+
+# ─────────────────────────────────────────────────────────────
+# 跨境访问日志 —— [新] 见 docs/design-crossborder-access-log.md
+# ─────────────────────────────────────────────────────────────
+#
+# 每条经机场节点出墙的连接（以及经海外节点的拨号失败）发一条 JSON 记录到
+# syslog 服务器（RFC 5424 over TCP）。国内直连、广告拦截、网关自身连接不记。
+#
+# 数据只取自本机 mihomo clash-api 与 `ss`，不在转发路径上：服务器挂了只会
+# 排队/丢日志，不影响上网。
+#
+# 依赖 data_plane.log_level 为 info 或 debug（短连接与拨号失败只出现在
+# mihomo 的 info 日志里），否则启动时报错。
+xborder_log:
+  enabled: false
+  address: ""              # 必填（启用时），host:port，例如 "10.0.0.50:514"
+  framing: lf              # lf（每条一行，兼容性最好）| octet-counting（RFC 6587）
+  facility: local5         # local0..local7
+  app_name: turnout-xborder
+  poll_interval: 1s        # /connections 采样间隔；结束时间与字节数以最后一次采样为准
+  queue_size: 10000        # 内存队列；满了丢最旧的，接收端表现为 seq 跳号

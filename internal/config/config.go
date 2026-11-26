@@ -69,6 +69,97 @@ type Config struct {
 	// upstream firewall's IP-Link probe goes Down and traffic falls back to
 	// direct routing. See the type doc for why this exists at all.
 	Watchdog WatchdogConfig `yaml:"watchdog"`
+
+	// XBorderLog ships one record per cross-border connection (traffic that
+	// left through an airport node) to a remote syslog server. Off unless
+	// enabled. See docs/design-crossborder-access-log.md.
+	XBorderLog XBorderLogConfig `yaml:"xborder_log,omitempty"`
+}
+
+// XBorderLogConfig is the cross-border access log sink. Defaults are applied
+// only when Enabled, so a node that never opts in round-trips its yaml
+// without growing an xborder_log block.
+type XBorderLogConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Address is the syslog server, host:port, reached over TCP.
+	Address string `yaml:"address,omitempty"`
+	// Framing is how records are delimited on the TCP stream (RFC 6587):
+	// "lf" (default; one record per line — every receiver understands it,
+	// and the JSON body never contains a raw newline) or "octet-counting".
+	Framing string `yaml:"framing,omitempty"`
+	// Facility is the syslog facility name, local0..local7. Default local5.
+	Facility string `yaml:"facility,omitempty"`
+	// AppName is the RFC 5424 APP-NAME. Default turnout-xborder.
+	AppName string `yaml:"app_name,omitempty"`
+	// PollInterval is how often mihomo's /connections is sampled. A
+	// connection's end time and byte counts are as of its last sample.
+	// Default 1s.
+	PollInterval time.Duration `yaml:"poll_interval,omitempty"`
+	// QueueSize bounds the in-memory send queue. When the server is
+	// unreachable and the queue is full, the oldest record is dropped and
+	// counted (visible as a gap in the record seq). Default 10000.
+	QueueSize int `yaml:"queue_size,omitempty"`
+}
+
+func (x *XBorderLogConfig) applyDefaults() {
+	if !x.Enabled {
+		return
+	}
+	if x.Framing == "" {
+		x.Framing = "lf"
+	}
+	if x.Facility == "" {
+		x.Facility = "local5"
+	}
+	if x.AppName == "" {
+		x.AppName = "turnout-xborder"
+	}
+	if x.PollInterval == 0 {
+		x.PollInterval = time.Second
+	}
+	if x.QueueSize == 0 {
+		x.QueueSize = 10000
+	}
+}
+
+// validateXBorderLog fails closed: an operator who enabled the log must not
+// get a node that silently ships nothing.
+func (c *Config) validateXBorderLog() error {
+	x := c.XBorderLog
+	if !x.Enabled {
+		return nil
+	}
+	if x.Address == "" {
+		return fmt.Errorf("xborder_log.address is required when xborder_log.enabled is true")
+	}
+	if host, port, err := net.SplitHostPort(x.Address); err != nil || host == "" || port == "" {
+		return fmt.Errorf("xborder_log.address %q: want host:port", x.Address)
+	}
+	if x.Framing != "lf" && x.Framing != "octet-counting" {
+		return fmt.Errorf("xborder_log.framing %q: want lf or octet-counting", x.Framing)
+	}
+	if !regexp.MustCompile(`^local[0-7]$`).MatchString(x.Facility) {
+		return fmt.Errorf("xborder_log.facility %q: want local0..local7", x.Facility)
+	}
+	if strings.ContainsAny(x.AppName, " \t\r\n") || len(x.AppName) > 48 {
+		return fmt.Errorf("xborder_log.app_name %q: must be 1-48 chars without spaces", x.AppName)
+	}
+	if x.PollInterval < 200*time.Millisecond || x.PollInterval > 10*time.Second {
+		return fmt.Errorf("xborder_log.poll_interval %v: want 200ms..10s", x.PollInterval)
+	}
+	if x.QueueSize < 100 {
+		return fmt.Errorf("xborder_log.queue_size %d: want >= 100", x.QueueSize)
+	}
+	// Connections that close between two samples, and every dial failure,
+	// exist only as mihomo info/warning log lines. Above info they are never
+	// produced, and the record set would be silently incomplete.
+	if lvl := c.DataPlane.LogLevel; lvl != "info" && lvl != "debug" {
+		return fmt.Errorf("xborder_log needs data_plane.log_level info or debug (got %q): short connections and dial failures are only visible in mihomo's info log", lvl)
+	}
+	if c.DataPlane.ClashAPI.ExternalController == "" {
+		return fmt.Errorf("xborder_log needs data_plane.clash_api.external_controller")
+	}
+	return nil
 }
 
 // NotificationsConfig is the user-facing notification settings. Webhook
@@ -1396,6 +1487,9 @@ func Load(path string) (*Config, error) {
 	if err := c.validatePools(); err != nil {
 		return nil, err
 	}
+	if err := c.validateXBorderLog(); err != nil {
+		return nil, err
+	}
 	return &c, nil
 }
 
@@ -1418,6 +1512,7 @@ func (c *Config) applyDefaults() {
 	}
 	c.DataPlane.ApplyDefaults()
 	c.NodeQualify.applyDefaults()
+	c.XBorderLog.applyDefaults()
 	c.Notifications.applyDefaults()
 	c.Watchdog.applyDefaults()
 }
