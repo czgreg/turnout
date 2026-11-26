@@ -194,6 +194,7 @@ export interface NodesHealth {
     MaxRTTP95Ms?: number;
     MaxJitterMs?: number;
     MaxFailRate?: number;
+    SizingMode?: string;
     Probes?: { Name: string; URL: string }[];
   };
   pool_mode?: string;

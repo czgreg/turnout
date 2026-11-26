@@ -229,7 +229,7 @@ export default function Overview({ snap, onNavigate }: { snap: Snapshot; onNavig
             title="探针不通"
             value={dead ?? '—'}
             suffix={health ? ` / ${health.nodes.length}` : undefined}
-            note={health ? `合格 ${health.qualified} / ${health.total}` : snap.health.err ? '评分接口不可用' : ''}
+            note={health ? `在池 ${health.qualified} / ${health.total}` : snap.health.err ? '评分接口不可用' : ''}
             onClick={() => onNavigate('nodes')}
           />
         </Col>

@@ -94,11 +94,17 @@ export default function Nodes({ snap }: { snap: Snapshot }) {
               {(nodePools[n.name] || []).map((p) => (
                 <Tag key={p} color="purple" size="small">{classLabel(p)}</Tag>
               ))}
+              {/* qualified is a liveness bit (a success in the last 5 probes and
+                  fail_rate < 0.9), not pool admission — label it as such. */}
               {n.qualified ? (
-                <Tag color="green" size="small">合格</Tag>
+                <Tooltip content={n.probe_count ? '最近 5 次探测至少成功 1 次且失败率 < 0.9；不代表可入池' : '尚无探测数据，暂按存活处理'}>
+                  <Tag color={n.probe_count ? 'green' : 'gray'} size="small" className="dotted-tag">
+                    {n.probe_count ? '存活' : '待探测'}
+                  </Tag>
+                </Tooltip>
               ) : (
                 <Tooltip content={n.reason || '无原因'}>
-                  <Tag color="orangered" size="small" className="dotted-tag">不合格</Tag>
+                  <Tag color="orangered" size="small" className="dotted-tag">失效</Tag>
                 </Tooltip>
               )}
             </Space>
@@ -138,10 +144,17 @@ export default function Nodes({ snap }: { snap: Snapshot }) {
       title: '失败率',
       dataIndex: 'fail_rate',
       align: 'right',
-      width: 104,
+      width: 124,
       sorter: (a, b) => (a.fail_rate ?? 0) - (b.fail_rate ?? 0),
-      render: (v: number) => (
-        <span className={'num ' + (v >= 0.5 ? 'v-bad' : v > 0.1 ? 'v-warn' : '')}>{fmtRate(v)}</span>
+      // Show the sample count: with 3-4 effective probes the rate moves in
+      // steps of 0.25-0.33, so "67%" alone overstates its precision.
+      render: (v: number, n) => (
+        <span className={'num ' + (v >= 0.5 ? 'v-bad' : v > 0.1 ? 'v-warn' : '')}>
+          {fmtRate(v)}
+          {n.probe_count ? (
+            <span className="dim small"> {Math.round((v || 0) * n.probe_count)}/{n.probe_count}</span>
+          ) : null}
+        </span>
       ),
     },
     {
@@ -175,9 +188,10 @@ export default function Nodes({ snap }: { snap: Snapshot }) {
       <Card bordered={false} className="mb summary-card">
         <div className="summary">
           <div className="summary-item">
-            <span className="dim">合格</span>
+            {/* NodesHealth.qualified counts in-pool nodes, not n.qualified. */}
+            <span className="dim">在池 / 存活 / 总数</span>
             <b>
-              {health?.qualified ?? '—'} <span className="dim">/ {health?.total ?? '—'}</span>
+              {health?.qualified ?? '—'} <span className="dim">/ {nodes.filter((n) => n.qualified && n.probe_count).length} / {health?.total ?? '—'}</span>
             </b>
           </div>
           <div className="summary-item">
@@ -258,20 +272,23 @@ export default function Nodes({ snap }: { snap: Snapshot }) {
           scroll={{ x: 1100 }}
           border={{ wrapper: false, cell: false }}
           noDataElement={<Empty description="没有匹配的节点" />}
-          expandedRowRender={(n) => <NodeDetail n={n} />}
+          expandedRowRender={(n) => <NodeDetail sizingMode={th.SizingMode} n={n} />}
         />
       </Card>
     </div>
   );
 }
 
-function NodeDetail({ n }: { n: NodeHealth }) {
+function NodeDetail({ n, sizingMode }: { n: NodeHealth; sizingMode?: string }) {
+  // Under legacy K-gating, strikes/ok_rounds count rounds out of / in the
+  // top-K selection, not failing/passing rounds — label them accordingly.
+  const legacy = !sizingMode || sizingMode === 'legacy';
   const probes = Object.entries(n.probes || {}).sort(([a], [b]) => a.localeCompare(b));
   const facts: [string, string | number][] = [
     ['最近一次 RTT', fmtMs(n.rtt_last_ms)],
     ['探针样本数', n.probe_count ?? '—'],
-    ['连续不合格轮数', n.strikes ?? '—'],
-    ['连续合格轮数', n.ok_rounds ?? '—'],
+    [legacy ? '连续未入选轮数' : '连续不合格轮数', n.strikes ?? '—'],
+    [legacy ? '连续入选轮数' : '连续合格轮数', n.ok_rounds ?? '—'],
     ['吞吐', n.throughput_bps != null ? `${n.throughput_bps} B/s` : '—'],
     [
       '被动失败率',
@@ -282,7 +299,9 @@ function NodeDetail({ n }: { n: NodeHealth }) {
   ];
   return (
     <div className="node-detail">
-      {n.reason && <Alert type="warning" content={'不合格原因：' + n.reason} className="mb" />}
+      {n.reason && (
+        <Alert type={n.qualified ? 'info' : 'warning'} content={(n.qualified ? '说明：' : '失效原因：') + n.reason} className="mb" />
+      )}
       <div className="facts">
         {facts.map(([k, v]) => (
           <div key={k} className="fact">
