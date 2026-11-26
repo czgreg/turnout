@@ -273,6 +273,9 @@ post Plan-A 语义注意：
 | `probes[].latency_ms` | 真实等待时长，失败时为实际超时值（如 10003ms），不是 0 |
 | `passive` | 从 `/connections` 被动推导，纯本地无机场流量；无连接时不返回 |
 | `passive.fail_rate` | 关闭时传输 < 2KB 的连接占比（可能 RST / dead egress） |
+| `endpoint` | 节点的服务端主机名（订阅里的 `server`）。多个节点共用同一个中转域名时值相同；节点没有 `server` 时不返回 |
+| `endpoint_fail_rate` | 同一 `endpoint` 下所有存活节点的探针失败率汇总（0.0–1.0）。该主机下存活且有探测数据的节点不足 3 个或样本不足 20 个时不计算，不返回 |
+| `endpoint_penalty` | 排名惩罚 = `endpoint_fail_rate × 5000`，单位与评分一致（约等于毫秒）。只在排名时加到节点的长期 EWMA 上，不写进 EWMA；失败率回落的当轮即撤销。为 0 时不返回 |
 
 ---
 
