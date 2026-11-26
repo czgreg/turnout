@@ -530,14 +530,21 @@ func RunRefresh(ctx context.Context, mgr *subscribe.Manager, r Renderer, c *data
 // urgent channel.
 func emitSubscriptionHealth(health []subscribe.SubscriptionHealth, n *notify.Notifier) {
 	for _, h := range health {
+		emitSubscriptionAdvisories(h, n)
 		if h.Outcome == "ok" {
-			slog.Info("subscribe: subscription ok", "name", h.Name, "nodes", h.NodeCount)
+			slog.Info("subscribe: subscription ok", "name", h.Name, "nodes", h.NodeCount,
+				"ua", h.EffectiveUA, "types", h.TypeCounts)
 			continue
 		}
 		slog.Warn("subscribe: subscription unhealthy",
-			"name", h.Name, "outcome", h.Outcome, "err", h.Err)
+			"name", h.Name, "outcome", h.Outcome, "stale_nodes", h.StaleNodes, "err", h.Err)
 		if n == nil {
 			continue
+		}
+		effect := "该订阅的节点已从渲染出的 mihomo config 中消失（失败的订阅不进结果集）。"
+		if h.StaleNodes > 0 {
+			effect = fmt.Sprintf("本轮沿用该订阅上次成功拉取的 %d 个节点，节点列表可能已过期"+
+				"（只保存在内存里，进程重启后不再沿用）。", h.StaleNodes)
 		}
 		n.Emit(notify.Event{
 			Severity: notify.SeverityInfo,
@@ -545,18 +552,80 @@ func emitSubscriptionHealth(health []subscribe.SubscriptionHealth, n *notify.Not
 			Node:     h.Name,
 			Subject:  fmt.Sprintf("订阅 %s 异常：%s", h.Name, h.Outcome),
 			Body: fmt.Sprintf(
-				"订阅 %s 本轮刷新未产出节点。\noutcome: %s\nerr: %s\n\n"+
-					"该订阅的节点已从渲染出的 mihomo config 中消失（lastResults 为整体覆盖，"+
-					"失败的订阅不进结果集）。refresh_interval 为 0 时不会自动重试，"+
+				"订阅 %s 本轮刷新未成功。\noutcome: %s\nerr: %s\n\n%s"+
+					"refresh_interval 为 0 时不会自动重试，"+
 					"需要 POST /api/subscribe/refresh 或修正 gateway.yaml。",
-				h.Name, h.Outcome, h.Err),
+				h.Name, h.Outcome, h.Err, effect),
 			Metadata: map[string]any{
 				"subscription": h.Name,
 				"outcome":      h.Outcome,
 				"err":          h.Err,
 				"node_count":   h.NodeCount,
+				"stale_nodes":  h.StaleNodes,
 			},
 		})
+	}
+}
+
+// emitSubscriptionAdvisories covers the two ways a subscription loses nodes
+// while still reporting "ok": its count dropped sharply versus the previous
+// round (after UA re-probing already ran), or its explicit user_agent is
+// being served fewer nodes than another UA would get. wodi on 2026-11 lost
+// 33 hysteria2 nodes to a downgraded CFW response and nothing alerted.
+//
+// Info severity like subscription_unhealthy: the notifier's per-(node,type)
+// dedup stops a persistent condition from re-firing every round, and the
+// explicit-UA advisory is itself re-probed only once per day.
+func emitSubscriptionAdvisories(h subscribe.SubscriptionHealth, n *notify.Notifier) {
+	if h.NodeDrop {
+		slog.Warn("subscribe: subscription node count dropped",
+			"name", h.Name, "nodes", h.NodeCount, "prev", h.PrevNodeCount,
+			"ua", h.EffectiveUA, "types", h.TypeCounts)
+		if n != nil {
+			n.Emit(notify.Event{
+				Severity: notify.SeverityInfo,
+				Type:     "subscription_node_drop",
+				Node:     h.Name,
+				Subject:  fmt.Sprintf("订阅 %s 节点数骤降：%d → %d", h.Name, h.PrevNodeCount, h.NodeCount),
+				Body: fmt.Sprintf(
+					"订阅 %s 本轮节点数 %d，上一轮 %d（降幅超过 20%%）。\n"+
+						"已用候选 UA 重新比对，当前 UA: %s\n协议分布: %v\n\n"+
+						"可能是机场下线节点，也可能是按 UA 降级了下发内容。",
+					h.Name, h.NodeCount, h.PrevNodeCount, h.EffectiveUA, h.TypeCounts),
+				Metadata: map[string]any{
+					"subscription": h.Name,
+					"node_count":   h.NodeCount,
+					"prev_count":   h.PrevNodeCount,
+					"ua":           h.EffectiveUA,
+					"type_counts":  h.TypeCounts,
+				},
+			})
+		}
+	}
+	if h.SuggestedUA != "" {
+		slog.Warn("subscribe: explicit user_agent gets fewer nodes than an alternative",
+			"name", h.Name, "ua", h.EffectiveUA, "nodes", h.NodeCount,
+			"suggested_ua", h.SuggestedUA, "suggested_nodes", h.SuggestedNodeCount)
+		if n != nil {
+			n.Emit(notify.Event{
+				Severity: notify.SeverityInfo,
+				Type:     "subscription_ua_advisory",
+				Node:     h.Name,
+				Subject:  fmt.Sprintf("订阅 %s 换用 %s 可多拿到节点", h.Name, h.SuggestedUA),
+				Body: fmt.Sprintf(
+					"订阅 %s 显式配置了 user_agent=%s，本轮得到 %d 个节点；"+
+						"用 %s 可得到 %d 个。\n\n显式 UA 不会被自动替换，"+
+						"如需切换请修改 gateway.yaml 中该订阅的 user_agent（或删掉它改用自动择优）。",
+					h.Name, h.EffectiveUA, h.NodeCount, h.SuggestedUA, h.SuggestedNodeCount),
+				Metadata: map[string]any{
+					"subscription":    h.Name,
+					"ua":              h.EffectiveUA,
+					"node_count":      h.NodeCount,
+					"suggested_ua":    h.SuggestedUA,
+					"suggested_count": h.SuggestedNodeCount,
+				},
+			})
+		}
 	}
 }
 

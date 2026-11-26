@@ -34,7 +34,11 @@ subscribe:
   refresh_interval: 0s
   refresh_on_startup: true
   http_timeout: 30s
-  user_agent: "ClashforWindows/0.20.39"
+  # 全局默认 UA。未单独设置 user_agent 的订阅会额外用候选 UA 链
+  # （mihomo / clash-verge / ClashforWindows / sing-box）各拉一次，取可用节点
+  # 最多的那个，结果在内存中缓存 24h。单独设了 user_agent 的订阅不会被切换，
+  # 只在别的 UA 能拿到更多节点时给出 suggested_ua 提示。
+  user_agent: "mihomo/1.19.26"
 
 # [不变] 至少一个订阅。format: auto | clash | singbox | uri | sip008
 subscriptions:

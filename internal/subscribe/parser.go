@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
@@ -42,6 +43,25 @@ type Manager struct {
 	// and node counts still show what the provider served. Nil = keep all.
 	// See config.URLTestConfig.NodeExcludePattern.
 	exclude *regexp.Regexp
+
+	// UA selection state, in memory only (see Refresh). Keyed by
+	// subscription name; guarded by mu.
+	uaChoice  map[string]uaChoice // auto-UA entries: the probed winner
+	uaAdvice  map[string]uaChoice // explicit-UA entries: best alternative seen
+	prevCount map[string]int      // node count of the last round that had nodes
+	now       func() time.Time    // test hook; nil = time.Now
+
+	// lastGood is the most recent parse that produced nodes, per
+	// subscription, keyed by lastGoodKey (name + URL, so editing a
+	// subscription's URL never resurrects the old URL's nodes). A
+	// fetch_error round reuses it instead of dropping the subscription from
+	// the render. Before this, one failed fetch took every node of that
+	// provider out of mihomo until someone refreshed again, and with
+	// refresh_interval: 0s nothing does: hutao's 429s on 6.15 (2026-10-24)
+	// each removed all hutao nodes. Parse errors and zero-node answers do
+	// NOT fall back: the upstream answered, and its answer wins. In memory
+	// only, so a process restart starts empty. Guarded by mu.
+	lastGood map[string]SubscriptionResult
 }
 
 // NewManagerWithFetch lets callers thread http_timeout and user_agent from
@@ -123,6 +143,27 @@ type SubscriptionHealth struct {
 	// "zero_nodes" means the provider refused to serve our client at all,
 	// which retrying with a newer UA can fix.
 	GatedCount int
+	// EffectiveUA is the User-Agent whose response this round used — the
+	// probed winner for an auto-UA entry, the explicit one otherwise.
+	EffectiveUA string
+	// TypeCounts is NodeCount broken down by protocol ("hysteria2": 33).
+	TypeCounts map[string]int
+	// PrevNodeCount is the node count of the previous round that produced
+	// nodes; 0 when there is none yet (first round since start).
+	PrevNodeCount int
+	// NodeDrop is true when NodeCount > 0 but fell below nodeDropRatio of
+	// PrevNodeCount even after re-probing UAs. Catches silent partial loss
+	// (a provider downgrading what it serves) that "ok" would hide.
+	NodeDrop bool
+	// SuggestedUA is set only for an entry with an explicit user_agent, when
+	// another candidate UA yields more nodes (SuggestedNodeCount). The
+	// explicit UA is still the one in use; switching is the operator's call.
+	SuggestedUA        string
+	SuggestedNodeCount int
+	// StaleNodes is how many nodes a fetch_error round carried over from the
+	// subscription's last successful fetch (see Manager.lastGood). 0 when
+	// there was nothing to carry over, and for every other outcome.
+	StaleNodes int
 }
 
 // LastHealth returns the per-subscription outcome of the most recent Refresh.
@@ -138,175 +179,400 @@ func (m *Manager) LastHealth() []SubscriptionHealth {
 // Refresh fetches every enabled subscription and parses it. Errors per
 // subscription are logged but do not abort the whole refresh.
 //
-// UA auto-discovery: when an entry has no explicit UserAgent override
-// (e.UserAgent == "") AND the first fetch with the global UA either
-//   - returns HTTP 5xx (some airports answer "wrong UA" with 500 instead
-//     of a clean 4xx — ash class), or
-//   - succeeds with 0 parsed nodes (some airports return 200 + empty
-//     proxies list for the wrong UA — yuyun class),
+// UA selection. Providers gate subscriptions on the client the User-Agent
+// claims to be, and they do it in at least three shapes:
+//   - answer the "wrong" UA with HTTP 5xx (ash),
+//   - answer with 200 + zero real nodes (yuyun; hutao's "please use FlClash"
+//     pseudo-nodes, which the filter strips),
+//   - answer with 200 + a DOWNGRADED list: only the protocols the claimed
+//     core supports. wodi (2026-11) served ClashforWindows everything except
+//     its 33 hysteria2 nodes — including all 9 US nodes — because CFW's
+//     Premium core predates hy2. Nothing failed, so a failure-triggered
+//     fallback never ran.
 //
-// Refresh retries once with the alternate UA family (Clash↔sing-box). If
-// the retry yields nodes, the discovered UA is fired through the
-// onUADiscovered callback so the caller can persist it to yaml; the
-// happy-path fetch the next refresh round goes straight to the right UA.
+// The third shape is why selection is by comparison, not by failure: for an
+// entry with no explicit UserAgent, Refresh fetches with every candidate UA
+// and keeps the one that yields the most usable nodes after parsing. The
+// parser only keeps protocols the data plane can run, so "most nodes" is a
+// protocol-agnostic proxy for "least downgraded" — no per-provider or
+// per-protocol rules.
+//
+// The winner is cached in memory for uaProbeTTL so steady-state rounds cost
+// one request. The cache is re-validated early when the cached UA errors,
+// yields nothing, or its node count drops by more than nodeDropRatio versus
+// the previous round (the provider may have changed what it serves that UA).
+// Nothing is written back to yaml — subscriptions[] is operator-owned.
+//
+// An entry WITH an explicit UserAgent is never switched. Its alternatives are
+// probed at the same low frequency and, if one yields more nodes, the result
+// is reported as SuggestedUA so the operator can decide.
+//
+// 4xx on the primary fetch is a token/auth problem; no UA will fix it, so no
+// probing happens.
+//
+// Failure handling. A primary fetch that times out (dial, TLS, headers, or a
+// stalled body) is retried once; an HTTP status answer, 429 included, is not.
+// A subscription whose fetch still fails keeps its last good nodes (see
+// Manager.lastGood) and reports them as StaleNodes.
 func (m *Manager) Refresh(ctx context.Context) ([]SubscriptionResult, error) {
+	m.mu.Lock()
+	if m.uaChoice == nil {
+		m.uaChoice = map[string]uaChoice{}
+	}
+	if m.uaAdvice == nil {
+		m.uaAdvice = map[string]uaChoice{}
+	}
+	if m.prevCount == nil {
+		m.prevCount = map[string]int{}
+	}
+	if m.now == nil {
+		m.now = time.Now
+	}
+	prevGood := m.lastGood
+	m.mu.Unlock()
+
 	results := make([]SubscriptionResult, 0, len(m.entries))
 	health := make([]SubscriptionHealth, 0, len(m.entries))
+	good := make(map[string]SubscriptionResult, len(m.entries))
 	var firstErr error
 	for _, e := range m.entries {
 		if !e.Enabled {
 			continue
 		}
-		fr, fetchErr := m.fetcher.GetWithUA(ctx, e.URL, e.UserAgent)
-		var parsed SubscriptionResult
-		var parseErr error
-		var gated int
-		if fetchErr == nil {
-			parsed, gated, parseErr = parseBytesStats(e.Name, e.Format, fr.Body)
-		}
-		// Auto-fallback decision tree.
-		retry := false
-		if e.UserAgent == "" {
-			if h := AsHTTPError(fetchErr); h != nil && h.Status >= 500 && h.Status < 600 {
-				retry = true
-			}
-			if fetchErr == nil && parseErr == nil && len(parsed.Outbounds) == 0 {
-				retry = true
-			}
-		}
-		var userInfo *UserInfo
-		if fr != nil {
-			userInfo = fr.UserInfo
-		}
-		if retry {
-			usedUA := e.UserAgent
-			if usedUA == "" {
-				usedUA = m.globalUA
-			}
-			// Walk the whole candidate chain, not just one alternate. Some
-			// providers gate on client capability rather than family: hutao
-			// (2026-10-21) answered ClashforWindows with four "please use
-			// FlClash / your core does not support AnyTLS" pseudo-nodes and
-			// served 39 real nodes to mihomo, sing-box and clash-verge alike.
-			// A single Clash→sing-box hop happened to be enough there, but a
-			// chain means a provider that rejects sing-box still gets a
-			// third try instead of being written off as dead.
-			for _, altUA := range uaCandidates(usedUA) {
-				if altUA == usedUA {
-					continue
-				}
-				fr2, err2 := m.fetcher.GetWithUA(ctx, e.URL, altUA)
-				if err2 != nil {
-					continue
-				}
-				r2, gated2, perr := parseBytesStats(e.Name, e.Format, fr2.Body)
-				if perr != nil || len(r2.Outbounds) == 0 {
-					continue
-				}
-				slog.Info("subscribe: discovered ua override",
-					"name", e.Name, "ua", altUA, "primary_ua", usedUA,
-					"primary_outcome", primaryOutcome(fetchErr, parseErr, len(parsed.Outbounds)),
-					"primary_gated", gated)
-				parsed = r2
-				gated = gated2
-				parseErr = nil
-				fetchErr = nil
-				// Prefer userinfo from the successful retry fetch.
-				if fr2.UserInfo != nil {
-					userInfo = fr2.UserInfo
-				}
-				if m.onUADiscovered != nil {
-					m.onUADiscovered(e.Name, altUA)
-				}
-				break
-			}
-		}
-		if fetchErr != nil {
+		key := lastGoodKey(e)
+		a, prev, drop, suggested := m.refreshEntry(ctx, e)
+		if a.fetchErr != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("fetch %s: %w", e.Name, fetchErr)
+				firstErr = fmt.Errorf("fetch %s: %w", e.Name, a.fetchErr)
 			}
-			health = append(health, SubscriptionHealth{
-				Name: e.Name, Outcome: "fetch_error", Err: fetchErr.Error()})
+			h := SubscriptionHealth{
+				Name: e.Name, Outcome: "fetch_error", Err: a.fetchErr.Error(), EffectiveUA: a.ua,
+				PrevNodeCount: prev, SuggestedUA: suggested.ua, SuggestedNodeCount: suggested.nodes}
+			if last, ok := prevGood[key]; ok {
+				h.StaleNodes = len(last.Outbounds)
+				good[key] = last
+				results = append(results, last)
+			}
+			health = append(health, h)
 			continue
 		}
-		if parseErr != nil {
+		if a.parseErr != nil {
 			if firstErr == nil {
-				firstErr = parseErr
+				firstErr = a.parseErr
 			}
 			health = append(health, SubscriptionHealth{
-				Name: e.Name, Outcome: "parse_error", Err: parseErr.Error(), UserInfo: userInfo})
+				Name: e.Name, Outcome: "parse_error", Err: a.parseErr.Error(), UserInfo: a.userInfo(),
+				EffectiveUA: a.ua, PrevNodeCount: prev,
+				SuggestedUA: suggested.ua, SuggestedNodeCount: suggested.nodes})
 			continue
 		}
 		outcome := "ok"
-		if len(parsed.Outbounds) == 0 {
-			// Fetched and parsed cleanly but yielded nothing. Distinct from
+		if len(a.parsed.Outbounds) == 0 {
+			// Fetched and parsed cleanly but yielded nothing, with every
+			// candidate UA (or the operator's explicit one). Distinct from
 			// fetch_error: the upstream answered, so this is UA gating, an
-			// emptied subscription, or a revoked token — all of which need
-			// an operator, none of which retry themselves.
+			// emptied subscription, or a revoked token.
 			outcome = "zero_nodes"
 		}
 		health = append(health, SubscriptionHealth{
-			Name: e.Name, Outcome: outcome, NodeCount: len(parsed.Outbounds), UserInfo: userInfo, GatedCount: gated})
-		results = append(results, parsed)
+			Name: e.Name, Outcome: outcome, NodeCount: len(a.parsed.Outbounds),
+			UserInfo: a.userInfo(), GatedCount: a.gated,
+			EffectiveUA: a.ua, TypeCounts: typeCounts(a.parsed.Outbounds),
+			PrevNodeCount: prev, NodeDrop: drop,
+			SuggestedUA: suggested.ua, SuggestedNodeCount: suggested.nodes})
+		results = append(results, a.parsed)
+		if len(a.parsed.Outbounds) > 0 {
+			good[key] = a.parsed
+		}
 	}
 	m.mu.Lock()
 	m.lastResults = results
 	m.lastRefreshed = time.Now()
 	m.lastHealth = health
+	// Rebuilt from this round only, so disabled, deleted, re-pointed and
+	// answered-but-empty subscriptions drop out of it.
+	m.lastGood = good
 	m.mu.Unlock()
 	return results, firstErr
 }
 
-// alternateUA returns the "other" common subscription-client UA family for
-// auto-fallback. Maps Clash-family ↔ sing-box. Returns "" when the input UA
-// doesn't fit a known family — caller should not retry in that case.
-func alternateUA(ua string) string {
-	lc := strings.ToLower(ua)
-	switch {
-	case strings.Contains(lc, "sing-box"):
-		return "ClashforWindows/0.20.39"
-	case ua == "" ||
-		strings.Contains(lc, "clash") ||
-		strings.Contains(lc, "stash") ||
-		strings.Contains(lc, "mihomo") ||
-		strings.HasPrefix(lc, "turnout-gateway"):
-		return "sing-box/1.10.7"
-	}
-	return ""
+// lastGoodKey keys Manager.lastGood by name and URL.
+func lastGoodKey(e config.SubscriptionEntry) string {
+	return e.Name + "\x00" + e.URL
 }
 
-// gatedUA is the conservative Clash-family UA. Several providers treat it as
-// an old client and answer with capability warnings instead of real nodes;
-// it still leads the chain because it is the widest-compatibility choice and
-// the first hop costs one request.
+// isTimeout reports whether err is a client-side timeout (dial, TLS,
+// awaiting headers, or a body that stalled), as opposed to an answer.
+func isTimeout(err error) bool {
+	if err == nil || AsHTTPError(err) != nil {
+		return false
+	}
+	var ne net.Error
+	return (errors.As(err, &ne) && ne.Timeout()) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// uaProbeTTL is how long an auto-selected UA (or an explicit-UA advisory) is
+// trusted before Refresh compares all candidates again. A day keeps the
+// extra upstream load to a handful of requests per subscription per day
+// while still noticing a provider that changes what it serves each UA.
+const uaProbeTTL = 24 * time.Hour
+
+// nodeDropRatio: a round whose node count falls below this fraction of the
+// previous successful round counts as a drop. On an auto-UA entry it forces
+// an immediate re-probe; whatever remains after that is reported as NodeDrop.
+const nodeDropRatio = 0.8
+
+// uaChoice is a remembered probe result: which UA won, for which URL (a URL
+// edit invalidates it), when, and with how many nodes.
+type uaChoice struct {
+	ua    string
+	url   string
+	at    time.Time
+	nodes int
+}
+
+// uaAttempt is one fetch+parse with a given UA.
+type uaAttempt struct {
+	ua       string
+	fr       *FetchResult
+	parsed   SubscriptionResult
+	gated    int
+	fetchErr error
+	parseErr error
+}
+
+func (a uaAttempt) nodes() int {
+	if a.fetchErr != nil || a.parseErr != nil {
+		return 0
+	}
+	return len(a.parsed.Outbounds)
+}
+
+func (a uaAttempt) userInfo() *UserInfo {
+	if a.fr == nil {
+		return nil
+	}
+	return a.fr.UserInfo
+}
+
+func (m *Manager) attempt(ctx context.Context, e config.SubscriptionEntry, ua string) uaAttempt {
+	a := uaAttempt{ua: ua}
+	a.fr, a.fetchErr = m.fetcher.GetWithUA(ctx, e.URL, ua)
+	if a.fetchErr == nil {
+		a.parsed, a.gated, a.parseErr = parseBytesStats(e.Name, e.Format, a.fr.Body)
+	}
+	return a
+}
+
+// refreshEntry runs the UA selection for one entry and returns the attempt
+// whose result this round uses, the previous round's node count, whether
+// the final count is a drop versus it, and any advisory UA for an entry
+// with an explicit UserAgent.
+func (m *Manager) refreshEntry(ctx context.Context, e config.SubscriptionEntry) (uaAttempt, int, bool, uaChoice) {
+	m.mu.RLock()
+	cached, haveCache := m.uaChoice[e.Name]
+	prev := m.prevCount[e.Name]
+	now := m.now()
+	m.mu.RUnlock()
+	if haveCache && cached.url != e.URL {
+		haveCache = false
+	}
+
+	explicit := e.UserAgent != ""
+	ua := e.UserAgent
+	if !explicit {
+		ua = m.globalUA
+		if haveCache {
+			ua = cached.ua
+		}
+	}
+	a := m.attempt(ctx, e, ua)
+	// One retry, on timeout only, and only for the primary fetch: a slow
+	// provider often answers the second time, while a 4xx/5xx (429
+	// included) is an answer, and repeating it at once only deepens a rate
+	// limit. UA probes are not retried; they are skipped on transport
+	// errors anyway (see shouldProbe).
+	if isTimeout(a.fetchErr) && ctx.Err() == nil {
+		slog.Info("subscribe: fetch timed out, retrying once", "name", e.Name, "err", a.fetchErr)
+		a = m.attempt(ctx, e, ua)
+	}
+	dropped := func(n int) bool { return prev > 0 && float64(n) < float64(prev)*nodeDropRatio }
+
+	var suggested uaChoice
+	if explicit {
+		suggested = m.advise(ctx, e, a, now, dropped(a.nodes()))
+	} else if m.shouldProbe(a, haveCache, cached, now, dropped(a.nodes())) {
+		a = m.probeBest(ctx, e, a, haveCache, cached, now)
+	}
+
+	n := a.nodes()
+	drop := n > 0 && dropped(n)
+	if n > 0 {
+		m.mu.Lock()
+		m.prevCount[e.Name] = n
+		m.mu.Unlock()
+	}
+	return a, prev, drop, suggested
+}
+
+// shouldProbe decides whether an auto-UA entry compares all candidates this
+// round. Never on 4xx (token/auth — no UA helps) or on a transport error
+// (the next candidate would most likely time out the same way).
+func (m *Manager) shouldProbe(a uaAttempt, haveCache bool, cached uaChoice, now time.Time, dropped bool) bool {
+	if h := AsHTTPError(a.fetchErr); h != nil {
+		return h.Status >= 500
+	}
+	if a.fetchErr != nil {
+		return false
+	}
+	switch {
+	case a.parseErr != nil, a.nodes() == 0, dropped:
+		return true
+	case !haveCache, now.Sub(cached.at) >= uaProbeTTL:
+		return true
+	}
+	return false
+}
+
+// probeBest fetches with every candidate UA other than first.ua and returns
+// the attempt with the most nodes. Ties keep the earlier attempt, so the UA
+// already in use wins a tie and tags stay stable across rounds. The winner
+// is cached; if every candidate came back empty the cache is cleared so the
+// next round starts again from the global UA.
+func (m *Manager) probeBest(ctx context.Context, e config.SubscriptionEntry, first uaAttempt, haveCache bool, cached uaChoice, now time.Time) uaAttempt {
+	cands := uaCandidates(m.globalUA)
+	if cands == nil {
+		// Unrecognised vendor UA: don't swap it for a Clash one, but still
+		// retry the global UA if a stale cache entry put us elsewhere.
+		cands = []string{}
+	}
+	cands = append([]string{m.globalUA}, cands...)
+
+	best := first
+	tried := map[string]bool{strings.ToLower(first.ua): true}
+	counts := []string{fmt.Sprintf("%s=%s", first.ua, primaryOutcome(first.fetchErr, first.parseErr, first.nodes()))}
+	for _, ua := range cands {
+		if tried[strings.ToLower(ua)] {
+			continue
+		}
+		tried[strings.ToLower(ua)] = true
+		a := m.attempt(ctx, e, ua)
+		counts = append(counts, fmt.Sprintf("%s=%s", ua, primaryOutcome(a.fetchErr, a.parseErr, a.nodes())))
+		if a.nodes() > best.nodes() {
+			best = a
+		}
+	}
+
+	m.mu.Lock()
+	if best.nodes() > 0 {
+		m.uaChoice[e.Name] = uaChoice{ua: best.ua, url: e.URL, at: now, nodes: best.nodes()}
+	} else {
+		delete(m.uaChoice, e.Name)
+	}
+	cb := m.onUADiscovered
+	m.mu.Unlock()
+
+	slog.Info("subscribe: ua probe", "name", e.Name, "selected", best.ua,
+		"nodes", best.nodes(), "candidates", strings.Join(counts, ","))
+	changed := !strings.EqualFold(best.ua, m.globalUA)
+	if haveCache {
+		changed = !strings.EqualFold(best.ua, cached.ua)
+	}
+	if best.nodes() > 0 && changed && cb != nil {
+		cb(e.Name, best.ua)
+	}
+	return best
+}
+
+// advise probes alternatives for an entry with an explicit UserAgent and
+// returns one that yields more nodes than the explicit UA did, or a zero
+// uaChoice. Rate-limited to once per uaProbeTTL unless this round dropped.
+// Skipped on 4xx and transport errors for the same reasons as shouldProbe.
+func (m *Manager) advise(ctx context.Context, e config.SubscriptionEntry, a uaAttempt, now time.Time, dropped bool) uaChoice {
+	if h := AsHTTPError(a.fetchErr); h != nil && h.Status < 500 {
+		return uaChoice{}
+	}
+	if a.fetchErr != nil && AsHTTPError(a.fetchErr) == nil {
+		return uaChoice{}
+	}
+	m.mu.RLock()
+	adv, ok := m.uaAdvice[e.Name]
+	m.mu.RUnlock()
+	fresh := ok && adv.url == e.URL && now.Sub(adv.at) < uaProbeTTL
+	if !fresh || dropped {
+		adv = uaChoice{url: e.URL, at: now}
+		for _, ua := range allUACandidates() {
+			if strings.EqualFold(ua, e.UserAgent) {
+				continue
+			}
+			if alt := m.attempt(ctx, e, ua); alt.nodes() > adv.nodes {
+				adv.ua, adv.nodes = ua, alt.nodes()
+			}
+		}
+		m.mu.Lock()
+		m.uaAdvice[e.Name] = adv
+		m.mu.Unlock()
+		if adv.nodes > a.nodes() {
+			slog.Info("subscribe: explicit ua is serving fewer nodes than an alternative",
+				"name", e.Name, "explicit_ua", e.UserAgent, "explicit_nodes", a.nodes(),
+				"suggested_ua", adv.ua, "suggested_nodes", adv.nodes)
+		}
+	}
+	if adv.nodes > a.nodes() {
+		return adv
+	}
+	return uaChoice{}
+}
+
+// typeCounts tallies outbounds by protocol type ("hysteria2": 33, ...). Lets
+// an operator see at a glance that a subscription is missing a protocol.
+func typeCounts(out []Outbound) map[string]int {
+	if len(out) == 0 {
+		return nil
+	}
+	c := map[string]int{}
+	for _, o := range out {
+		t, _ := o["type"].(string)
+		if t == "" {
+			t = "unknown"
+		}
+		c[t]++
+	}
+	return c
+}
+
+// DefaultUserAgent is the global subscribe UA when gateway.yaml sets none.
+// It names the core the data plane actually runs, so providers that pick
+// the served protocols by client capability serve us everything mihomo
+// supports (hysteria2, tuic, anytls, vless-reality, ...). The old default,
+// ClashforWindows, claims a Premium core that predates most of those.
+const DefaultUserAgent = "mihomo/1.19.26"
+
+// gatedUA is the legacy Clash Premium UA. Kept in the chain for the
+// providers that only recognise it.
 const gatedUA = "ClashforWindows/0.20.39"
 
-// modernUACandidates are tried in order after the current UA fails. Each
-// entry claims a newer core than the previous, which is what unlocks
-// capability gating (AnyTLS and friends). Ordered so the cheapest/most
-// likely answer comes first: hutao served real nodes to every one of these,
-// but a provider that only recognises one brand still gets tried in a
-// predictable order.
+// modernUACandidates is the full candidate chain, in tie-break order: when
+// two UAs yield the same node count the earlier one wins. Newest-core claims
+// first, because they unlock the most protocols; sing-box last, because
+// Clash-family panels often answer it with nothing.
 var modernUACandidates = []string{
-	"mihomo/1.19.26",
+	DefaultUserAgent,
 	"clash-verge/v2.0.0",
+	gatedUA,
 	"sing-box/1.10.7",
 }
 
-// uaCandidates returns the UAs to try after current failed, excluding
-// current itself. An explicit operator-set UA is not in the chain — Refresh
-// only calls this when the entry has no override.
+// allUACandidates returns a copy of the full chain.
+func allUACandidates() []string {
+	return append([]string(nil), modernUACandidates...)
+}
+
+// uaCandidates returns the chain minus current. An unrecognised vendor UA
+// (e.g. "Mozilla/5.0" set as the global UA) gets nil: it was chosen on
+// purpose and must not be silently swapped for a Clash-family one.
 func uaCandidates(current string) []string {
 	lc := strings.ToLower(current)
-	out := make([]string, 0, len(modernUACandidates)+1)
-	for _, ua := range modernUACandidates {
-		if !strings.EqualFold(ua, current) {
-			out = append(out, ua)
-		}
-	}
-	// Legacy compat: an unknown-family UA got no fallback before (see
-	// alternateUA's contract) — keep that behaviour for non-Clash inputs so
-	// a custom vendor UA isn't silently swapped for a Clash one.
 	if lc != "" &&
 		!strings.Contains(lc, "clash") &&
 		!strings.Contains(lc, "stash") &&
@@ -315,11 +581,17 @@ func uaCandidates(current string) []string {
 		!strings.HasPrefix(lc, "turnout-gateway") {
 		return nil
 	}
+	out := make([]string, 0, len(modernUACandidates))
+	for _, ua := range modernUACandidates {
+		if !strings.EqualFold(ua, current) {
+			out = append(out, ua)
+		}
+	}
 	return out
 }
 
-// primaryOutcome turns the (fetchErr, parseErr, nodeCount) of the first
-// attempt into a short string for telemetry on the discovery log line.
+// primaryOutcome turns the (fetchErr, parseErr, nodeCount) of one attempt
+// into a short string for the probe log line.
 func primaryOutcome(fetchErr, parseErr error, n int) string {
 	if h := AsHTTPError(fetchErr); h != nil {
 		return fmt.Sprintf("http_%d", h.Status)
@@ -330,10 +602,7 @@ func primaryOutcome(fetchErr, parseErr error, n int) string {
 	if parseErr != nil {
 		return "parse_err"
 	}
-	if n == 0 {
-		return "zero_nodes"
-	}
-	return "ok"
+	return fmt.Sprintf("%d", n)
 }
 
 func (m *Manager) Snapshot() ([]SubscriptionResult, time.Time) {

@@ -378,11 +378,16 @@ override 不 sticky：NodeScorer 只管 default-pool 成员，不回写 selector
 | 字段 | 含义 |
 |---|---|
 | `health` | `ok` / `fetch_error` / `parse_error` / `zero_nodes` |
-| `health_err` | 非 ok 时的失败详情（仅错误时出现） |
+| `health_err` | 非 ok 时的失败详情（仅错误时出现）。其中的订阅 URL 只保留 `scheme://host`，路径和 query 里的 token 不会出现 |
+| `stale_nodes` | 仅在 `health=fetch_error` 时出现：本轮拉取失败，沿用了上次成功拉取的这么多个节点（此时 `nodes_count` 就是这些旧节点）。只保存在内存里，进程重启后不再沿用；URL 改过之后也不沿用。超时会先重试一次，HTTP 状态码（含 429）不重试 |
 | `user_info` | 来自上游 `Subscription-Userinfo` 响应头；机场未下发则该字段缺失 |
 | `user_info.upload/download/total` | 字节数；`total=0` 表示不限量 |
 | `user_info.expire` | Unix 秒；`0` 表示无到期时间，过去的时间表示已到期 |
 | `gated_count` | 被过滤掉的客户端提示型伪节点数（如「请改用 FlClash」「内核不支持 AnyTLS」）。与 `health=zero_nodes` 同时出现表示机场拒绝了我们当前的 UA |
+| `effective_ua` | 本轮实际采用的 UA：未设 `user_agent` 时为自动择优的结果，设了则就是它 |
+| `type_counts` | 按协议统计的节点数，如 `{"trojan": 40, "hysteria2": 33}` |
+| `node_drop` / `prev_nodes_count` | 本轮节点数低于上一轮的 80%（已重新比对过 UA 仍未恢复）时为 `true`，同时给出上一轮数量；并发 `subscription_node_drop` 通知 |
+| `suggested_ua` / `suggested_nodes_count` | 仅对显式设了 `user_agent` 的订阅：另一个 UA 能拿到更多节点时出现。只做提示，不会自动切换；并发 `subscription_ua_advisory` 通知 |
 
 `user_info` 和 `gated_count` 只反映最近一次 refresh 的结果（`POST /api/subscribe/refresh`
 或周期刷新），不会单独发起请求。
@@ -403,17 +408,21 @@ override 不 sticky：NodeScorer 只管 default-pool 成员，不回写 selector
 
 ### user_agent 常用值
 
-不同机场按 UA 判断客户端版本，UA 不对会返回警告占位节点而非真实节点。省略时用全局默认（`ClashforWindows/0.20.39`），部分面板会将其判定为版本过旧。
+不同机场按 UA 判断客户端版本，UA 不对会返回警告占位节点、返回空列表，或者只下发老内核支持的协议（例如沃迪对 `ClashforWindows` 不下发 hysteria2）。
+
+省略 `user_agent` 时为自动择优：用全局 UA 和候选链（`mihomo/1.19.26`、`clash-verge/v2.0.0`、`ClashforWindows/0.20.39`、`sing-box/1.10.7`）各拉一次，取解析后可用节点最多的那个；节点数相同时保留当前在用的 UA（避免节点 tag 来回变），其余按链上顺序取靠前的。结果只缓存在内存里，24h 内只用胜出的 UA 拉一次，到期、出错、0 节点或节点数骤降时重新比对。不会写回 gateway.yaml。4xx 视为 token 问题，不做比对。
+
+显式设置 `user_agent` 后不再自动切换，只在别的 UA 能拿到更多节点时通过 `suggested_ua` 提示。一般不需要设置；只有在自动择优选错时才用它固定。
 
 | user_agent | 适用场景 |
 |---|---|
 | `mihomo/1.18.4` | 狗狗加速等按 mihomo 版本放行的面板；通常返回节点数最多 |
 | `clash.meta` | 多数 Clash 系面板的通用兼容值 |
-| `ClashforWindows/0.20.39` | 全局默认；老面板兼容性好，新面板可能拦截 |
+| `ClashforWindows/0.20.39` | 老 Premium 内核，不支持 hysteria2 等新协议；部分面板据此降级下发内容 |
 | `sing-box/1.10.7` | 仅限明确要求 sing-box 格式的机场；clash 系面板通常返回 0 节点 |
 | `clash-verge/1.7.7` | Clash Verge 系面板 |
 
-排查节点数不及预期时，用不同 UA 各拉一次对比返回的 `name:` 行数，取节点数最多的值。
+排查节点数不及预期时，先看 GET /api/subscriptions 的 `effective_ua`、`type_counts` 和 `suggested_ua`；日志里 `subscribe: ua probe` 一行列出了每个候选 UA 拿到的节点数。
 
 ## DELETE /api/subscriptions/{name}
 

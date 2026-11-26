@@ -49,7 +49,10 @@ func dualBehavior(t *testing.T, clashHandler, singboxHandler http.HandlerFunc) *
 	}))
 }
 
-// TestRefresh_NoFallbackOnHappyPath: Clash UA already works → no fallback.
+// TestRefresh_NoFallbackOnHappyPath: Clash UA already works and no other
+// candidate does better → the first round compares candidates once, keeps
+// the global UA on the tie, fires no discovery, and the next round inside
+// the TTL costs exactly one request.
 func TestRefresh_NoFallbackOnHappyPath(t *testing.T) {
 	t.Parallel()
 	var clashHits, singboxHits atomic.Int32
@@ -65,9 +68,11 @@ func TestRefresh_NoFallbackOnHappyPath(t *testing.T) {
 	)
 	defer srv.Close()
 
+	cbFired := false
 	mgr := NewManagerWithFetch([]config.SubscriptionEntry{
 		{Name: "ok", URL: srv.URL, Format: "auto", Enabled: true},
-	}, 5*time.Second, "ClashforWindows/0.20.39")
+	}, 5*time.Second, "ClashforWindows/0.20.39").
+		WithUADiscoveryCallback(func(_, _ string) { cbFired = true })
 
 	results, err := mgr.Refresh(context.Background())
 	if err != nil {
@@ -76,8 +81,20 @@ func TestRefresh_NoFallbackOnHappyPath(t *testing.T) {
 	if len(results) != 1 || len(results[0].Outbounds) != 1 {
 		t.Fatalf("results = %v", results)
 	}
+	if got := mgr.LastHealth()[0].EffectiveUA; got != "ClashforWindows/0.20.39" {
+		t.Errorf("EffectiveUA = %q, want the global UA (tie keeps it)", got)
+	}
+	if cbFired {
+		t.Error("discovery callback fired although the global UA won")
+	}
+
+	clashHits.Store(0)
+	singboxHits.Store(0)
+	if _, err := mgr.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh 2: %v", err)
+	}
 	if clashHits.Load() != 1 || singboxHits.Load() != 0 {
-		t.Errorf("expected 1 Clash + 0 sing-box hits, got Clash=%d sing-box=%d",
+		t.Errorf("cached round: want 1 Clash + 0 sing-box hits, got Clash=%d sing-box=%d",
 			clashHits.Load(), singboxHits.Load())
 	}
 }
@@ -193,19 +210,16 @@ func TestRefresh_NoFallbackOn4xx(t *testing.T) {
 }
 
 // TestRefresh_NoFallbackWhenOperatorSetUA: operator override is sticky.
-// Even a 0-nodes result with explicit UA shouldn't trigger fallback —
-// the operator presumably knows what they're doing, and we don't want to
-// silently overwrite their config decision.
+// Even a 0-nodes result with an explicit UA is not switched — the result
+// still comes from the explicit UA and no discovery fires. Alternatives are
+// probed only to report SuggestedUA for the operator.
 func TestRefresh_NoFallbackWhenOperatorSetUA(t *testing.T) {
 	t.Parallel()
-	var clashHits, singboxHits atomic.Int32
 	srv := dualBehavior(t,
 		func(w http.ResponseWriter, _ *http.Request) {
-			clashHits.Add(1)
 			_, _ = w.Write([]byte(emptyClash))
 		},
 		func(w http.ResponseWriter, _ *http.Request) {
-			singboxHits.Add(1)
 			_, _ = w.Write([]byte(minimalSingBox))
 		},
 	)
@@ -219,34 +233,14 @@ func TestRefresh_NoFallbackWhenOperatorSetUA(t *testing.T) {
 		WithUADiscoveryCallback(func(_, _ string) { cbFired = true })
 
 	_, _ = mgr.Refresh(context.Background())
-	if clashHits.Load() != 1 || singboxHits.Load() != 0 {
-		t.Errorf("expected 1 Clash + 0 sing-box (no fallback when explicit UA), got %d/%d",
-			clashHits.Load(), singboxHits.Load())
+	h := mgr.LastHealth()[0]
+	if h.Outcome != "zero_nodes" || h.EffectiveUA != "ClashforWindows/0.20.39" {
+		t.Errorf("explicit UA was switched: outcome=%s ua=%s", h.Outcome, h.EffectiveUA)
 	}
 	if cbFired {
 		t.Error("callback must not fire when entry has explicit UserAgent")
 	}
-}
-
-func TestAlternateUA(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		in, want string
-	}{
-		{"", "sing-box/1.10.7"},
-		{"ClashforWindows/0.20.39", "sing-box/1.10.7"},
-		{"clash.meta/v1.18.0", "sing-box/1.10.7"},
-		{"ClashX Pro/1.92.1", "sing-box/1.10.7"},
-		{"Stash/2.6.0", "sing-box/1.10.7"},
-		{"mihomo/Meta v1.18.0", "sing-box/1.10.7"},
-		{"turnout-gateway/0.1", "sing-box/1.10.7"},
-		{"sing-box/1.10.7", "ClashforWindows/0.20.39"},
-		{"sing-box/1.18", "ClashforWindows/0.20.39"},
-		{"Mozilla/5.0", ""}, // unknown family: no fallback
-	}
-	for _, c := range cases {
-		if got := alternateUA(c.in); got != c.want {
-			t.Errorf("alternateUA(%q) = %q, want %q", c.in, got, c.want)
-		}
+	if h.SuggestedUA != "sing-box/1.10.7" || h.SuggestedNodeCount != 1 {
+		t.Errorf("SuggestedUA = %q (%d), want sing-box/1.10.7 (1)", h.SuggestedUA, h.SuggestedNodeCount)
 	}
 }

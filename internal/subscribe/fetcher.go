@@ -19,8 +19,11 @@ type HTTPError struct {
 	URL    string
 }
 
+// Error prints the URL redacted: subscription URLs carry their token, and
+// this string reaches the journal, health_err and the subscription_unhealthy
+// Lark event. URL itself stays raw for callers that need it.
 func (e *HTTPError) Error() string {
-	return fmt.Sprintf("http %d from %s", e.Status, e.URL)
+	return fmt.Sprintf("http %d from %s", e.Status, turnouthttp.RedactURL(e.URL))
 }
 
 // AsHTTPError unwraps err to *HTTPError if present, returning nil otherwise.
@@ -100,15 +103,17 @@ func (f *fetcher) Get(ctx context.Context, url string) ([]byte, error) {
 func (f *fetcher) GetWithUA(ctx context.Context, target, ua string) (*FetchResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return nil, err
+		return nil, turnouthttp.RedactErr(err, target)
 	}
 	if ua == "" {
 		ua = f.userAgent
 	}
 	req.Header.Set("User-Agent", ua)
+	// Transport and body errors come back with the URL redacted: net/http
+	// quotes the full URL, token included.
 	resp, err := f.httpc.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, turnouthttp.RedactErr(err, target)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -116,7 +121,7 @@ func (f *fetcher) GetWithUA(ctx context.Context, target, ua string) (*FetchResul
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return nil, err
+		return nil, turnouthttp.RedactErr(err, target)
 	}
 	return &FetchResult{
 		Body:     body,

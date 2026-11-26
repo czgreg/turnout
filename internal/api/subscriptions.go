@@ -27,6 +27,20 @@ type subscriptionDTO struct {
 	// ("please use FlClash", "your core does not support AnyTLS"). Non-zero
 	// with health=zero_nodes means the provider refused our client.
 	GatedCount int `json:"gated_count,omitempty"`
+	// EffectiveUA is the UA whose response the last refresh used: the
+	// probed winner when user_agent is empty, user_agent itself otherwise.
+	EffectiveUA string         `json:"effective_ua,omitempty"`
+	TypeCounts  map[string]int `json:"type_counts,omitempty"`
+	// NodeDrop: nodes_count fell below 80% of prev_nodes_count this round.
+	NodeDrop      bool `json:"node_drop,omitempty"`
+	PrevNodeCount int  `json:"prev_nodes_count,omitempty"`
+	// SuggestedUA: only for entries with an explicit user_agent, when
+	// another UA yields more nodes. Advisory; nothing is switched.
+	SuggestedUA        string `json:"suggested_ua,omitempty"`
+	SuggestedNodeCount int    `json:"suggested_nodes_count,omitempty"`
+	// StaleNodes: health=fetch_error, and nodes_count is this many nodes
+	// carried over from the last successful fetch instead of 0.
+	StaleNodes int `json:"stale_nodes,omitempty"`
 }
 
 func (s *Server) handleSubscriptionsGet(w http.ResponseWriter, _ *http.Request) {
@@ -36,20 +50,9 @@ func (s *Server) handleSubscriptionsGet(w http.ResponseWriter, _ *http.Request) 
 		nodesByName[r.Name] = len(r.Outbounds)
 	}
 	// Index health by name so we can enrich each DTO in O(1).
-	type healthEntry struct {
-		outcome  string
-		err      string
-		userInfo *subscribe.UserInfo
-		gated    int
-	}
-	healthByName := make(map[string]healthEntry)
+	healthByName := make(map[string]subscribe.SubscriptionHealth)
 	for _, h := range s.deps.Subscribe.LastHealth() {
-		healthByName[h.Name] = healthEntry{
-			outcome:  h.Outcome,
-			err:      h.Err,
-			userInfo: h.UserInfo,
-			gated:    h.GatedCount,
-		}
+		healthByName[h.Name] = h
 	}
 	out := make([]subscriptionDTO, 0, len(s.deps.Cfg.Subscriptions))
 	for _, e := range s.deps.Cfg.Subscriptions {
@@ -65,10 +68,17 @@ func (s *Server) handleSubscriptionsGet(w http.ResponseWriter, _ *http.Request) 
 			dto.LastRefresh = last.UTC().Format("2006-01-02T15:04:05Z")
 		}
 		if he, ok := healthByName[e.Name]; ok {
-			dto.Health = he.outcome
-			dto.HealthErr = he.err
-			dto.UserInfo = he.userInfo
-			dto.GatedCount = he.gated
+			dto.Health = he.Outcome
+			dto.HealthErr = he.Err
+			dto.UserInfo = he.UserInfo
+			dto.GatedCount = he.GatedCount
+			dto.EffectiveUA = he.EffectiveUA
+			dto.TypeCounts = he.TypeCounts
+			dto.NodeDrop = he.NodeDrop
+			dto.PrevNodeCount = he.PrevNodeCount
+			dto.SuggestedUA = he.SuggestedUA
+			dto.SuggestedNodeCount = he.SuggestedNodeCount
+			dto.StaleNodes = he.StaleNodes
 		}
 		out = append(out, dto)
 	}
