@@ -156,7 +156,13 @@ func newDecisionScorer(t *testing.T, cfg config.NodeQualifyConfig, nodes map[str
 	const probeURL = "http://probe.test/generate_204"
 	apiAddr, mut := mockClashAPI(t, probeURL, nodes)
 	fr = &fakeRenderer{path: t.TempDir() + "/config.yaml"}
-	s = New(cfg, nil, apiAddr, "", probeURL, "", fr, func() []subscribe.Outbound { return nil })
+	// The subscription feed carries every mocked node: score() refuses to
+	// run (and render) before the first subscription refresh has landed.
+	obs := make([]subscribe.Outbound, 0, len(nodes))
+	for tag := range nodes {
+		obs = append(obs, outbound(tag))
+	}
+	s = New(cfg, nil, apiAddr, "", probeURL, "", fr, func() []subscribe.Outbound { return obs })
 	// score() fires hotReload on a goroutine that writes config.yaml(.tmp)
 	// into the TempDir. If the test returns before that goroutine finishes,
 	// t.TempDir's RemoveAll races the write. Give in-flight renders a beat

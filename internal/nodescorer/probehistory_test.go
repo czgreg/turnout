@@ -151,7 +151,7 @@ func TestHotReload_FailureRearmsRender(t *testing.T) {
 
 	fr := &fakeRenderer{path: t.TempDir() + "/config.yaml"}
 	s := New(defaultCfg(), nil, strings.TrimPrefix(srv.URL, "http://"), "", testProbeURL, "", fr,
-		func() []subscribe.Outbound { return nil })
+		func() []subscribe.Outbound { return []subscribe.Outbound{outbound("sub/a")} })
 
 	s.lastDefaultPoolRendered = map[string]bool{"sub/a": true}
 	s.hotReload(context.Background(), []string{"sub/a"}, []string{"sub/a"}, nil, nil)

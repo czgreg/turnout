@@ -17,6 +17,7 @@ package nodescorer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -659,6 +660,24 @@ func (s *Scorer) score(ctx context.Context) bool {
 		}
 	}
 	outbounds := s.subscribe()
+	// No subscription outbounds = the first refresh has not landed yet (it
+	// probes UAs and took 20-23s after each restart in production), not a
+	// node outage: Refresh keeps a failing subscription's last good nodes.
+	// (Every subscription disabled or answering zero nodes also yields
+	// none; the DIRECT-only fallback is then api.RunRefresh's render to own,
+	// the scorer has nothing to add.) mihomo, which a gateway restart does
+	// not restart, still answers
+	// /proxies from its last config, so the round would score fine and then
+	// hot-reload a render built from ZERO outbounds — no proxies, no
+	// default-pool, no dns-out, every class pool a DIRECT stub. Observed
+	// 2026-11-26 at 11:40/11:47/13:37/13:39: ~12s of AI and MATCH traffic
+	// going DIRECT and dnspreload "ok=0 fail=15" until the refresh
+	// re-rendered. Skip the round instead; the startup retry tries again in
+	// 10s.
+	if len(outbounds) == 0 {
+		slog.Warn("nodescorer: subscription outbounds not loaded yet — skipping this round")
+		return false
+	}
 	discovered := filterCandidates(outbounds, patterns, proxies)
 	hostOf := serverHosts(outbounds)
 
@@ -2721,6 +2740,12 @@ func (s *Scorer) hotReload(ctx context.Context, defaultPool, routingMembers []st
 		s.mu.Unlock()
 	}
 	outbounds := s.subscribe()
+	if len(outbounds) == 0 {
+		// Never publish a config with no proxies (see the same guard in
+		// score()); re-arm so the next round renders once outbounds exist.
+		fail("nodescorer: re-render skipped", errors.New("no subscription outbounds loaded"))
+		return
+	}
 	data, err := s.renderer.RenderWithPools(outbounds, defaultPool, routingMembers, poolMembers, backups)
 	if err != nil {
 		fail("nodescorer: re-render failed", err)
