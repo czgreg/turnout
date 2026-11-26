@@ -142,12 +142,12 @@ func TestComputePoolMembers_ClassPattern(t *testing.T) {
 		"us5": {Long: ewmaPoint{Value: 10, UpdatedAt: now}}, // best score, but dead
 	}
 	nodes := []NodeHealth{
-		{Name: "us1", Qualified: true, Alive: true},
-		{Name: "us2", Qualified: true, Alive: true},
-		{Name: "us3", Qualified: true, Alive: true},
-		{Name: "jp1", Qualified: true, Alive: true},
-		{Name: "us4", Qualified: false, Alive: true}, // not qualified → never a member
-		{Name: "us5", Qualified: true, Alive: false}, // dead → never a member
+		{Name: "us1", Qualified: true, Alive: true, ProbeCount: 3},
+		{Name: "us2", Qualified: true, Alive: true, ProbeCount: 3},
+		{Name: "us3", Qualified: true, Alive: true, ProbeCount: 3},
+		{Name: "jp1", Qualified: true, Alive: true, ProbeCount: 3},
+		{Name: "us4", Qualified: false, Alive: true, ProbeCount: 3}, // not qualified → never a member
+		{Name: "us5", Qualified: true, Alive: false, ProbeCount: 3}, // dead → never a member
 	}
 	got := s.computePoolMembers(nodes, map[string]bool{"jp1": true}, 8)
 	members := got["ai-pool"]
@@ -176,9 +176,9 @@ func TestComputePoolMembers_ClassSticky(t *testing.T) {
 	}
 	s.poolMembers = map[string][]string{"ai-pool": {"us2", "us3"}}
 	nodes := []NodeHealth{
-		{Name: "us1", Qualified: true, Alive: true},
-		{Name: "us2", Qualified: true, Alive: true},
-		{Name: "us3", Qualified: true, Alive: true},
+		{Name: "us1", Qualified: true, Alive: true, ProbeCount: 3},
+		{Name: "us2", Qualified: true, Alive: true, ProbeCount: 3},
+		{Name: "us3", Qualified: true, Alive: true, ProbeCount: 3},
 	}
 	got := s.computePoolMembers(nodes, nil, 0)["ai-pool"]
 	if len(got) != 2 || got[0] != "us2" || got[1] != "us3" {
@@ -190,6 +190,43 @@ func TestComputePoolMembers_ClassSticky(t *testing.T) {
 	got = s.computePoolMembers(nodes, nil, 0)["ai-pool"]
 	if len(got) != 2 || got[0] != "us1" || got[1] != "us2" {
 		t.Fatalf("members after margin=0 = %v, want [us1 us2]", got)
+	}
+}
+
+// TestComputePoolMembers_ClassMeasuredFirst: an unmeasured incumbent with a
+// good persisted EWMA (the re-added hutao shape, 2026-11-26) must not hold a
+// slot while measured nodes are eligible; it only fills slots the measured
+// supply cannot.
+func TestComputePoolMembers_ClassMeasuredFirst(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.SwapThresholdScore = 400
+	s := newTestScorer(cfg)
+	s.pools = []config.PoolConfig{{Name: "ai-pool", NodePattern: `^us`, Size: 2}}
+	now := time.Now()
+	s.ewma = map[string]*nodeEWMA{
+		"us-fresh1": {Long: ewmaPoint{Value: 50, UpdatedAt: now}},
+		"us-fresh2": {Long: ewmaPoint{Value: 60, UpdatedAt: now}},
+		"us-m1":     {Long: ewmaPoint{Value: 300, UpdatedAt: now}},
+		"us-m2":     {Long: ewmaPoint{Value: 350, UpdatedAt: now}},
+	}
+	s.poolMembers = map[string][]string{"ai-pool": {"us-fresh1", "us-fresh2"}}
+	nodes := []NodeHealth{
+		{Name: "us-fresh1", Qualified: true, Alive: true}, // ProbeCount 0
+		{Name: "us-fresh2", Qualified: true, Alive: true},
+		{Name: "us-m1", Qualified: true, Alive: true, ProbeCount: 3},
+		{Name: "us-m2", Qualified: true, Alive: true, ProbeCount: 3},
+	}
+	got := s.computePoolMembers(nodes, nil, 0)["ai-pool"]
+	if len(got) != 2 || got[0] != "us-m1" || got[1] != "us-m2" {
+		t.Fatalf("members = %v, want [us-m1 us-m2] (measured beat unmeasured incumbents)", got)
+	}
+
+	// Only one measured node: the other slot is filled from unmeasured,
+	// best EWMA first.
+	nodes[3].ProbeCount = 0
+	got = s.computePoolMembers(nodes, nil, 0)["ai-pool"]
+	if len(got) != 2 || got[0] != "us-m1" || got[1] != "us-fresh1" {
+		t.Fatalf("members = %v, want [us-m1 us-fresh1] (unmeasured fill the gap)", got)
 	}
 }
 
