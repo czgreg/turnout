@@ -64,6 +64,14 @@ type NodeHealth struct {
 	// /connections (localhost, no airport traffic). nil when the passive
 	// loop hasn't produced data yet.
 	Passive *PassiveStats `json:"passive,omitempty"`
+
+	// Endpoint is the node's server host. EndpointFailRate is the probe fail
+	// rate pooled over every live node on that host, and EndpointPenalty the
+	// ranking penalty derived from it (see endpoint.go). Zero when the host
+	// has too few nodes/samples to judge.
+	Endpoint         string  `json:"endpoint,omitempty"`
+	EndpointFailRate float64 `json:"endpoint_fail_rate,omitempty"`
+	EndpointPenalty  float64 `json:"endpoint_penalty,omitempty"`
 }
 
 // PassiveStats summarizes a node's TCP connection behavior over a rolling
@@ -309,6 +317,11 @@ type Scorer struct {
 	// state file v4 schema; nil-safe (lazy-initialized in updateNodeEWMA).
 	// See ewma.go for the math + half-life rationale.
 	ewma map[string]*nodeEWMA
+
+	// endpointPenalty is node → shared-endpoint ranking penalty, recomputed
+	// every scoring round and added by nodeLongEWMA. Not persisted: it
+	// describes the current round only. See endpoint.go.
+	endpointPenalty map[string]float64
 
 	// passive connection-lifecycle tracking (1.6). connSeen maps live
 	// connID → its node + last-seen byte total; closeEvents is a rolling
@@ -619,7 +632,9 @@ func (s *Scorer) score(ctx context.Context) bool {
 			patterns = append(patterns, p.NodePattern)
 		}
 	}
-	discovered := filterCandidates(s.subscribe(), patterns, proxies)
+	outbounds := s.subscribe()
+	discovered := filterCandidates(outbounds, patterns, proxies)
+	hostOf := serverHosts(outbounds)
 
 	// default-pool absence is no longer fatal. groups.go deliberately omits the
 	// group when it would be empty (all subscriptions failed / bootstrap), and
@@ -736,6 +751,18 @@ func (s *Scorer) score(ctx context.Context) bool {
 		st.health = h
 		nodes = append(nodes, h)
 	}
+
+	// Shared-endpoint penalty (endpoint.go). Computed before any ranking
+	// below, since nodeLongEWMA reads it; the node health copies in s.state
+	// are refreshed so /api/nodes/health shows the endpoint fields.
+	prevPenalized := s.endpointPenalty
+	s.endpointPenalty = applyEndpointPenalties(nodes, hostOf)
+	for i := range nodes {
+		if st := s.state[nodes[i].Name]; st != nil {
+			st.health = nodes[i]
+		}
+	}
+	logEndpointPenaltyChanges(prevPenalized, s.endpointPenalty, nodes)
 
 	// Update per-node EWMA from this round's composite scores. Drives
 	// the auto-mode evict/promote decisions in the K-gating branch

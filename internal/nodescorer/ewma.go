@@ -184,12 +184,17 @@ func (s *Scorer) inTrial(name string, now time.Time) bool {
 // nodeLongEWMA returns the long-window smoothed compositeScore for
 // promote decisions. Returns +Inf when the node has no EWMA history
 // yet (so it ranks below any observed node).
+//
+// Every caller is a ranking decision, so this is also where the current
+// round's shared-endpoint penalty is added (endpoint.go). It is added here
+// rather than smoothed into the EWMA so it takes effect, and lifts, in the
+// round the endpoint's failure rate changes.
 func (s *Scorer) nodeLongEWMA(name string) float64 {
 	e, ok := s.ewma[name]
 	if !ok || e.Long.UpdatedAt.IsZero() {
 		return math.Inf(1)
 	}
-	return e.Long.Value
+	return e.Long.Value + s.endpointPenalty[name]
 }
 
 // nodeShortEWMA returns the short-window smoothed compositeScore for
